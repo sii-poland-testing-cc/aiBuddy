@@ -381,3 +381,40 @@ def test_context_files_tracked(app_client):
     assert s2["document_count"] == 2
     assert "srs_payment_module.docx" in s2["context_files"]
     assert "test_plan_payment.docx" in s2["context_files"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AuditWorkflow._extract_requirements
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_extract_requirements_returns_list():
+    """
+    _extract_requirements with llm=None returns the mock list.
+    With a real-ish mock LLM, it parses JSON and returns a list of strings.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from app.agents.audit_workflow import AuditWorkflow
+
+    rag_context = (
+        "FR-001: The system shall support Visa payments.\n"
+        "FR-002: The system shall support Mastercard payments.\n"
+        "FR-003: The capture window is 7 days by default.\n"
+    )
+
+    # 1. llm=None → mock list
+    wf_no_llm = AuditWorkflow(llm=None, timeout=30)
+    result = await wf_no_llm._extract_requirements(rag_context)
+    assert isinstance(result, list), "Expected a list"
+    assert len(result) > 0, "Expected non-empty list when llm=None"
+    assert all(isinstance(r, str) for r in result), "All items must be strings"
+
+    # 2. With a mock LLM that returns a JSON array
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["FR-001", "FR-002", "FR-003"]')
+    wf_with_llm = AuditWorkflow(llm=mock_llm, timeout=30)
+    result2 = await wf_with_llm._extract_requirements(rag_context)
+    assert isinstance(result2, list)
+    assert all(isinstance(r, str) for r in result2)
+    assert "FR-001" in result2
+    assert "FR-003" in result2

@@ -129,6 +129,10 @@ class AuditWorkflow(Workflow):
         else:
             logger.info("project=%s — retrieved %d RAG source(s)", project_id, len(rag_sources))
 
+        requirements_from_docs = await self._extract_requirements(rag_context)
+        await ctx.store.set("requirements_from_docs", requirements_from_docs)
+        logger.info("Requirements found in docs: %s", requirements_from_docs)
+
         recommendations = await self._llm_recommendations(cases, rag_context, user_message)
         coverage_pct = max(0.0, 100.0 - (len(untagged) / max(len(cases), 1)) * 100)
 
@@ -214,6 +218,29 @@ class AuditWorkflow(Workflow):
                 dupes.append(c)
             seen.add(key)
         return dupes
+
+    async def _extract_requirements(self, rag_context: str) -> List[str]:
+        """Extract formal requirement IDs (e.g. FR-001) from the RAG context."""
+        if not self.llm:
+            return ["FR-001", "FR-002", "FR-003"]
+
+        prompt = (
+            "Extract all requirement IDs from the documentation below.\n"
+            "Return ONLY a valid JSON array of strings, no preamble, no markdown.\n"
+            'Examples: ["FR-001", "FR-002", "NFR-Performance"]\n'
+            "If no formal IDs exist, return [].\n\n"
+            f"Documentation:\n{rag_context}"
+        )
+        try:
+            response = await self.llm.acomplete(prompt)
+            raw = str(response).strip()
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
+            return json.loads(raw)
+        except Exception as exc:
+            logger.warning("Could not extract requirements from docs: %s", exc)
+            return []
 
     async def _llm_recommendations(
         self, cases: List[Dict], context: str, user_question: str = ""
