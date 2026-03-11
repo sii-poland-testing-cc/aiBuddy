@@ -384,6 +384,62 @@ def test_context_files_tracked(app_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AuditSnapshot model smoke test
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_audit_snapshot_table_exists(app_client):
+    """
+    app_client triggers lifespan → init_db() which must create audit_snapshots.
+    Verify the model class and that all JSON fields round-trip correctly.
+    """
+    import json
+    from app.db.models import AuditSnapshot
+
+    assert AuditSnapshot.__tablename__ == "audit_snapshots"
+
+    summary_data = {
+        "coverage_pct": 33.3,
+        "duplicates_found": 1,
+        "requirements_total": 12,
+        "requirements_covered": 4,
+        "untagged_cases": 2,
+    }
+    uncovered = ["FR-001", "FR-005", "FR-007", "FR-008", "FR-009", "FR-010", "FR-011", "FR-012"]
+    recs = ["Add tests for FR-001", "Add tests for FR-005"]
+    diff_data = {
+        "coverage_delta": 12.5,
+        "duplicates_delta": -2,
+        "new_covered": ["FR-003"],
+        "newly_uncovered": [],
+        "files_added": ["v17.xlsx"],
+        "files_removed": ["v16.xlsx"],
+    }
+
+    import uuid as _uuid
+    snap_id = str(_uuid.uuid4())
+    snap = AuditSnapshot(
+        id=snap_id,
+        project_id="test-project-id",
+        files_used=json.dumps(["file1.xlsx"]),
+        summary=json.dumps(summary_data),
+        requirements_uncovered=json.dumps(uncovered),
+        recommendations=json.dumps(recs),
+        diff=json.dumps(diff_data),
+    )
+
+    # All JSON fields round-trip correctly
+    assert json.loads(snap.summary)["coverage_pct"] == 33.3        # type: ignore[arg-type]
+    assert json.loads(snap.requirements_uncovered) == uncovered     # type: ignore[arg-type]
+    assert json.loads(snap.recommendations) == recs                 # type: ignore[arg-type]
+    assert json.loads(snap.diff)["coverage_delta"] == 12.5          # type: ignore[arg-type]
+    assert json.loads(snap.files_used) == ["file1.xlsx"]            # type: ignore[arg-type]
+
+    # id matches what we passed
+    assert snap.id == snap_id
+    assert len(snap.id) == 36   # UUID4 string
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AuditWorkflow._extract_requirements
 # ─────────────────────────────────────────────────────────────────────────────
 

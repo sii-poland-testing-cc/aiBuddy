@@ -34,7 +34,7 @@ async def init_db() -> None:
     """
     Create all tables that don't yet exist and apply any missing column migrations.
     Safe to call on every startup (idempotent).
-    schema v2 — added context_files
+    schema v3 — AuditSnapshot + ProjectFile.last_used_in_audit_id
     """
     url = settings.DATABASE_URL
     if url.startswith("sqlite"):
@@ -45,11 +45,21 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Idempotent migration: add context_files if the table pre-dates schema v2
+        # Idempotent migrations for SQLite (ALTER TABLE is additive-only)
         if url.startswith("sqlite"):
-            rows = (await conn.execute(text("PRAGMA table_info(projects)"))).fetchall()
-            existing_cols = {row[1] for row in rows}
-            if "context_files" not in existing_cols:
+            proj_cols = {
+                row[1] for row in
+                (await conn.execute(text("PRAGMA table_info(projects)"))).fetchall()
+            }
+            if "context_files" not in proj_cols:
                 await conn.execute(
                     text("ALTER TABLE projects ADD COLUMN context_files TEXT")
+                )
+            pf_cols = {
+                row[1] for row in
+                (await conn.execute(text("PRAGMA table_info(project_files)"))).fetchall()
+            }
+            if "last_used_in_audit_id" not in pf_cols:
+                await conn.execute(
+                    text("ALTER TABLE project_files ADD COLUMN last_used_in_audit_id TEXT")
                 )
