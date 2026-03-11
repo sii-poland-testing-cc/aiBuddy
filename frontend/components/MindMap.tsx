@@ -116,7 +116,6 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
         const { x, y } = posMap[node.id];
         const color = TYPE_COLORS[node.type] ?? "#c8902a";
         const isH = hovered === node.id;
-        const r = isH ? 36 : 30;
         return (
           <g
             key={node.id}
@@ -124,11 +123,13 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
             onMouseLeave={() => setHovered(null)}
             style={{ cursor: "pointer" }}
           >
-            <circle
-              cx={x} cy={y} r={r}
-              fill={isH ? color + "33" : color + "18"}
+            <rect
+              x={x - 60} y={y - 20}
+              width={NODE_W} height={NODE_H}
+              rx={8}
+              fill={color + "22"}
               stroke={color}
-              strokeWidth={isH ? 2 : 1.5}
+              strokeWidth={isH ? 2.5 : 1.5}
               style={{ transition: "all 0.2s" }}
             />
             <text
@@ -136,14 +137,14 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
               textAnchor="middle"
               fill={color}
               fontSize="11"
-              fontFamily="DM Sans, sans-serif"
+              fontFamily="DM Mono, monospace"
               fontWeight="600"
             >
               {node.label}
             </text>
             {isH && (
               <text
-                x={x} y={y + 20}
+                x={x} y={y + 28}
                 textAnchor="middle"
                 fill="#8a7a68"
                 fontSize="9"

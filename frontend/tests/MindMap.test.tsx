@@ -20,10 +20,10 @@ describe("MindMap", () => {
     expect(svg).toBeTruthy();
   });
 
-  it("renders one circle per node", () => {
+  it("renders one rect per node", () => {
     const { container } = render(<MindMap nodes={NODES} edges={EDGES} />);
-    const circles = container.querySelectorAll("circle");
-    expect(circles.length).toBe(NODES.length);
+    const rects = container.querySelectorAll("rect");
+    expect(rects.length).toBe(NODES.length);
   });
 
   it("renders edge lines between nodes", () => {
@@ -49,13 +49,13 @@ describe("MindMap", () => {
     expect(container.querySelector("svg")).toBeTruthy();
   });
 
-  it("falls back to circular layout when x/y missing", () => {
+  it("renders nodes as rects when x/y missing (dagre computes layout)", () => {
     const noCoordNodes = [
       { id: "n1", label: "Alpha", type: "data" },
       { id: "n2", label: "Beta",  type: "actor" },
     ];
     const { container } = render(<MindMap nodes={noCoordNodes} edges={[]} />);
-    expect(container.querySelectorAll("circle").length).toBe(2);
+    expect(container.querySelectorAll("rect").length).toBe(2);
   });
 
   it("includes an arrow marker definition", () => {
