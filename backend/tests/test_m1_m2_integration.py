@@ -1026,6 +1026,148 @@ def test_llm_judges_visa_mastercard_as_different(app_client):
     mock_llm.acomplete.assert_called_once()
 
 
+def test_report_includes_duplicate_pairs(app_client, tmp_path):
+    """
+    result['duplicates'] must be a list of formatted pairs with
+    tc_a, tc_b, similarity, source keys (string labels, not raw dicts).
+    """
+    import csv as csv_mod
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    csv_file = tmp_path / "dup_pairs_format_test.csv"
+    rows = [
+        {"test_id": "TC-001", "title": "Login with valid credentials",
+         "steps": "1. Navigate to login page; 2. Enter username admin; 3. Enter password secret; 4. Click Submit",
+         "expected_result": "User is redirected to dashboard; session token set in cookie"},
+        {"test_id": "TC-002", "title": "Login with valid credentials",
+         "steps": "1. Navigate to login page; 2. Enter username admin; 3. Enter password secret; 4. Click Submit",
+         "expected_result": "User is redirected to dashboard; session token set in cookie"},
+        {"test_id": "TC-003", "title": "Logout clears session",
+         "steps": "1. Click logout button",
+         "expected_result": "Session cookie deleted; user redirected to login page"},
+    ]
+    with csv_file.open("w", newline="") as f:
+        writer = csv_mod.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    r = app_client.post("/api/projects/", json={"name": "dup-pairs-format-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    with csv_file.open("rb") as fh:
+        up = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_file.name, fh, "text/csv")},
+        )
+    assert up.status_code == 200
+    file_path = up.json()[0]["file_path"]
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["Add more tests."]')
+
+    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+         patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": [file_path]},
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "): continue
+        payload = line[6:].strip()
+        if payload == "[DONE]": break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+    duplicates = result_data.get("duplicates", [])
+    summary = result_data.get("summary", {})
+
+    assert summary.get("duplicates_found") == 1, (
+        f"Expected duplicates_found=1, got {summary.get('duplicates_found')}"
+    )
+    assert len(duplicates) == 1, f"Expected 1 formatted duplicate pair, got {len(duplicates)}"
+
+    pair = duplicates[0]
+    for key in ("tc_a", "tc_b", "similarity", "source"):
+        assert key in pair, f"Missing key '{key}' in duplicate pair: {pair}"
+
+    assert isinstance(pair["tc_a"], str), f"tc_a must be a string label, got {type(pair['tc_a'])}"
+    assert isinstance(pair["tc_b"], str), f"tc_b must be a string label, got {type(pair['tc_b'])}"
+    assert pair["source"] == "certain", f"Expected source='certain', got {pair['source']}"
+    assert pair["similarity"] >= 0.98, f"Expected similarity >= 0.98, got {pair['similarity']}"
+
+
+def test_report_zero_duplicates_on_fr002_fr003(app_client):
+    """
+    FR-002/FR-003 test suite: summary must report duplicates_found=0
+    and similar_pairs_found <= 3 (structurally related but functionally distinct).
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    csv_path = (
+        Path(__file__).parent / "fixtures" / "synthetic_docs" / "synthetic_testcases_fr002_fr003.csv"
+    )
+    assert csv_path.exists(), f"Fixture missing: {csv_path}"
+
+    r = app_client.post("/api/projects/", json={"name": "fr002-fr003-summary-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    with csv_path.open("rb") as fh:
+        up = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_path.name, fh, "text/csv")},
+        )
+    assert up.status_code == 200
+    file_path = up.json()[0]["file_path"]
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
+
+    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+         patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": [file_path]},
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "): continue
+        payload = line[6:].strip()
+        if payload == "[DONE]": break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+    summary = result_data.get("summary", {})
+
+    assert summary.get("duplicates_found") == 0, (
+        f"Expected duplicates_found=0 for 18 functionally distinct tests, "
+        f"got {summary.get('duplicates_found')}"
+    )
+    similar = summary.get("similar_pairs_found", 0)
+    assert similar <= 3, (
+        f"Expected similar_pairs_found <= 3, got {similar}"
+    )
+
+
 def test_llm_judges_identical_steps_as_duplicate(app_client):
     """
     Two test cases with identical title, steps, and expected_result but

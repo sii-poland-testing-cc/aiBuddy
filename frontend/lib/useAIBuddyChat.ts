@@ -171,11 +171,30 @@ async function formatResult(
       `(${summary.requirements_covered}/${summary.requirements_total} requirements)`
     : `- Coverage: ${summary.coverage_pct}%  (no requirements found in context)`;
 
+  const duplicatesFound: number = summary.duplicates_found ?? 0;
+  const similarPairsFound: number = summary.similar_pairs_found ?? 0;
+  const duplicatePairs: any[] = data.duplicates ?? [];
+
+  const dupLines: string[] = [];
+  if (duplicatesFound === 0 && similarPairsFound === 0) {
+    dupLines.push(`- Duplikaty: ✅ brak`);
+  } else {
+    if (duplicatesFound > 0) {
+      dupLines.push(`- Duplikaty: ⚠️ ${duplicatesFound} znalezionych`);
+      duplicatePairs.slice(0, 3).forEach((p: any) => {
+        dupLines.push(`  · ${p.tc_a} ↔ ${p.tc_b} (similarity: ${p.similarity})`);
+      });
+    }
+    if (similarPairsFound > 0) {
+      dupLines.push(`- Podobne TC: ℹ️ ${similarPairsFound} par do przeglądu`);
+    }
+  }
+
   const lines = [
     `**Audit complete ✅**`,
     ``,
     `📊 **Summary**`,
-    `- Duplicates found: ${summary.duplicates_found}`,
+    ...dupLines,
     `- Untagged cases:   ${summary.untagged_cases}`,
     covLine,
     ``,

@@ -224,17 +224,24 @@ class AuditWorkflow(Workflow):
     async def report(self, ctx: Context, ev: AuditResultEvent) -> StopEvent:
         project_id = await ctx.store.get("project_id")
 
+        llm_confirmed = [p for p in ev.duplicates if "reason" in p]
+        formatted_duplicates = (
+            [self._format_duplicate_pair(p, "certain") for p in ev.certain_duplicates]
+            + [self._format_duplicate_pair(p, "llm_confirmed") for p in llm_confirmed]
+        )
+
         report = {
             "project_id": project_id,
             "summary": {
                 "duplicates_found": len(ev.duplicates),
+                "similar_pairs_found": len(ev.similar_pairs),
                 "untagged_cases": len(ev.untagged),
                 "coverage_pct": ev.coverage_pct,
                 "requirements_total":     ev.requirements_total,
                 "requirements_covered":   ev.requirements_covered_count,
                 "requirements_uncovered": ev.requirements_uncovered,
             },
-            "duplicates": ev.duplicates,
+            "duplicates": formatted_duplicates,
             "certain_duplicates": ev.certain_duplicates,
             "candidate_duplicates": ev.candidate_duplicates,
             "similar_pairs": ev.similar_pairs,
@@ -247,6 +254,19 @@ class AuditWorkflow(Workflow):
         return StopEvent(result=report)
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _format_duplicate_pair(pair: Dict, source: str) -> Dict:
+        """Return a presentable duplicate entry (string labels, not raw dicts)."""
+        tc_a = pair["tc_a"]
+        tc_b = pair["tc_b"]
+        return {
+            "tc_a": tc_a.get("title") or tc_a.get("name") or tc_a.get("test_id", "?"),
+            "tc_b": tc_b.get("title") or tc_b.get("name") or tc_b.get("test_id", "?"),
+            "similarity": pair["similarity"],
+            "source": source,
+            "reason": pair.get("reason") or None,
+        }
 
     async def _parse_file(self, path: str) -> List[Dict]:
         """Parse .xlsx / .csv / .json / .feature into a uniform dict list."""
