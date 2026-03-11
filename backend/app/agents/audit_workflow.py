@@ -48,9 +48,10 @@ class AnalysisProgressEvent(Event):
 
 class AuditResultEvent(Event):
     """Final audit data before formatting."""
-    duplicates: List[Dict]          # certain + candidate pairs combined
-    certain_duplicates: List[Dict]  # [{"tc_a": ..., "tc_b": ..., "similarity": float}]
+    duplicates: List[Dict]          # certain + llm-confirmed pairs
+    certain_duplicates: List[Dict]  # sim >= 0.98, no LLM needed
     candidate_duplicates: List[Dict]
+    similar_pairs: List[Dict]       # candidates judged SIMILAR (not duplicates)
     untagged: List[Dict]
     coverage_pct: float
     recommendations: List[str]
@@ -112,7 +113,19 @@ class AuditWorkflow(Workflow):
         certain, candidates = self._find_duplicate_candidates(embedded)
         await ctx.store.set("certain_duplicates", certain)
         await ctx.store.set("llm_candidates", candidates)
-        duplicates = certain + candidates
+
+        if candidates and self.llm:
+            ctx.write_event_to_stream(
+                AnalysisProgressEvent(message=f"LLM judging {len(candidates)} candidate duplicate pair(s)…", progress=0.42)
+            )
+            llm_confirmed = await self._judge_candidates_with_llm(candidates)
+        else:
+            llm_confirmed = candidates  # no LLM — treat all candidates as duplicates
+
+        similar_pairs = [c for c in candidates if c not in llm_confirmed]
+        duplicates = certain + llm_confirmed
+        await ctx.store.set("duplicates", duplicates)
+        await ctx.store.set("similar_pairs", similar_pairs)
 
         ctx.write_event_to_stream(
             AnalysisProgressEvent(message="Checking tag coverage…", progress=0.6)
@@ -179,10 +192,23 @@ class AuditWorkflow(Workflow):
             AnalysisProgressEvent(message="Generating report…", progress=0.9)
         )
 
+        recommendations = list(recommendations)
+        if similar_pairs:
+            recommendations.append(
+                f"SIMILAR TEST CASES ({len(similar_pairs)} pairs) — not duplicates but "
+                "may indicate overlap. Review: "
+                + "; ".join(
+                    f"{p['tc_a'].get('title') or p['tc_a'].get('name', '?')} ↔ "
+                    f"{p['tc_b'].get('title') or p['tc_b'].get('name', '?')}"
+                    for p in similar_pairs[:5]
+                )
+            )
+
         return AuditResultEvent(
             duplicates=duplicates,
             certain_duplicates=certain,
             candidate_duplicates=candidates,
+            similar_pairs=similar_pairs,
             untagged=untagged,
             coverage_pct=coverage_pct,
             recommendations=recommendations,
@@ -211,6 +237,7 @@ class AuditWorkflow(Workflow):
             "duplicates": ev.duplicates,
             "certain_duplicates": ev.certain_duplicates,
             "candidate_duplicates": ev.candidate_duplicates,
+            "similar_pairs": ev.similar_pairs,
             "untagged": ev.untagged,
             "recommendations": ev.recommendations,
             "rag_sources": ev.rag_sources,
@@ -326,6 +353,63 @@ class AuditWorkflow(Workflow):
         logger.info("Certain duplicates: %d, LLM candidates: %d", len(certain), len(candidates))
         return certain, candidates
 
+    async def _judge_candidates_with_llm(
+        self, candidates: List[Dict]
+    ) -> List[Dict]:
+        """LLM-judge embedding candidates; return only confirmed duplicates."""
+        if not self.llm:
+            return candidates
+
+        batch = candidates
+        if len(candidates) > 20:
+            logger.warning(
+                "_judge_candidates_with_llm: %d candidates — capping at 20 to control LLM costs",
+                len(candidates),
+            )
+            batch = sorted(candidates, key=lambda p: p["similarity"], reverse=True)[:20]
+
+        confirmed: List[Dict] = []
+        for pair in batch:
+            tc_a, tc_b = pair["tc_a"], pair["tc_b"]
+            prompt = f"""You are a QA expert. Determine if these two test cases are duplicates.
+
+Test Case A:
+  Title: {tc_a.get('title') or tc_a.get('name')}
+  Steps: {tc_a.get('steps') or tc_a.get('test_steps')}
+  Expected: {tc_a.get('expected_result') or tc_a.get('assertions')}
+
+Test Case B:
+  Title: {tc_b.get('title') or tc_b.get('name')}
+  Steps: {tc_b.get('steps') or tc_b.get('test_steps')}
+  Expected: {tc_b.get('expected_result') or tc_b.get('assertions')}
+
+Embedding similarity: {pair['similarity']}
+
+Rules:
+- DUPLICATE: same scenario, same goal, same expected outcome (even if wording differs)
+- SIMILAR: related but test different conditions, inputs, or edge cases
+- DIFFERENT: clearly distinct test objectives
+
+Respond with ONLY a JSON object, no markdown:
+{{"verdict": "DUPLICATE|SIMILAR|DIFFERENT", "reason": "one sentence"}}"""
+
+            try:
+                response = await self.llm.acomplete(prompt)
+                data = self._parse_json_object(str(response).strip())
+                verdict = str(data.get("verdict", "")).upper()
+                reason  = data.get("reason", "")
+                logger.info(
+                    "LLM verdict for pair (sim=%.4f): %s — %s",
+                    pair["similarity"], verdict, reason,
+                )
+                if verdict == "DUPLICATE":
+                    confirmed.append({**pair, "reason": reason})
+                # SIMILAR and DIFFERENT → not added to confirmed
+            except Exception:
+                logger.exception("LLM judgment failed for candidate pair; treating as non-duplicate")
+
+        return confirmed
+
     async def _requirements_in_tests(
         self, cases: List[Dict], known_reqs: List[str]
     ) -> List[str]:
@@ -358,6 +442,18 @@ class AuditWorkflow(Workflow):
                 logger.warning("LLM requirement matching failed: %s", exc)
 
         return list(covered)
+
+    @staticmethod
+    def _parse_json_object(text: str) -> Dict:
+        """Extract the last valid JSON object {...} from an LLM response."""
+        import re
+        text = re.sub(r"```[a-z]*\s*", "", text).replace("```", "").strip()
+        for match in reversed(list(re.finditer(r"\{.*?\}", text, re.DOTALL))):
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                continue
+        return json.loads(text)
 
     @staticmethod
     def _parse_json_array(text: str) -> List:

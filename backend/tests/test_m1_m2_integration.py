@@ -979,3 +979,87 @@ def test_identical_tc_detected_as_certain_duplicate(app_client, tmp_path):
     ids = {pair["tc_a"].get("test_id"), pair["tc_b"].get("test_id")}
     assert ids == {"TC-001", "TC-002"}, f"Wrong pair flagged: {ids}"
     assert pair["similarity"] >= 0.98, f"Expected sim >= 0.98, got {pair['similarity']}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest: LLM judgment of embedding candidates
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_llm_judges_visa_mastercard_as_different(app_client):
+    """
+    Visa vs Mastercard authorisation tests have high embedding similarity
+    but are functionally different. LLM verdict DIFFERENT → not in confirmed.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    tc_visa = {
+        "test_id": "TC-FR002-001",
+        "title": "Visa card authorisation accepted",
+        "steps": "1. Submit authorisation request with Visa card number (4111111111111111); 2. Include valid expiry and CVV; 3. Send to POST /api/transactions/authorise",
+        "expected_result": "Response HTTP 200; status=authorised; scheme=VISA returned in response body",
+    }
+    tc_mc = {
+        "test_id": "TC-FR002-002",
+        "title": "Mastercard authorisation accepted",
+        "steps": "1. Submit authorisation request with Mastercard number (5500005555555559); 2. Include valid expiry and CVV; 3. Send to POST /api/transactions/authorise",
+        "expected_result": "Response HTTP 200; status=authorised; scheme=MASTERCARD returned in response body",
+    }
+    candidate_pair = [{"tc_a": tc_visa, "tc_b": tc_mc, "similarity": 0.925}]
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(
+        return_value='{"verdict": "DIFFERENT", "reason": "Tests target distinct card schemes with different card numbers and expected scheme values."}'
+    )
+
+    async def run():
+        wf = AuditWorkflow.__new__(AuditWorkflow)
+        wf.llm = mock_llm
+        return await wf._judge_candidates_with_llm(candidate_pair)
+
+    import asyncio
+    confirmed = asyncio.get_event_loop().run_until_complete(run())
+
+    assert len(confirmed) == 0, (
+        f"Visa vs Mastercard must NOT be confirmed duplicate, got: {confirmed}"
+    )
+    mock_llm.acomplete.assert_called_once()
+
+
+def test_llm_judges_identical_steps_as_duplicate(app_client):
+    """
+    Two test cases with identical title, steps, and expected_result but
+    different test_id. LLM verdict DUPLICATE → appears in confirmed list.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from app.agents.audit_workflow import AuditWorkflow
+
+    shared = {
+        "title": "Login with valid credentials",
+        "steps": "1. Navigate to login page; 2. Enter username admin; 3. Enter password secret; 4. Click Submit",
+        "expected_result": "User is redirected to dashboard; session token set in cookie",
+    }
+    tc_a = {**shared, "test_id": "TC-001"}
+    tc_b = {**shared, "test_id": "TC-002"}
+    candidate_pair = [{"tc_a": tc_a, "tc_b": tc_b, "similarity": 0.997}]
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(
+        return_value='{"verdict": "DUPLICATE", "reason": "Both test cases have identical steps and expected outcomes."}'
+    )
+
+    async def run():
+        wf = AuditWorkflow.__new__(AuditWorkflow)
+        wf.llm = mock_llm
+        return await wf._judge_candidates_with_llm(candidate_pair)
+
+    import asyncio
+    confirmed = asyncio.get_event_loop().run_until_complete(run())
+
+    assert len(confirmed) == 1, (
+        f"Identical TC-001/TC-002 must be confirmed duplicate, got: {confirmed}"
+    )
+    assert confirmed[0]["tc_a"]["test_id"] == "TC-001"
+    assert confirmed[0]["tc_b"]["test_id"] == "TC-002"
+    assert confirmed[0]["similarity"] == 0.997
+    assert "reason" in confirmed[0]
