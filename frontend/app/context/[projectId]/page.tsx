@@ -4,7 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import MindMap from "@/components/MindMap";
-import Glossary from "@/components/Glossary";
+import Glossary, { type GlossaryTerm } from "@/components/Glossary";
 import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useContextBuilder } from "@/lib/useContextBuilder";
 
@@ -44,7 +44,7 @@ interface RagMessage { role: "user" | "assistant"; text: string; sources?: RagSo
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-function RagChat({ projectId }: { projectId: string }) {
+function RagChat({ projectId, prefillQuery }: { projectId: string; prefillQuery?: { text: string; seq: number } | null }) {
   const [messages, setMessages] = useState<RagMessage[]>([
     { role: "assistant", text: "Knowledge base ready ✅ Ask anything about the domain." },
   ]);
@@ -54,8 +54,8 @@ function RagChat({ projectId }: { projectId: string }) {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
-  const send = async () => {
-    const q = input.trim();
+  const send = async (overrideQuery?: string) => {
+    const q = (overrideQuery ?? input).trim();
     if (!q) return;
     setInput("");
     setMessages((prev) => [...prev, { role: "user", text: q }]);
@@ -88,6 +88,10 @@ function RagChat({ projectId }: { projectId: string }) {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (prefillQuery) send(prefillQuery.text);
+  }, [prefillQuery?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col h-full gap-2">
@@ -215,6 +219,12 @@ export default function ContextPage({ params }: { params: { projectId: string } 
   const [buildMode, setBuildMode]               = useState<"append" | "rebuild">("append");
   const [showRebuildModal, setShowRebuildModal] = useState(false);
   const [diffSummary, setDiffSummary]           = useState<DiffSummary | null>(null);
+  const [termQuery, setTermQuery]               = useState<{ text: string; seq: number } | null>(null);
+
+  const handleTermClick = (term: GlossaryTerm) => {
+    setDismissed(false);
+    setTermQuery((prev) => ({ text: `Wyjaśnij termin: "${term.term}"`, seq: (prev?.seq ?? 0) + 1 }));
+  };
 
   const fileInputRef   = useRef<HTMLInputElement>(null);
   const logEndRef      = useRef<HTMLDivElement>(null);
@@ -338,7 +348,7 @@ export default function ContextPage({ params }: { params: { projectId: string } 
           <div className="w-80 border-r border-buddy-border flex flex-col p-4 gap-3 overflow-y-auto">
             {showChat ? (
               <>
-                <RagChat projectId={projectId} />
+                <RagChat projectId={projectId} prefillQuery={termQuery} />
                 <button
                   onClick={() => { setDismissed(true); setPendingFiles([]); setDiffSummary(null); }}
                   className="shrink-0 text-xs text-buddy-text-faint hover:text-buddy-gold-light border border-buddy-border rounded-lg px-3 py-1.5 transition-colors"
@@ -590,7 +600,7 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                   />
                 </div>
               ) : (
-                <Glossary items={result?.glossary ?? []} onTermClick={(t) => console.log(t)} />
+                <Glossary items={result?.glossary ?? []} onTermClick={handleTermClick} />
               )}
             </div>
           </div>
