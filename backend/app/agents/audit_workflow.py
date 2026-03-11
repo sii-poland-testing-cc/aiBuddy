@@ -53,6 +53,9 @@ class AuditResultEvent(Event):
     coverage_pct: float
     recommendations: List[str]
     rag_sources: List[Dict]   # [{"filename": str, "excerpt": str}]
+    requirements_total: int = 0
+    requirements_covered_count: int = 0
+    requirements_uncovered: List[str] = []
 
 
 # ─── Workflow ─────────────────────────────────────────────────────────────────
@@ -138,7 +141,28 @@ class AuditWorkflow(Workflow):
         logger.info("Requirements covered by tests: %s", covered)
 
         recommendations = await self._llm_recommendations(cases, rag_context, user_message)
-        coverage_pct = max(0.0, 100.0 - (len(untagged) / max(len(cases), 1)) * 100)
+
+        # Requirement-based coverage
+        reqs_from_docs = await ctx.store.get("requirements_from_docs") or []
+        reqs_covered   = await ctx.store.get("requirements_covered") or []
+
+        total     = len(reqs_from_docs)
+        n_covered = len(set(reqs_covered) & set(reqs_from_docs))
+        uncovered = [r for r in reqs_from_docs if r not in set(reqs_covered)]
+
+        if total == 0:
+            coverage_pct = 0.0
+            recommendations = list(recommendations) + [
+                "No domain context available — run M1 Context Builder "
+                "first for accurate requirement coverage analysis"
+            ]
+        else:
+            coverage_pct = round((n_covered / total) * 100, 1)
+
+        logger.info(
+            "project=%s — coverage=%s%% (%d/%d reqs covered); uncovered=%s",
+            project_id, coverage_pct, n_covered, total, uncovered,
+        )
 
         ctx.write_event_to_stream(
             AnalysisProgressEvent(message="Generating report…", progress=0.9)
@@ -147,9 +171,12 @@ class AuditWorkflow(Workflow):
         return AuditResultEvent(
             duplicates=duplicates,
             untagged=untagged,
-            coverage_pct=round(coverage_pct, 1),
+            coverage_pct=coverage_pct,
             recommendations=recommendations,
             rag_sources=rag_sources,
+            requirements_total=total,
+            requirements_covered_count=n_covered,
+            requirements_uncovered=uncovered,
         )
 
     # ── Step 3: Report ────────────────────────────────────────────────────────
@@ -164,6 +191,9 @@ class AuditWorkflow(Workflow):
                 "duplicates_found": len(ev.duplicates),
                 "untagged_cases": len(ev.untagged),
                 "coverage_pct": ev.coverage_pct,
+                "requirements_total":     ev.requirements_total,
+                "requirements_covered":   ev.requirements_covered_count,
+                "requirements_uncovered": ev.requirements_uncovered,
             },
             "duplicates": ev.duplicates,
             "untagged": ev.untagged,
