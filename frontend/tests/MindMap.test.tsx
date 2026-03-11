@@ -64,4 +64,10 @@ describe("MindMap", () => {
     const marker = container.querySelector("marker#arrow");
     expect(marker).toBeTruthy();
   });
+
+  it("renders a reset button", () => {
+    render(<MindMap nodes={NODES} edges={EDGES} />);
+    const btn = screen.getByRole("button");
+    expect(btn.textContent).toContain("reset");
+  });
 });

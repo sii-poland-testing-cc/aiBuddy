@@ -108,7 +108,7 @@ After `/build` completes, artefacts are written to the `Project` DB row:
 
 ### Known gaps (M1)
 - Embeddings use `BAAI/bge-small-en-v1.5` (HuggingFace local) when `LLM_PROVIDER=anthropic`; Bedrock Titan when `LLM_PROVIDER=bedrock`
-- Backend doesn't return `x,y` on mind map nodes; `MindMap.tsx` falls back to circular layout
+- Backend doesn't return `x,y` on mind map nodes; `MindMap.tsx` uses dagre for layout (TB direction)
 
 ---
 
@@ -197,7 +197,7 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 - `frontend/app/context/[projectId]/page.tsx` — M1 Context Builder page: two-panel layout (320px left: upload→progress→RAG chat; flex-1 right: Mind Map / Glossary tabs)
 - `frontend/app/chat/[projectId]/page.tsx` — M2 chat page; context status badge in header
 - `frontend/components/Sidebar.tsx` — Module switcher (🧠 Context Builder / 🔍 Suite Analyzer with 🔒 lock when no context); project list with context-ready dot; `activeModule` prop highlights active module
-- `frontend/components/MindMap.tsx` — SVG mind map; uses actual `x,y` from data (circular fallback); TYPE_COLORS: `data=#c8902a, actor=#4a9e6b, process=#5b7fba, system=#9b6bbf, concept=#ba7a5b`; arrow markers; hover expands node 30→36 and shows type label
+- `frontend/components/MindMap.tsx` — SVG mind map; dagre TB layout (`computeLayout()`); rounded rect nodes (120×40, rx=8); cubic bezier edges (exit bottom-center, enter top-center) with arrow markers; pan (mouse drag), zoom (scroll wheel 0.5–2.0), reset button; TYPE_COLORS: `data=#c8902a, actor=#4a9e6b, process=#5b7fba, system=#9b6bbf, concept=#ba7a5b`; hover shows type label
 - `frontend/components/Glossary.tsx` — Searchable glossary; wireframe card style (dark bg, `#f0c060` term, `#c8b89a` definition, monospace related_terms chips)
 - `frontend/components/MessageList.tsx` — Chat bubbles + collapsible `SourcesPanel` (Źródła)
 - `frontend/components/ChatInputArea.tsx` — Textarea, file chips, send/stop
@@ -221,7 +221,7 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 ```bash
 cd frontend && npm test
 ```
-- `frontend/tests/MindMap.test.tsx` — 8 tests: renders, nodes, edges, labels, empty state, arrow marker
+- `frontend/tests/MindMap.test.tsx` — 9 tests: renders, nodes (rect), edges (bezier path), labels, empty state, arrow marker, reset button
 - `frontend/tests/Glossary.test.tsx` — 7 tests: renders, filter by term, filter by definition, empty state
 - `frontend/tests/Sidebar.test.tsx` — 7 tests: module switcher, 🔒 lock, navigation, active highlight
 - `frontend/tests/setup.ts` — `@testing-library/jest-dom` setup
@@ -263,7 +263,7 @@ cd frontend && npm test
 1. **Regenerate workflow** — `backend/app/agents/regenerate_workflow.py` (M2 Tier 3)
 2. **Confluence connector** — M1 ingestion from Confluence REST API
 3. **M1 re-run / append** — allow adding more docs to an existing project's knowledge base
-4. **Mind map with real coords** — backend doesn't return `x,y` on nodes; `MindMap.tsx` falls back to circular layout; add spatial layout (e.g. dagre) in backend or frontend
+4. **Mind map backend coords** — backend doesn't return `x,y` on nodes; dagre layout runs client-side in `MindMap.tsx`; optionally move layout to backend
 5. **DB migration tooling** — add Alembic for schema migrations (currently: delete SQLite file + `init_db()` recreates)
 
 ---
