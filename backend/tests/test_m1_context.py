@@ -388,6 +388,22 @@ def test_context_files_tracked(app_client):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
+async def test_requirements_in_tests_pattern_match():
+    """Pattern matching covers requirements mentioned in test case fields."""
+    from app.agents.audit_workflow import AuditWorkflow
+
+    cases = [{"name": "Test FR-002 card schemes", "tags": ""}]
+    known_reqs = ["FR-001", "FR-002", "FR-003"]
+
+    wf = AuditWorkflow(llm=None, timeout=30)
+    result = await wf._requirements_in_tests(cases, known_reqs)
+
+    assert "FR-002" in result
+    assert "FR-001" not in result
+    assert "FR-003" not in result
+
+
+@pytest.mark.asyncio
 async def test_extract_requirements_returns_list():
     """
     _extract_requirements with llm=None returns the mock list.

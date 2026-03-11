@@ -133,6 +133,10 @@ class AuditWorkflow(Workflow):
         await ctx.store.set("requirements_from_docs", requirements_from_docs)
         logger.info("Requirements found in docs: %s", requirements_from_docs)
 
+        covered = await self._requirements_in_tests(cases, requirements_from_docs)
+        await ctx.store.set("requirements_covered", covered)
+        logger.info("Requirements covered by tests: %s", covered)
+
         recommendations = await self._llm_recommendations(cases, rag_context, user_message)
         coverage_pct = max(0.0, 100.0 - (len(untagged) / max(len(cases), 1)) * 100)
 
@@ -218,6 +222,41 @@ class AuditWorkflow(Workflow):
                 dupes.append(c)
             seen.add(key)
         return dupes
+
+    async def _requirements_in_tests(
+        self, cases: List[Dict], known_reqs: List[str]
+    ) -> List[str]:
+        """Return which known requirement IDs are mentioned in the test suite."""
+        if not known_reqs:
+            return []
+
+        # Step A — pattern matching (no LLM needed)
+        covered: set[str] = set()
+        for case in cases:
+            text = " ".join(str(v) for v in case.values() if isinstance(v, str))
+            for req in known_reqs:
+                if req.lower() in text.lower():
+                    covered.add(req)
+
+        # Step B — LLM fallback when pattern matching finds nothing
+        if not covered and self.llm:
+            prompt = (
+                "Given these test cases:\n"
+                f"{json.dumps([c.get('name', '') for c in cases[:20]])}\n\n"
+                f"And these requirements:\n{known_reqs}\n\n"
+                "Which requirements are covered by at least one test case?\n"
+                "Return ONLY a valid JSON array of covered requirement IDs."
+            )
+            try:
+                response = await self.llm.acomplete(prompt)
+                raw = str(response).strip()
+                if raw.startswith("```"):
+                    raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
+                covered = set(json.loads(raw))
+            except Exception as exc:
+                logger.warning("LLM requirement matching failed: %s", exc)
+
+        return list(covered)
 
     async def _extract_requirements(self, rag_context: str) -> List[str]:
         """Extract formal requirement IDs (e.g. FR-001) from the RAG context."""
