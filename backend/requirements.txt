@@ -1,0 +1,39 @@
+# Core
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-multipart>=0.0.12
+
+# LlamaIndex
+llama-index-core>=0.12.0
+llama-index-llms-bedrock-converse>=0.3.0
+llama-index-llms-anthropic>=0.10.0
+llama-index-embeddings-bedrock>=0.3.0
+llama-index-embeddings-huggingface>=0.5.0   # local embeddings when LLM_PROVIDER!=bedrock
+llama-index-vector-stores-chroma>=0.3.0
+llama-index-readers-file>=0.3.0
+
+# Vector store
+chromadb>=0.5.0
+
+# AWS
+boto3>=1.35.0
+
+# Data parsing
+pandas>=2.2.0
+openpyxl>=3.1.0         # .xlsx support
+# python-docx  — Word document parsing
+python-docx>=1.1.0
+# pdfplumber   — PDF text + table extraction (primary)
+pdfplumber>=0.11.0
+# pypdf        — PDF fallback if pdfplumber not available
+pypdf>=4.3.0
+
+# DB (async)
+sqlalchemy>=2.0.0
+aiosqlite>=0.20.0
+
+# Async utils
+httpx>=0.27.0
+anyio>=4.6.0

@@ -1,0 +1,46 @@
+services:
+  # ── Backend ──────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app          # bind-mount source for --reload hot-reload
+      - ai_buddy_data:/app/data # persist DB, uploads, and Chroma index
+    environment:
+      - APP_ENV=development
+      - LLM_PROVIDER=${LLM_PROVIDER:-bedrock}
+      - AWS_REGION=${AWS_REGION:-eu-central-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - BEDROCK_MODEL_ID=${BEDROCK_MODEL_ID:-anthropic.claude-3-5-sonnet-20241022-v2:0}
+      - BEDROCK_EMBED_MODEL_ID=${BEDROCK_EMBED_MODEL_ID:-amazon.titan-embed-text-v2:0}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL_ID=${ANTHROPIC_MODEL_ID:-claude-sonnet-4-6}
+      - DATABASE_URL=sqlite+aiosqlite:///./data/ai_buddy.db
+      - CORS_ORIGINS=["http://localhost:3000"]
+    restart: unless-stopped
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app         # bind-mount source for Next.js hot-reload
+      - /app/node_modules       # keep container's node_modules (from npm ci)
+      - /app/.next              # keep container's build cache
+    environment:
+      # Browser-side variable — points to the host-exposed backend port,
+      # which is reachable from the user's browser at runtime.
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  ai_buddy_data:

@@ -1,0 +1,6 @@
+name,tags,priority
+Verify login with valid credentials,,
+Verify login with invalid password,,
+Submit payment with valid card,,
+Submit payment with expired card,,
+View test process documentation,,
