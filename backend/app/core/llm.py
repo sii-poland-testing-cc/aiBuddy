@@ -49,7 +49,7 @@ def _anthropic_llm():
         return Anthropic(
             model=settings.ANTHROPIC_MODEL_ID,
             api_key=settings.ANTHROPIC_API_KEY,
-            max_tokens=4096,
+            max_tokens=8192,
         )
     except ImportError:
         logger.warning("llama-index-llms-anthropic not installed; LLM disabled")
