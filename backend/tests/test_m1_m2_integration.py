@@ -464,3 +464,158 @@ def test_term_explanation_uses_rag(app_client):
     assert "Settlement" in called_prompt, (
         "LLM prompt did not include the term name"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest: requirement-based coverage_pct
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_coverage_reflects_requirement_gaps(app_client):
+    """
+    With srs_payment_module.docx indexed and sample_tests.csv uploaded,
+    coverage_pct must be well below 50% — sample CSV only touches FR-002/FR-003.
+    _extract_requirements is patched to return 10 deterministic FRs so the
+    test does not depend on real LLM extraction quality.
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    _SYNTHETIC = Path(__file__).parent / "fixtures" / "synthetic_docs"
+    _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    docx_path = _SYNTHETIC / "srs_payment_module.docx"
+    csv_path  = Path(__file__).parent / "fixtures" / "sample_tests.csv"
+    assert docx_path.exists() and csv_path.exists()
+
+    # 1. Create project and build M1 context
+    r = app_client.post("/api/projects/", json={"name": "coverage-gap-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    with docx_path.open("rb") as fh:
+        build_r = app_client.post(
+            f"/api/context/{project_id}/build",
+            files={"files": (docx_path.name, fh, _DOCX_MIME)},
+        )
+    assert build_r.status_code == 200
+    assert app_client.get(f"/api/context/{project_id}/status").json()["rag_ready"] is True
+
+    # 2. Upload test CSV
+    with csv_path.open("rb") as fh:
+        up = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_path.name, fh, "text/csv")},
+        )
+    assert up.status_code == 200
+
+    # 3. Patch _extract_requirements to return 10 deterministic FRs.
+    #    Pattern matching in _requirements_in_tests will find FR-002 and FR-003
+    #    from the sample CSV test case names — the other 8 are uncovered.
+    FAKE_REQS = [
+        "FR-001", "FR-002", "FR-003", "FR-004", "FR-005",
+        "FR-006", "FR-007", "FR-008", "FR-009", "FR-010",
+    ]
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(
+        return_value='["Add tests for uncovered FRs","Improve tag coverage",'
+                     '"Review FR-001 scenarios","Add negative tests","Add integration tests"]'
+    )
+
+    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=FAKE_REQS)), \
+         patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": []},
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "): continue
+        payload = line[6:].strip()
+        if payload == "[DONE]": break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+    summary = result_data.get("summary", {})
+
+    assert summary.get("requirements_total", 0) >= 10, (
+        f"Expected ≥10 requirements from docs, got: {summary}"
+    )
+    assert summary.get("coverage_pct", 100.0) < 50.0, (
+        f"Expected coverage_pct < 50%, got: {summary.get('coverage_pct')}"
+    )
+    assert summary.get("requirements_covered", 99) <= 3, (
+        f"Expected ≤3 covered requirements, got: {summary.get('requirements_covered')}"
+    )
+    assert len(summary.get("requirements_uncovered", [])) >= 7, (
+        f"Expected ≥7 uncovered requirements, got: {summary.get('requirements_uncovered')}"
+    )
+
+
+def test_coverage_zero_without_m1_context(app_client):
+    """
+    Without M1 context (no docs indexed), coverage_pct must be 0.0
+    and recommendations must include a hint to run Context Builder.
+    _extract_requirements is patched to return [] (simulates empty RAG context).
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    csv_path = Path(__file__).parent / "fixtures" / "sample_tests.csv"
+    assert csv_path.exists()
+
+    # 1. Create project — intentionally NO context build
+    r = app_client.post("/api/projects/", json={"name": "no-context-coverage-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    # 2. Upload test CSV
+    with csv_path.open("rb") as fh:
+        up = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_path.name, fh, "text/csv")},
+        )
+    assert up.status_code == 200
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(
+        return_value='["Add more edge case tests."]'
+    )
+
+    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+         patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": []},
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "): continue
+        payload = line[6:].strip()
+        if payload == "[DONE]": break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+    summary = result_data.get("summary", {})
+    recs    = result_data.get("recommendations", [])
+
+    assert summary.get("coverage_pct") == 0.0, (
+        f"Expected coverage_pct == 0.0 without context, got: {summary.get('coverage_pct')}"
+    )
+    assert any("Context Builder" in r for r in recs), (
+        f"Expected fallback recommendation mentioning Context Builder, got: {recs}"
+    )

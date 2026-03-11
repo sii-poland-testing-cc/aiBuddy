@@ -153,19 +153,31 @@ function formatResult(data: Record<string, any>): { content: string; sources?: C
   if (!data?.summary) return { content: JSON.stringify(data, null, 2) };
 
   const { summary, recommendations, next_tier, rag_sources } = data;
+  const uncovered: string[] = summary.requirements_uncovered ?? [];
+  const covLine = summary.requirements_total > 0
+    ? `- Coverage: ${summary.coverage_pct}%  ` +
+      `(${summary.requirements_covered}/${summary.requirements_total} requirements)`
+    : `- Coverage: ${summary.coverage_pct}%  (no requirements found in context)`;
+
   const lines = [
     `**Audit complete ✅**`,
     ``,
     `📊 **Summary**`,
     `- Duplicates found: ${summary.duplicates_found}`,
     `- Untagged cases:   ${summary.untagged_cases}`,
-    `- Coverage:         ${summary.coverage_pct}%`,
+    covLine,
     ``,
     `💡 **Recommendations**`,
     ...(recommendations ?? []).map((r: string, i: number) => `${i + 1}. ${r}`),
-    ``,
-    `➡️  Suggested next tier: **${next_tier?.toUpperCase()}**`,
   ];
+
+  if (uncovered.length > 0) {
+    lines.push(``, `⚠️ **Brak pokrycia (${uncovered.length} wymagań)**`);
+    uncovered.forEach((r) => lines.push(`- ${r}`));
+  }
+
+  lines.push(``, `➡️  Suggested next tier: **${next_tier?.toUpperCase()}**`);
+
   return {
     content: lines.join("\n"),
     sources: Array.isArray(rag_sources) && rag_sources.length > 0
