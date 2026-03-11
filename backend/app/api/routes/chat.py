@@ -62,9 +62,11 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
     llm = get_llm()
 
     # Resolve effective file paths: use request paths if provided,
-    # otherwise auto-load all uploaded files for this project from DB
+    # otherwise auto-load all uploaded files for this project from DB.
+    # Only auto-load for workflow tiers (audit/optimize) — not for rag_chat
+    # conversational queries from the Context Builder page.
     file_paths = list(req.file_paths)
-    if not file_paths:
+    if not file_paths and req.tier in ("audit", "optimize"):
         try:
             async with AsyncSessionLocal() as db:
                 stmt = select(ProjectFile.file_path).where(

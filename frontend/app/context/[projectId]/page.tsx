@@ -71,7 +71,7 @@ function RagChat({ projectId, prefillQuery, onTermClick, glossary }: RagChatProp
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: projectId, message: q, file_paths: [], tier: "audit" }),
+        body: JSON.stringify({ project_id: projectId, message: q, file_paths: [], tier: "rag_chat" }),
       });
       const text = await res.text();
       let reply = "";
