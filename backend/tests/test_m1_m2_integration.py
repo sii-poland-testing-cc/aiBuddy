@@ -619,3 +619,141 @@ def test_coverage_zero_without_m1_context(app_client):
     assert any("Context Builder" in r for r in recs), (
         f"Expected fallback recommendation mentioning Context Builder, got: {recs}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest: AuditSnapshot persistence
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_audit(app_client, project_id: str, mock_llm) -> dict:
+    """Helper: run one audit on a project, return result_data dict."""
+    from unittest.mock import patch
+    with patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": []},
+        )
+    assert r.status_code == 200
+    result_data: dict = {}
+    for line in r.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+    return result_data
+
+
+def _setup_project_with_csv(app_client) -> str:
+    """Helper: create project and upload sample_tests.csv. Returns project_id."""
+    from pathlib import Path
+    csv_path = Path(__file__).parent / "fixtures" / "sample_tests.csv"
+    r = app_client.post("/api/projects/", json={"name": "snapshot-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+    with csv_path.open("rb") as fh:
+        app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_path.name, fh, "text/csv")},
+        )
+    return project_id
+
+
+def _make_mock_llm():
+    """Helper: mock LLM that always returns a valid recommendations array."""
+    from unittest.mock import AsyncMock, MagicMock
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["Add more edge case tests."]')
+    return mock_llm
+
+
+def test_snapshot_saved_after_audit(app_client):
+    """After one audit, exactly one AuditSnapshot must exist for the project."""
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import AuditSnapshot
+    from sqlalchemy import select
+
+    project_id = _setup_project_with_csv(app_client)
+    result_data = _run_audit(app_client, project_id, _make_mock_llm())
+
+    assert result_data, "No result event received"
+    assert "snapshot_id" in result_data, "snapshot_id missing from result"
+
+    async def _query():
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                select(AuditSnapshot).where(AuditSnapshot.project_id == project_id)
+            )).scalars().all()
+            return list(rows)
+
+    snapshots = asyncio.get_event_loop().run_until_complete(_query())
+    assert len(snapshots) == 1, f"Expected 1 snapshot, got {len(snapshots)}"
+
+    snap = snapshots[0]
+    assert snap.summary is not None
+    summary = json.loads(snap.summary)
+    assert "coverage_pct" in summary, f"summary missing coverage_pct: {summary}"
+    assert any("sample_tests.csv" in p for p in json.loads(snap.files_used or "[]"))
+    assert snap.diff is None, "First audit must have diff=None"
+
+
+def test_diff_computed_on_second_audit(app_client):
+    """Second audit on same project must have a non-null diff with expected keys."""
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import AuditSnapshot
+    from sqlalchemy import select
+
+    project_id = _setup_project_with_csv(app_client)
+    mock_llm = _make_mock_llm()
+    _run_audit(app_client, project_id, mock_llm)
+    _run_audit(app_client, project_id, mock_llm)
+
+    async def _query():
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                select(AuditSnapshot)
+                .where(AuditSnapshot.project_id == project_id)
+                .order_by(AuditSnapshot.created_at.desc())
+            )).scalars().all()
+            return list(rows)
+
+    snapshots = asyncio.get_event_loop().run_until_complete(_query())
+    assert len(snapshots) == 2
+
+    newest = snapshots[0]
+    assert newest.diff is not None, "Second audit must have a diff"
+    diff = json.loads(newest.diff)
+    assert "coverage_delta" in diff
+    assert "new_covered" in diff
+    assert "files_added" in diff
+
+
+def test_max_5_snapshots_enforced(app_client):
+    """Running 6 audits must leave exactly 5 snapshots (oldest pruned)."""
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import AuditSnapshot
+    from sqlalchemy import select
+
+    project_id = _setup_project_with_csv(app_client)
+    mock_llm = _make_mock_llm()
+    for _ in range(6):
+        _run_audit(app_client, project_id, mock_llm)
+
+    async def _query():
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                select(AuditSnapshot).where(AuditSnapshot.project_id == project_id)
+            )).scalars().all()
+            return list(rows)
+
+    snapshots = asyncio.get_event_loop().run_until_complete(_query())
+    assert len(snapshots) == 5, f"Expected 5 snapshots, got {len(snapshots)}"
