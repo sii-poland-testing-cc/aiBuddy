@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import dagre from "dagre";
 
 export interface MindMapNode {
   id: string;
@@ -25,6 +26,31 @@ const TYPE_COLORS: Record<string, string> = {
   concept: "#ba7a5b",
 };
 
+const NODE_W = 120;
+const NODE_H = 40;
+
+function computeLayout(
+  nodes: MindMapNode[],
+  edges: MindMapEdge[],
+): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
+  const g = new dagre.graphlib.Graph();
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: "TB", nodesep: 50, ranksep: 80, marginx: 40, marginy: 40 });
+  nodes.forEach((n) => g.setNode(n.id, { width: NODE_W, height: NODE_H }));
+  edges.forEach((e) => {
+    if (g.hasNode(e.source) && g.hasNode(e.target))
+      g.setEdge(e.source, e.target);
+  });
+  dagre.layout(g);
+  const positions = new Map<string, { x: number; y: number }>();
+  nodes.forEach((n) => {
+    const pos = g.node(n.id);
+    if (pos) positions.set(n.id, { x: pos.x, y: pos.y });
+  });
+  const graph = g.graph();
+  return { positions, width: graph.width ?? 750, height: graph.height ?? 480 };
+}
+
 interface MindMapProps {
   nodes: MindMapNode[];
   edges: MindMapEdge[];
@@ -33,26 +59,23 @@ interface MindMapProps {
 export default function MindMap({ nodes, edges }: MindMapProps) {
   const [hovered, setHovered] = useState<string | null>(null);
 
-  // Use x,y from data if present, otherwise fall back to circular layout
-  const W = 750, H = 480;
-  const CX = W / 2, CY = H / 2;
-  const hasCoords = nodes.length > 0 && nodes[0].x != null;
+  const { positions, width, height } = useMemo(
+    () => computeLayout(nodes, edges),
+    [nodes, edges],
+  );
 
-  const positioned = hasCoords
-    ? nodes
-    : nodes.map((node, i) => {
-        const R = Math.min(170, 40 * nodes.length);
-        const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
-        return { ...node, x: CX + R * Math.cos(angle), y: CY + R * Math.sin(angle) };
-      });
+  const viewW = width + 80;
+  const viewH = height + 80;
 
-  const posMap = Object.fromEntries(positioned.map((n) => [n.id, n]));
+  const posMap = Object.fromEntries(
+    nodes.map((n) => [n.id, positions.get(n.id) ?? { x: viewW / 2, y: viewH / 2 }]),
+  );
 
   return (
     <svg
       width="100%"
       height="100%"
-      viewBox={`0 0 ${W} ${H}`}
+      viewBox={`0 0 ${viewW} ${viewH}`}
       style={{ overflow: "visible" }}
     >
       <defs>
@@ -65,8 +88,8 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
         const src = posMap[e.source];
         const tgt = posMap[e.target];
         if (!src || !tgt) return null;
-        const mx = ((src.x ?? 0) + (tgt.x ?? 0)) / 2;
-        const my = ((src.y ?? 0) + (tgt.y ?? 0)) / 2;
+        const mx = (src.x + tgt.x) / 2;
+        const my = (src.y + tgt.y) / 2;
         return (
           <g key={i}>
             <line
@@ -89,7 +112,8 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
         );
       })}
 
-      {positioned.map((node) => {
+      {nodes.map((node) => {
+        const { x, y } = posMap[node.id];
         const color = TYPE_COLORS[node.type] ?? "#c8902a";
         const isH = hovered === node.id;
         const r = isH ? 36 : 30;
@@ -101,14 +125,14 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
             style={{ cursor: "pointer" }}
           >
             <circle
-              cx={node.x} cy={node.y} r={r}
+              cx={x} cy={y} r={r}
               fill={isH ? color + "33" : color + "18"}
               stroke={color}
               strokeWidth={isH ? 2 : 1.5}
               style={{ transition: "all 0.2s" }}
             />
             <text
-              x={node.x} y={(node.y ?? 0) + 4}
+              x={x} y={y + 4}
               textAnchor="middle"
               fill={color}
               fontSize="11"
@@ -119,7 +143,7 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
             </text>
             {isH && (
               <text
-                x={node.x} y={(node.y ?? 0) + 20}
+                x={x} y={y + 20}
                 textAnchor="middle"
                 fill="#8a7a68"
                 fontSize="9"
