@@ -44,6 +44,7 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [latestSnapshotId, setLatestSnapshotId] = useState<string | undefined>();
   const abortRef = useRef<AbortController | null>(null);
 
   const addMessage = useCallback(
@@ -106,9 +107,16 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
               if (event.type === "progress") {
                 setProgress(event.data as ProgressUpdate);
               } else if (event.type === "result") {
-                const { content, sources } = formatResult(event.data);
+                const { content, sources } = await formatResult(
+                  event.data,
+                  projectId,
+                  API_BASE
+                );
                 assistantContent = content;
                 addMessage("assistant", content, sources);
+                if (event.data?.snapshot_id) {
+                  setLatestSnapshotId(event.data.snapshot_id);
+                }
               } else if (event.type === "error") {
                 setError(event.data.message);
                 addMessage("assistant", `❌ Error: ${event.data.message}`);
@@ -142,12 +150,16 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
     setError(null);
   }, []);
 
-  return { messages, progress, isLoading, error, send, stop, clear };
+  return { messages, progress, isLoading, error, latestSnapshotId, send, stop, clear };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatResult(data: Record<string, any>): { content: string; sources?: ChatSource[] } {
+async function formatResult(
+  data: Record<string, any>,
+  projectId: string,
+  apiBase: string
+): Promise<{ content: string; sources?: ChatSource[] }> {
   // Conversational response (no files attached)
   if (data?.message && !data?.summary) return { content: data.message };
   if (!data?.summary) return { content: JSON.stringify(data, null, 2) };
@@ -177,6 +189,45 @@ function formatResult(data: Record<string, any>): { content: string; sources?: C
   }
 
   lines.push(``, `➡️  Suggested next tier: **${next_tier?.toUpperCase()}**`);
+
+  // Append diff summary if snapshot was saved
+  if (data?.snapshot_id) {
+    try {
+      const res = await fetch(
+        `${apiBase}/api/snapshots/${projectId}/latest`
+      );
+      if (res.ok) {
+        const snap = await res.json();
+        const diff = snap?.diff;
+        const currPct: number = snap?.summary?.coverage_pct ?? 0;
+        if (!diff) {
+          lines.push(``, `📌 _Pierwszy audyt — punkt odniesienia zapisany._`);
+        } else {
+          const delta: number = diff.coverage_delta;
+          const prevPct = +(currPct - delta).toFixed(1);
+          if (delta > 0) {
+            lines.push(``, `📈 **Poprawa vs poprzedni audyt**`);
+            lines.push(`- Coverage: ${prevPct}% → ${currPct}% (▲ +${delta.toFixed(1)}%)`);
+            if (diff.new_covered?.length)
+              lines.push(`- Nowo pokryte: ${diff.new_covered.join(", ")}`);
+            if (diff.newly_uncovered?.length)
+              lines.push(`- ⚠️ Utracone: ${diff.newly_uncovered.join(", ")}`);
+          } else if (delta < 0) {
+            lines.push(``, `📉 **Regresja vs poprzedni audyt**`);
+            lines.push(`- Coverage: ${prevPct}% → ${currPct}% (▼ ${delta.toFixed(1)}%)`);
+            if (diff.new_covered?.length)
+              lines.push(`- Nowo pokryte: ${diff.new_covered.join(", ")}`);
+            if (diff.newly_uncovered?.length)
+              lines.push(`- ⚠️ Utracone: ${diff.newly_uncovered.join(", ")}`);
+          } else {
+            lines.push(``, `📊 _Coverage bez zmian vs poprzedni audyt._`);
+          }
+        }
+      }
+    } catch {
+      // diff summary is best-effort; skip on error
+    }
+  }
 
   return {
     content: lines.join("\n"),

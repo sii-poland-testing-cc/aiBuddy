@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAIBuddyChat, type ChatMessage } from "@/lib/useAIBuddyChat";
 import { useProjectFiles } from "@/lib/useProjectFiles";
@@ -9,6 +9,8 @@ import Sidebar from "@/components/Sidebar";
 import PipelineSteps from "@/components/PipelineSteps";
 import MessageList from "@/components/MessageList";
 import ChatInputArea from "@/components/ChatInputArea";
+import AuditFileSelector from "@/components/AuditFileSelector";
+import AuditHistory from "@/components/AuditHistory";
 
 const WELCOME: ChatMessage = {
   id: "welcome",
@@ -28,13 +30,32 @@ export default function ChatPage({
   const [tier, setTier] = useState<"audit" | "optimize" | "regenerate">(
     "audit"
   );
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const prevLoadingRef = useRef(false);
 
-  const { messages, progress, isLoading, send, stop } = useAIBuddyChat({
+  const { messages, progress, isLoading, latestSnapshotId, send, stop } = useAIBuddyChat({
     projectId,
     tier,
   });
   const { files: projectFiles, uploading, uploadFiles } = useProjectFiles(projectId);
   const { status: contextStatus } = useContextBuilder(projectId);
+
+  // Refresh file selector after audit completes
+  useEffect(() => {
+    if (prevLoadingRef.current && !isLoading) {
+      setRefreshKey((k) => k + 1);
+    }
+    prevLoadingRef.current = isLoading;
+  }, [isLoading]);
+
+  // Wrap send to inject selected files from the selector
+  const handleSend = useCallback(
+    (text: string, filePaths: string[] = []) => {
+      send(text, [...selectedFiles, ...filePaths]);
+    },
+    [send, selectedFiles]
+  );
 
   const displayMessages =
     messages.length === 0 ? [WELCOME] : [WELCOME, ...messages];
@@ -104,8 +125,19 @@ export default function ChatPage({
           lastMessageId={lastMessageId}
         />
 
+        <AuditFileSelector
+          projectId={projectId}
+          onSelectionChange={setSelectedFiles}
+          refreshKey={refreshKey}
+        />
+
+        <AuditHistory
+          projectId={projectId}
+          latestSnapshotId={latestSnapshotId}
+        />
+
         <ChatInputArea
-          onSend={send}
+          onSend={handleSend}
           onStop={stop}
           isLoading={isLoading}
           onUploadFiles={uploadFiles}
