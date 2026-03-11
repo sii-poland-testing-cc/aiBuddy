@@ -292,7 +292,7 @@ class AuditWorkflow(Workflow):
     def _find_duplicate_candidates(
         embedded: List[Tuple[Dict, List[float]]],
         threshold_certain: float = 0.98,
-        threshold_candidate: float = 0.95,
+        threshold_candidate: float = 0.93,
     ) -> Tuple[List[Dict], List[Dict]]:
         """Return (certain_duplicates, candidates_for_llm) via cosine similarity."""
         import numpy as np
