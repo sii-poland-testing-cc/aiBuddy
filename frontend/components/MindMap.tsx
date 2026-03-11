@@ -79,7 +79,7 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
       style={{ overflow: "visible" }}
     >
       <defs>
-        <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+        <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto-start-reverse">
           <path d="M0,0 L6,3 L0,6 Z" fill="#3a3028" />
         </marker>
       </defs>
@@ -88,18 +88,20 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
         const src = posMap[e.source];
         const tgt = posMap[e.target];
         if (!src || !tgt) return null;
-        const mx = (src.x + tgt.x) / 2;
-        const my = (src.y + tgt.y) / 2;
+        const srcX = src.x, srcY = src.y + 20;
+        const tgtX = tgt.x, tgtY = tgt.y - 20;
+        const midY = (srcY + tgtY) / 2;
+        const d = `M ${srcX},${srcY} C ${srcX},${midY} ${tgtX},${midY} ${tgtX},${tgtY}`;
         return (
           <g key={i}>
-            <line
-              x1={src.x} y1={src.y} x2={tgt.x} y2={tgt.y}
-              stroke="#3a3028" strokeWidth="1.5"
+            <path
+              d={d}
+              stroke="#3a3028" strokeWidth="1.5" fill="none"
               markerEnd="url(#arrow)"
             />
             {e.label && (
               <text
-                x={mx} y={my - 5}
+                x={(srcX + tgtX) / 2} y={(srcY + tgtY) / 2 - 6}
                 textAnchor="middle"
                 fill="#5a4e42"
                 fontSize="10"

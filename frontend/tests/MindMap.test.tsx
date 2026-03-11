@@ -26,10 +26,11 @@ describe("MindMap", () => {
     expect(rects.length).toBe(NODES.length);
   });
 
-  it("renders edge lines between nodes", () => {
+  it("renders bezier paths for edges", () => {
     const { container } = render(<MindMap nodes={NODES} edges={EDGES} />);
-    const lines = container.querySelectorAll("line");
-    expect(lines.length).toBe(EDGES.length);
+    // select paths inside <g> wrappers only — excludes the marker <path> in <defs>
+    const paths = container.querySelectorAll("g > path[d]");
+    expect(paths.length).toBe(EDGES.length);
   });
 
   it("renders edge labels", () => {
