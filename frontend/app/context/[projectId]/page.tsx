@@ -590,7 +590,7 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                   />
                 </div>
               ) : (
-                <Glossary items={result?.glossary ?? []} />
+                <Glossary items={result?.glossary ?? []} onTermClick={(t) => console.log(t)} />
               )}
             </div>
           </div>

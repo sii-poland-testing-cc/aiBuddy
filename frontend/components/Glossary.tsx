@@ -10,10 +10,12 @@ export interface GlossaryTerm {
 
 interface GlossaryProps {
   items: GlossaryTerm[];
+  onTermClick?: (term: GlossaryTerm) => void;
 }
 
-export default function Glossary({ items }: GlossaryProps) {
+export default function Glossary({ items, onTermClick }: GlossaryProps) {
   const [search, setSearch] = useState("");
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const filtered = items.filter(
     (i) =>
       !search ||
@@ -49,12 +51,17 @@ export default function Glossary({ items }: GlossaryProps) {
         {filtered.map((item, i) => (
           <div
             key={i}
+            onClick={() => onTermClick?.(item)}
+            onMouseEnter={() => setHoveredIdx(i)}
+            onMouseLeave={() => setHoveredIdx(null)}
             style={{
               padding: "10px 14px",
               marginBottom: 6,
               background: "#1e1a16",
-              border: "1px solid #2a2520",
+              border: `1px solid ${hoveredIdx === i ? "#c8902a" : "#2a2520"}`,
               borderRadius: 8,
+              cursor: onTermClick ? "pointer" : "default",
+              transition: "border-color 0.15s",
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>

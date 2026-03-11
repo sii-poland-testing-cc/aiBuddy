@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Glossary from "../components/Glossary";
@@ -70,5 +70,29 @@ describe("Glossary", () => {
   it("renders empty list without crashing", () => {
     render(<Glossary items={[]} />);
     expect(screen.getByPlaceholderText("Search terms…")).toBeTruthy();
+  });
+
+  it("test_term_click_calls_callback", async () => {
+    const handler = vi.fn();
+    render(<Glossary items={ITEMS} onTermClick={handler} />);
+    await userEvent.click(screen.getByText("Test Case"));
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith(ITEMS[0]);
+  });
+
+  it("test_term_hover_highlights_border", async () => {
+    const { container } = render(<Glossary items={ITEMS} onTermClick={() => {}} />);
+    const cards = container.querySelectorAll<HTMLElement>("[style*='border']");
+    // find the first term card (not the search input)
+    const termCard = Array.from(cards).find((el) => el.textContent?.includes("Test Case"));
+    expect(termCard).toBeTruthy();
+    await userEvent.hover(termCard!);
+    expect(termCard!.style.borderColor).toBe("rgb(200, 144, 42)");
+  });
+
+  it("test_no_callback_no_crash", async () => {
+    render(<Glossary items={ITEMS} />);
+    // clicking without onTermClick must not throw
+    await userEvent.click(screen.getByText("Defect"));
   });
 });
