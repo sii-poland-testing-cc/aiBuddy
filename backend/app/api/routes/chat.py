@@ -87,19 +87,40 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
             is_indexed = await _context_builder.is_indexed(req.project_id)
             logger.info("is_indexed(%s) = %s", req.project_id, is_indexed)
 
+            # Detect term explanation queries
+            if req.message.lower().startswith("wyjaśnij termin:"):
+                term_name = req.message.split(":", 1)[1].strip().strip('"')
+                rag_query = f"{term_name} definition description context usage"
+            else:
+                term_name = None
+                rag_query = req.message
+
             sources: list[dict] = []
             if is_indexed:
-                logger.info("RAG retrieval for project %s, query=%r", req.project_id, req.message)
+                logger.info("RAG retrieval for project %s, query=%r", req.project_id, rag_query)
                 rag_context, sources = await _context_builder.build_with_sources(
-                    req.project_id, query=req.message
+                    req.project_id, query=rag_query
                 )
-                prompt = (
-                    "You are a QA domain assistant. "
-                    "Answer questions using ONLY the following context from project documentation. "
-                    "If the answer is not in the context, say so explicitly.\n\n"
-                    f"Context:\n{rag_context}\n\n"
-                    f"User: {req.message}\n\nAssistant:"
-                )
+                if term_name is not None:
+                    prompt = (
+                        f'You are a QA domain expert.\n'
+                        f'Explain the term "{term_name}" based ONLY on the project documentation below.\n\n'
+                        f'Structure your answer in exactly three sections:\n'
+                        f'1. **Opis** — expanded definition (2-4 sentences)\n'
+                        f'2. **Kontekst** — how and where this term is used in the project\n'
+                        f'3. **Powiązane terminy** — comma-separated list of related terms from the docs\n\n'
+                        f'If the term is not in the documentation, say so explicitly.\n'
+                        f'Do not use general knowledge — only what is in the documentation below.\n\n'
+                        f'Documentation:\n{rag_context}'
+                    )
+                else:
+                    prompt = (
+                        "You are a QA domain assistant. "
+                        "Answer questions using ONLY the following context from project documentation. "
+                        "If the answer is not in the context, say so explicitly.\n\n"
+                        f"Context:\n{rag_context}\n\n"
+                        f"User: {req.message}\n\nAssistant:"
+                    )
             else:
                 logger.info("No RAG index for project %s — using generic response", req.project_id)
                 prompt = (

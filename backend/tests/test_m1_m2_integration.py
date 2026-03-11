@@ -358,3 +358,109 @@ def test_context_chat_uses_rag(app_client):
     assert "chargeback" in message.lower(), (
         f"Expected 'chargeback' in response, got: {message[:300]}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest: term explanation query uses enriched RAG prompt
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_term_explanation_uses_rag(app_client):
+    """
+    A 'Wyjaśnij termin:' message must:
+      - use the term name as the RAG query (not the raw message)
+      - use the structured three-section prompt (not the generic one)
+      - return rag_sources non-empty (RAG path taken)
+      - not contain "nie mam informacji" when the term IS in the docs
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    _SYNTHETIC = Path(__file__).parent / "fixtures" / "synthetic_docs"
+    _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    docx_path = _SYNTHETIC / "srs_payment_module.docx"
+    assert docx_path.exists(), f"Fixture missing: {docx_path}"
+
+    # 1. Create project and build M1 context
+    r = app_client.post("/api/projects/", json={"name": "term-explain-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    with docx_path.open("rb") as fh:
+        build_r = app_client.post(
+            f"/api/context/{project_id}/build",
+            files={"files": (docx_path.name, fh, _DOCX_MIME)},
+        )
+    assert build_r.status_code == 200
+
+    status = app_client.get(f"/api/context/{project_id}/status").json()
+    assert status["rag_ready"] is True
+
+    # 2. Mock LLM with a response that contains Settlement-related keywords
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(
+        return_value=(
+            "**Opis** — Settlement is the process by which funds are transferred from the acquirer "
+            "to the merchant after a transaction is approved.\n\n"
+            "**Kontekst** — Used in PayFlow after authorization to complete the payment cycle.\n\n"
+            "**Powiązane terminy** — Authorization, Acquirer, Merchant, Capture"
+        )
+    )
+
+    with patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={
+                "project_id": project_id,
+                "message": 'Wyjaśnij termin: "Settlement"',
+                "file_paths": [],
+            },
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+
+    message = result_data.get("message", "")
+    rag_sources = result_data.get("rag_sources", [])
+
+    # RAG sources must be present
+    assert rag_sources, "Expected rag_sources non-empty — RAG path should have been used"
+
+    # Response contains "settlement"
+    assert "settlement" in message.lower(), (
+        f"Expected 'settlement' in response, got: {message[:300]}"
+    )
+
+    # Response contains at least one of the expected domain keywords
+    domain_hits = [kw for kw in ["acquirer", "merchant", "funds"] if kw in message.lower()]
+    assert domain_hits, (
+        f"Expected domain keywords (acquirer/merchant/funds) in response, got: {message[:300]}"
+    )
+
+    # Must NOT say "nie mam informacji" — the term is in the docs
+    assert "nie mam informacji" not in message.lower(), (
+        "Response claims no information found, but term should be in docs"
+    )
+
+    # LLM must have been called with the structured term-explanation prompt
+    assert mock_llm.acomplete.called, "LLM was not called"
+    called_prompt = str(mock_llm.acomplete.call_args[0][0])
+    assert "Opis" in called_prompt, (
+        "LLM prompt did not include structured sections — generic prompt may have been used"
+    )
+    assert "Settlement" in called_prompt, (
+        "LLM prompt did not include the term name"
+    )
