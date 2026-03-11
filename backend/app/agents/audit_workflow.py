@@ -292,13 +292,31 @@ class AuditWorkflow(Workflow):
             try:
                 response = await self.llm.acomplete(prompt)
                 raw = str(response).strip()
-                if raw.startswith("```"):
-                    raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
-                covered = set(json.loads(raw))
+                covered = set(self._parse_json_array(raw))
             except Exception as exc:
                 logger.warning("LLM requirement matching failed: %s", exc)
 
         return list(covered)
+
+    @staticmethod
+    def _parse_json_array(text: str) -> List:
+        """Extract the last valid JSON array from an LLM response.
+
+        Models sometimes emit reasoning text before or after the JSON, e.g.:
+          '[]\\n\\nWait, let me re-read...\\n\\n["FR-001", "FR-002"]'
+        Scanning from the end for the last '[...]' block returns the real answer.
+        """
+        import re
+        # Strip markdown fences
+        text = re.sub(r"```[a-z]*\s*", "", text).replace("```", "").strip()
+        # Find all [...] candidates and return the last parseable one
+        for match in reversed(list(re.finditer(r"\[.*?\]", text, re.DOTALL))):
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                continue
+        # Last resort: try the whole string
+        return json.loads(text)
 
     async def _extract_requirements(self, rag_context: str) -> List[str]:
         """Extract formal requirement IDs (e.g. FR-001) from the RAG context."""
@@ -319,10 +337,7 @@ class AuditWorkflow(Workflow):
             response = await self.llm.acomplete(prompt)
             raw = str(response).strip()
             logger.info("[DEBUG] _extract_requirements: raw LLM response: %r", raw[:500])
-            # Strip markdown fences if present
-            if raw.startswith("```"):
-                raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
-            return json.loads(raw)
+            return self._parse_json_array(raw)
         except Exception as exc:
             logger.exception("[DEBUG] _extract_requirements: exception")
             return []
