@@ -2,6 +2,8 @@
 
 import { useRef, useEffect, useState } from "react";
 import type { ChatMessage, ChatSource } from "@/lib/useAIBuddyChat";
+import type { GlossaryTerm } from "@/components/Glossary";
+import { parseRelatedTerms } from "@/lib/parseRelatedTerms";
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -60,6 +62,59 @@ function renderContent(text: string) {
   });
 }
 
+const RELATED_MARKER = "**Powiązane terminy**";
+
+/** Renders assistant content, replacing the Powiązane terminy line with clickable chips. */
+function renderAssistantContent(
+  text: string,
+  glossary: GlossaryTerm[],
+  onTermClick?: (term: GlossaryTerm) => void,
+) {
+  const markerIdx = text.indexOf(RELATED_MARKER);
+  if (markerIdx === -1) return renderContent(text);
+
+  const before = text.slice(0, markerIdx);
+  const afterMarker = text.slice(markerIdx + RELATED_MARKER.length);
+  // terms come after optional " — " or ": " on the same line
+  const firstNewline = afterMarker.indexOf("\n");
+  const termsLine = (firstNewline === -1 ? afterMarker : afterMarker.slice(0, firstNewline))
+    .replace(/^\s*[—–-]\s*/, "")
+    .trim();
+  const remaining = firstNewline === -1 ? "" : afterMarker.slice(firstNewline + 1).trim();
+
+  const chunks = parseRelatedTerms(termsLine, glossary);
+
+  return (
+    <>
+      {renderContent(before)}
+      <div>
+        <strong className="font-semibold text-buddy-gold-light">Powiązane terminy</strong>
+        {" — "}
+        {chunks.map((chunk, i) =>
+          chunk.isGlossaryTerm && onTermClick ? (
+            <span
+              key={i}
+              onClick={() => onTermClick(chunk.glossaryItem!)}
+              style={{
+                cursor: "pointer",
+                color: "#f0c060",
+                borderBottom: "1px dashed #c8902a",
+                fontWeight: 600,
+                marginRight: 6,
+              }}
+            >
+              {chunk.text}
+            </span>
+          ) : (
+            <span key={i} style={{ marginRight: 6 }}>{chunk.text}</span>
+          ),
+        )}
+      </div>
+      {remaining && renderContent(remaining)}
+    </>
+  );
+}
+
 // ── Sources panel ──────────────────────────────────────────────────────────────
 
 function SourcesPanel({ sources }: { sources: ChatSource[] }) {
@@ -99,12 +154,16 @@ interface MessageListProps {
   messages: ChatMessage[];
   isLoading: boolean;
   lastMessageId?: string;
+  onTermClick?: (term: GlossaryTerm) => void;
+  glossary?: GlossaryTerm[];
 }
 
 export default function MessageList({
   messages,
   isLoading,
   lastMessageId,
+  onTermClick,
+  glossary = [],
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -130,7 +189,9 @@ export default function MessageList({
                   : "ml-2.5 bg-buddy-elevated text-buddy-text rounded-[4px_18px_18px_18px] px-4 py-2.5 border border-buddy-border"
               }`}
             >
-              {renderContent(msg.content)}
+              {isUser
+                ? renderContent(msg.content)
+                : renderAssistantContent(msg.content, glossary, onTermClick)}
               {!isUser && msg.sources && msg.sources.length > 0 && (
                 <SourcesPanel sources={msg.sources} />
               )}

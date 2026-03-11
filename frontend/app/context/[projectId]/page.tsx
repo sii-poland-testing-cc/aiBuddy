@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import MindMap from "@/components/MindMap";
 import Glossary, { type GlossaryTerm } from "@/components/Glossary";
+import MessageList from "@/components/MessageList";
 import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useContextBuilder } from "@/lib/useContextBuilder";
+import type { ChatMessage } from "@/lib/useAIBuddyChat";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -39,26 +41,31 @@ function FileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
 
 // ── RAG chat ──────────────────────────────────────────────────────────────────
 
-interface RagSource { filename: string; excerpt: string; }
-interface RagMessage { role: "user" | "assistant"; text: string; sources?: RagSource[]; }
-
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-function RagChat({ projectId, prefillQuery }: { projectId: string; prefillQuery?: { text: string; seq: number } | null }) {
-  const [messages, setMessages] = useState<RagMessage[]>([
-    { role: "assistant", text: "Knowledge base ready ✅ Ask anything about the domain." },
+interface RagChatProps {
+  projectId: string;
+  prefillQuery?: { text: string; seq: number } | null;
+  onTermClick?: (term: GlossaryTerm) => void;
+  glossary?: GlossaryTerm[];
+}
+
+function RagChat({ projectId, prefillQuery, onTermClick, glossary }: RagChatProps) {
+  const msgSeq = useRef(0);
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { id: "0", role: "assistant", content: "Knowledge base ready ✅ Ask anything about the domain.", timestamp: new Date() },
   ]);
+  const [lastId, setLastId] = useState<string | undefined>();
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
   const send = async (overrideQuery?: string) => {
     const q = (overrideQuery ?? input).trim();
     if (!q) return;
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", text: q }]);
+    const userId = String(++msgSeq.current);
+    setMessages((prev) => [...prev, { id: userId, role: "user", content: q, timestamp: new Date() }]);
+    setLastId(userId);
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
@@ -68,7 +75,7 @@ function RagChat({ projectId, prefillQuery }: { projectId: string; prefillQuery?
       });
       const text = await res.text();
       let reply = "";
-      let sources: RagSource[] = [];
+      let sources: ChatMessage["sources"] = [];
       for (const line of text.split("\n")) {
         if (!line.startsWith("data: ")) continue;
         const p = line.slice(6).trim();
@@ -81,9 +88,13 @@ function RagChat({ projectId, prefillQuery }: { projectId: string; prefillQuery?
           }
         } catch { /* skip */ }
       }
-      setMessages((prev) => [...prev, { role: "assistant", text: reply || "…", sources }]);
+      const botId = String(++msgSeq.current);
+      setMessages((prev) => [...prev, { id: botId, role: "assistant", content: reply || "…", sources, timestamp: new Date() }]);
+      setLastId(botId);
     } catch (err: any) {
-      setMessages((prev) => [...prev, { role: "assistant", text: `❌ ${err.message}` }]);
+      const errId = String(++msgSeq.current);
+      setMessages((prev) => [...prev, { id: errId, role: "assistant", content: `❌ ${err.message}`, timestamp: new Date() }]);
+      setLastId(errId);
     } finally {
       setLoading(false);
     }
@@ -94,49 +105,20 @@ function RagChat({ projectId, prefillQuery }: { projectId: string; prefillQuery?
   }, [prefillQuery?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="flex flex-col h-full gap-2">
-      <div className="px-2.5 py-2 bg-emerald-900/20 border border-emerald-700/30 rounded-lg text-xs text-emerald-400">
+    <div className="flex flex-col h-full gap-2 overflow-hidden">
+      <div className="px-2.5 py-2 bg-emerald-900/20 border border-emerald-700/30 rounded-lg text-xs text-emerald-400 shrink-0">
         ✅ Knowledge base ready — ask anything about the domain
       </div>
-      <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-        {messages.map((m, i) => (
-          <div key={i} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
-            <div
-              className={`max-w-[92%] text-xs px-3 py-2 leading-relaxed rounded-xl whitespace-pre-wrap ${
-                m.role === "user"
-                  ? "bg-gradient-to-br from-buddy-gold to-buddy-gold-light text-buddy-surface rounded-br-sm"
-                  : "bg-buddy-elevated border border-buddy-border text-buddy-text-muted rounded-tl-sm"
-              }`}
-            >
-              {m.text.split("**").map((t, j) =>
-                j % 2 === 1
-                  ? <strong key={j} className="text-buddy-gold-light">{t}</strong>
-                  : t
-              )}
-            </div>
-            {m.sources && m.sources.length > 0 && (
-              <details className="max-w-[92%] mt-1 text-[10px] text-buddy-text-faint">
-                <summary className="cursor-pointer hover:text-buddy-gold-light select-none">
-                  Źródła ({m.sources.length})
-                </summary>
-                <div className="mt-1 space-y-1 pl-1">
-                  {m.sources.map((s, si) => (
-                    <div key={si} className="border-l border-buddy-border pl-2">
-                      <div className="font-mono text-buddy-gold opacity-70">{s.filename}</div>
-                      <div className="text-buddy-text-faint leading-relaxed">{s.excerpt}</div>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
-          </div>
-        ))}
-        {loading && (
-          <div className="text-xs text-buddy-text-faint animate-pulse px-2">Searching knowledge base…</div>
-        )}
-        <div ref={endRef} />
+      <div className="flex-1 overflow-hidden">
+        <MessageList
+          messages={messages}
+          isLoading={loading}
+          lastMessageId={lastId}
+          onTermClick={onTermClick}
+          glossary={glossary}
+        />
       </div>
-      <div className="flex gap-1.5">
+      <div className="flex gap-1.5 shrink-0">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -145,7 +127,7 @@ function RagChat({ projectId, prefillQuery }: { projectId: string; prefillQuery?
           className="flex-1 bg-buddy-elevated border border-buddy-border-dark rounded-lg text-xs text-buddy-text placeholder:text-buddy-text-faint px-2.5 py-2 focus:outline-none focus:border-buddy-gold"
         />
         <button
-          onClick={send}
+          onClick={() => send()}
           disabled={loading || !input.trim()}
           className="px-3 py-2 bg-gradient-to-br from-buddy-gold to-buddy-gold-light text-buddy-surface text-sm font-bold rounded-lg disabled:opacity-40"
         >
@@ -348,7 +330,12 @@ export default function ContextPage({ params }: { params: { projectId: string } 
           <div className="w-80 border-r border-buddy-border flex flex-col p-4 gap-3 overflow-y-auto">
             {showChat ? (
               <>
-                <RagChat projectId={projectId} prefillQuery={termQuery} />
+                <RagChat
+                  projectId={projectId}
+                  prefillQuery={termQuery}
+                  onTermClick={handleTermClick}
+                  glossary={result?.glossary ?? []}
+                />
                 <button
                   onClick={() => { setDismissed(true); setPendingFiles([]); setDiffSummary(null); }}
                   className="shrink-0 text-xs text-buddy-text-faint hover:text-buddy-gold-light border border-buddy-border rounded-lg px-3 py-1.5 transition-colors"
