@@ -206,8 +206,14 @@ class ContextBuilderWorkflow(Workflow):
     # ── LLM calls ─────────────────────────────────────────────────────────────
 
     async def _extract_entities(self, text: str):
+        logger.info("[DEBUG] _extract_entities: combined text length = %d", len(text))
+        logger.info("[DEBUG] _extract_entities: first 500 chars = %r", text[:500])
+
         if not self.llm:
+            logger.info("[DEBUG] _extract_entities: llm is None → MOCK FALLBACK")
             return self._mock_entities(), self._mock_relations()
+
+        logger.info("[DEBUG] _extract_entities: llm present (%s) → LLM BRANCH", type(self.llm).__name__)
 
         prompt = f"""You are a domain analyst reviewing software QA documentation.
 Extract ALL domain entities and their relationships.
@@ -227,11 +233,13 @@ Documentation:
 """
         try:
             response = await self.llm.acomplete(prompt)
-            raw = _strip_fences(str(response).strip())
+            raw_str = str(response).strip()
+            logger.info("[DEBUG] _extract_entities: raw LLM response (first 500 chars) = %r", raw_str[:500])
+            raw = _strip_fences(raw_str)
             data = json.loads(raw)
             return data.get("entities", []), data.get("relations", [])
         except Exception as e:
-            logger.warning(f"Entity extraction failed: {e}, using mock data")
+            logger.warning("[DEBUG] _extract_entities: EXCEPTION → mock fallback. Exception: %s: %s", type(e).__name__, e)
             return self._mock_entities(), self._mock_relations()
 
     async def _extract_glossary(self, text: str) -> List[Dict]:
