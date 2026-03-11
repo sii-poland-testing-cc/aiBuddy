@@ -836,3 +836,146 @@ def test_no_false_duplicates_on_title_field(app_client):
     assert len(duplicates) == 0, (
         f"Expected empty duplicates list, got {len(duplicates)} entries"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest: embedding-based duplicate detection — FR-002/FR-003 corpus
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_no_false_duplicates_fr002_fr003(app_client):
+    """
+    18 test cases covering FR-002 and FR-003.  Structurally similar tests
+    (e.g. Visa vs Mastercard authorisation) must NOT be flagged as duplicates
+    because their card numbers, scheme names, and expected responses differ.
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    csv_path = (
+        Path(__file__).parent / "fixtures" / "synthetic_docs" / "synthetic_testcases_fr002_fr003.csv"
+    )
+    assert csv_path.exists(), f"Fixture missing: {csv_path}"
+
+    r = app_client.post("/api/projects/", json={"name": "emb-dup-fr002-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    with csv_path.open("rb") as fh:
+        up = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_path.name, fh, "text/csv")},
+        )
+    assert up.status_code == 200
+    file_path = up.json()[0]["file_path"]
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
+
+    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+         patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": [file_path]},
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "): continue
+        payload = line[6:].strip()
+        if payload == "[DONE]": break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+    summary = result_data.get("summary", {})
+    certain = result_data.get("certain_duplicates", [])
+
+    assert summary.get("duplicates_found") == 0, (
+        f"Expected 0 duplicates for 18 functionally distinct tests, "
+        f"got: {summary.get('duplicates_found')} — certain: {certain}"
+    )
+
+
+def test_identical_tc_detected_as_certain_duplicate(app_client, tmp_path):
+    """
+    A CSV with two rows that have identical title, steps, and expected_result
+    must be detected as a certain duplicate (similarity >= 0.98).
+    """
+    import csv as csv_mod
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    # Build a CSV with one genuine pair of identical test cases + one unique one
+    csv_file = tmp_path / "dup_test.csv"
+    rows = [
+        {"test_id": "TC-001", "title": "Login with valid credentials",
+         "steps": "1. Navigate to login page; 2. Enter username admin; 3. Enter password secret; 4. Click Submit",
+         "expected_result": "User is redirected to dashboard; session token set in cookie"},
+        {"test_id": "TC-002", "title": "Login with valid credentials",
+         "steps": "1. Navigate to login page; 2. Enter username admin; 3. Enter password secret; 4. Click Submit",
+         "expected_result": "User is redirected to dashboard; session token set in cookie"},
+        {"test_id": "TC-003", "title": "Logout clears session",
+         "steps": "1. Click logout button",
+         "expected_result": "Session cookie deleted; user redirected to login page"},
+    ]
+    with csv_file.open("w", newline="") as f:
+        writer = csv_mod.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    r = app_client.post("/api/projects/", json={"name": "dup-detection-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    with csv_file.open("rb") as fh:
+        up = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_file.name, fh, "text/csv")},
+        )
+    assert up.status_code == 200
+    file_path = up.json()[0]["file_path"]
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["Add more tests."]')
+
+    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+         patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": [file_path]},
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "): continue
+        payload = line[6:].strip()
+        if payload == "[DONE]": break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+    summary = result_data.get("summary", {})
+    certain = result_data.get("certain_duplicates", [])
+
+    assert summary.get("duplicates_found", 0) >= 1, (
+        f"Expected at least 1 duplicate for identical TC-001/TC-002, got 0"
+    )
+    assert len(certain) >= 1, (
+        f"Expected TC-001/TC-002 pair in certain_duplicates, got: {certain}"
+    )
+    # Verify the right pair was flagged
+    pair = certain[0]
+    ids = {pair["tc_a"].get("test_id"), pair["tc_b"].get("test_id")}
+    assert ids == {"TC-001", "TC-002"}, f"Wrong pair flagged: {ids}"
+    assert pair["similarity"] >= 0.98, f"Expected sim >= 0.98, got {pair['similarity']}"

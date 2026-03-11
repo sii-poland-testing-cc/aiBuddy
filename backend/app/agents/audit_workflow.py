@@ -12,10 +12,10 @@ Events:
   StartAuditEvent  →  ParseEvent  →  AnalyseEvent  →  StopEvent
 """
 
+import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from llama_index.core.workflow import (
     Context,
@@ -48,7 +48,9 @@ class AnalysisProgressEvent(Event):
 
 class AuditResultEvent(Event):
     """Final audit data before formatting."""
-    duplicates: List[Dict]
+    duplicates: List[Dict]          # certain + candidate pairs combined
+    certain_duplicates: List[Dict]  # [{"tc_a": ..., "tc_b": ..., "similarity": float}]
+    candidate_duplicates: List[Dict]
     untagged: List[Dict]
     coverage_pct: float
     recommendations: List[str]
@@ -72,6 +74,8 @@ class AuditWorkflow(Workflow):
         super().__init__(**kwargs)
         self.llm = llm
         self.context_builder = ContextBuilder()
+        # Reuse the embed model already loaded by ContextBuilder (avoids double load)
+        self._embed_model = self.context_builder._embed_model
 
     # ── Step 1: Parse ────────────────────────────────────────────────────────
 
@@ -104,7 +108,11 @@ class AuditWorkflow(Workflow):
         ctx.write_event_to_stream(
             AnalysisProgressEvent(message="Detecting duplicates…", progress=0.4)
         )
-        duplicates = self._find_duplicates(cases)
+        embedded = await self._embed_test_cases(cases)
+        certain, candidates = self._find_duplicate_candidates(embedded)
+        await ctx.store.set("certain_duplicates", certain)
+        await ctx.store.set("llm_candidates", candidates)
+        duplicates = certain + candidates
 
         ctx.write_event_to_stream(
             AnalysisProgressEvent(message="Checking tag coverage…", progress=0.6)
@@ -173,6 +181,8 @@ class AuditWorkflow(Workflow):
 
         return AuditResultEvent(
             duplicates=duplicates,
+            certain_duplicates=certain,
+            candidate_duplicates=candidates,
             untagged=untagged,
             coverage_pct=coverage_pct,
             recommendations=recommendations,
@@ -199,6 +209,8 @@ class AuditWorkflow(Workflow):
                 "requirements_uncovered": ev.requirements_uncovered,
             },
             "duplicates": ev.duplicates,
+            "certain_duplicates": ev.certain_duplicates,
+            "candidate_duplicates": ev.candidate_duplicates,
             "untagged": ev.untagged,
             "recommendations": ev.recommendations,
             "rag_sources": ev.rag_sources,
@@ -247,23 +259,72 @@ class AuditWorkflow(Workflow):
                 cases.append({"name": scenario, "steps": steps, "tags": []})
         return cases
 
-    def _find_duplicates(self, cases: List[Dict]) -> List[Dict]:
-        seen, dupes = set(), []
-        for c in cases:
-            key = (
-                c.get("name") or
-                c.get("title") or
-                c.get("test_id") or
-                c.get("id") or
-                ""
-            ).lower().strip()
-            if not key:
-                logger.warning("Test case has no identifiable name/title/id field: %s", c)
-                continue
-            if key in seen:
-                dupes.append(c)
-            seen.add(key)
-        return dupes
+    @staticmethod
+    def _build_tc_text(case: Dict) -> Optional[str]:
+        """Concatenate key fields for embedding; title weighted 2× for similarity."""
+        title    = str(case.get("title")           or case.get("name")       or "").strip()
+        steps    = str(case.get("steps")           or case.get("test_steps") or "").strip()
+        expected = str(case.get("expected_result") or case.get("assertions") or "").strip()
+        if not title and not steps and not expected:
+            return None
+        return f"{title}. {title}. {steps}. {expected}"
+
+    async def _embed_test_cases(
+        self, cases: List[Dict]
+    ) -> List[Tuple[Dict, List[float]]]:
+        """Embed each test case using the app's configured embed model."""
+        valid = [(c, self._build_tc_text(c)) for c in cases]
+        valid = [(c, t) for c, t in valid if t is not None]
+
+        results: List[Tuple[Dict, List[float]]] = []
+        for i in range(0, len(valid), 50):
+            batch = valid[i : i + 50]
+            for case, text in batch:
+                emb = await self._embed_model.aget_text_embedding(text)
+                results.append((case, emb))
+            if i + 50 < len(valid):
+                await asyncio.sleep(0.5)  # rate-limit buffer for remote embed models
+
+        logger.info("Embedded %d test cases", len(results))
+        return results
+
+    @staticmethod
+    def _find_duplicate_candidates(
+        embedded: List[Tuple[Dict, List[float]]],
+        threshold_certain: float = 0.98,
+        threshold_candidate: float = 0.95,
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """Return (certain_duplicates, candidates_for_llm) via cosine similarity."""
+        import numpy as np
+
+        n = len(embedded)
+        if n > 500:
+            logger.warning(
+                "_find_duplicate_candidates: %d test cases — O(n²) is slow; consider FAISS upgrade", n
+            )
+
+        def cosine(a: List[float], b: List[float]) -> float:
+            va, vb = np.array(a), np.array(b)
+            na, nb = np.linalg.norm(va), np.linalg.norm(vb)
+            if na == 0 or nb == 0:
+                return 0.0
+            return float(np.dot(va, vb) / (na * nb))
+
+        certain: List[Dict] = []
+        candidates: List[Dict] = []
+
+        for i in range(n):
+            case_i, emb_i = embedded[i]
+            for j in range(i + 1, n):
+                case_j, emb_j = embedded[j]
+                sim = cosine(emb_i, emb_j)
+                if sim >= threshold_certain:
+                    certain.append({"tc_a": case_i, "tc_b": case_j, "similarity": round(sim, 4)})
+                elif sim >= threshold_candidate:
+                    candidates.append({"tc_a": case_i, "tc_b": case_j, "similarity": round(sim, 4)})
+
+        logger.info("Certain duplicates: %d, LLM candidates: %d", len(certain), len(candidates))
+        return certain, candidates
 
     async def _requirements_in_tests(
         self, cases: List[Dict], known_reqs: List[str]
