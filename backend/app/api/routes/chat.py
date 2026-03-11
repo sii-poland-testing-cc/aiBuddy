@@ -13,10 +13,13 @@ from typing import Any, AsyncGenerator, Dict, Optional
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.agents.audit_workflow import AuditWorkflow, AnalysisProgressEvent
 from app.agents.optimize_workflow import OptimizeWorkflow, OptimizeProgressEvent
 from app.core.llm import get_llm
+from app.db.engine import AsyncSessionLocal
+from app.db.models import ProjectFile
 from app.rag.context_builder import ContextBuilder
 
 logger = logging.getLogger("ai_buddy.chat")
@@ -58,8 +61,27 @@ async def chat_stream(req: ChatRequest):
 async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
     llm = get_llm()
 
-    # No files attached → RAG-grounded conversational response
-    if not req.file_paths:
+    # Resolve effective file paths: use request paths if provided,
+    # otherwise auto-load all uploaded files for this project from DB
+    file_paths = list(req.file_paths)
+    if not file_paths:
+        try:
+            async with AsyncSessionLocal() as db:
+                stmt = select(ProjectFile.file_path).where(
+                    ProjectFile.project_id == req.project_id
+                )
+                rows = (await db.execute(stmt)).scalars().all()
+                file_paths = list(rows)
+        except Exception as exc:
+            logger.warning("Could not load project files from DB: %s", exc)
+
+    logger.info(
+        "project_id=%s file_paths=%d tier=%s",
+        req.project_id, len(file_paths), req.tier,
+    )
+
+    # No files anywhere → RAG-grounded conversational response
+    if not file_paths:
         try:
             logger.info("Conversational path: project_id=%s", req.project_id)
             is_indexed = await _context_builder.is_indexed(req.project_id)
@@ -105,18 +127,15 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
         # "regenerate": RegenerateWorkflow,  # add Tier 3
     }
 
-    WorkflowClass = workflow_map.get(req.tier)
-    if not WorkflowClass:
-        yield _sse({"type": "error", "data": {"message": f"Unknown tier: {req.tier}"}})
-        yield "data: [DONE]\n\n"
-        return
+    WorkflowClass = workflow_map.get(req.tier, AuditWorkflow)
+    logger.info("workflow=%s", WorkflowClass.__name__)
 
     workflow = WorkflowClass(llm=llm, timeout=120)
 
     try:
         handler = workflow.run(
             project_id=req.project_id,
-            file_paths=req.file_paths,
+            file_paths=file_paths,
             audit_report=req.audit_report,
             user_message=req.message,
         )

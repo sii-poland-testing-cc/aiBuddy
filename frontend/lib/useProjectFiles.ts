@@ -41,7 +41,8 @@ export function useProjectFiles(projectId: string) {
         if (res.ok) {
           const data = await res.json();
           await fetchFiles();
-          return data.file_paths ?? data.paths ?? [];
+          // API returns [{file_path: "...", ...}] — extract the paths
+          return Array.isArray(data) ? data.map((f: any) => f.file_path).filter(Boolean) : [];
         }
       } catch {
         // ignore

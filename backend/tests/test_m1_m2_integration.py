@@ -204,6 +204,73 @@ if __name__ == "__main__":
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pytest: audit workflow triggered automatically when project has uploaded files
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_chat_triggers_audit_when_project_has_files(app_client):
+    """
+    Files uploaded to a project via POST /api/files/{project_id}/upload must be
+    auto-loaded and used to trigger AuditWorkflow when /api/chat/stream is called
+    with an empty file_paths list.
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    CSV = Path(__file__).parent / "fixtures" / "sample_tests.csv"
+    assert CSV.exists(), f"Fixture missing: {CSV}"
+
+    # 1. Create project
+    r = app_client.post("/api/projects/", json={"name": "audit-auto-files-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    # 2. Upload test file via the files API (simulates Sidebar upload)
+    with CSV.open("rb") as fh:
+        upload_r = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (CSV.name, fh, "text/csv")},
+        )
+    assert upload_r.status_code == 200
+
+    # 3. Mock LLM — returns a simple string; workflow falls back to [raw] for recs
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["Add more edge case tests."]')
+
+    with patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={
+                "project_id": project_id,
+                "message": "run audit",
+                "file_paths": [],      # intentionally empty — backend must auto-load
+            },
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received — workflow was not triggered"
+    assert "summary" in result_data, (
+        f"Expected audit result with 'summary' key, got: {list(result_data.keys())}"
+    )
+    assert "coverage_pct" in result_data["summary"], (
+        f"Expected 'coverage_pct' in summary, got: {result_data['summary']}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pytest: RAG chat uses indexed context, not generic LLM knowledge
 # ─────────────────────────────────────────────────────────────────────────────
 
