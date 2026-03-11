@@ -769,3 +769,70 @@ def test_max_5_snapshots_enforced(app_client):
 
     snapshots = asyncio.get_event_loop().run_until_complete(_query())
     assert len(snapshots) == 5, f"Expected 5 snapshots, got {len(snapshots)}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest: no false duplicates when CSV uses "title" column instead of "name"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_no_false_duplicates_on_title_field(app_client):
+    """
+    synthetic_testcases_fr002_fr003.csv has 18 rows with a 'title' column
+    (not 'name'). _find_duplicates must fall back to 'title' and report 0
+    duplicates — all 18 titles are unique.
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.agents.audit_workflow import AuditWorkflow
+
+    csv_path = Path(__file__).parent / "fixtures" / "synthetic_docs" / "synthetic_testcases_fr002_fr003.csv"
+    assert csv_path.exists(), f"Fixture missing: {csv_path}"
+
+    # Create project — no M1 context needed for this test
+    r = app_client.post("/api/projects/", json={"name": "no-false-dup-test"})
+    assert r.status_code in (200, 201)
+    project_id = r.json()["project_id"]
+
+    with csv_path.open("rb") as fh:
+        up = app_client.post(
+            f"/api/files/{project_id}/upload",
+            files={"files": (csv_path.name, fh, "text/csv")},
+        )
+    assert up.status_code == 200
+    file_path = up.json()[0]["file_path"]
+
+    mock_llm = MagicMock()
+    mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
+
+    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+         patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+        chat_r = app_client.post(
+            "/api/chat/stream",
+            json={"project_id": project_id, "message": "audit", "file_paths": [file_path]},
+        )
+    assert chat_r.status_code == 200
+
+    result_data: dict = {}
+    for line in chat_r.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except Exception:
+            continue
+
+    assert result_data, "No result event received"
+    summary = result_data.get("summary", {})
+    duplicates = result_data.get("duplicates", [])
+
+    assert summary.get("duplicates_found") == 0, (
+        f"Expected 0 duplicates for 18 unique titles, got: {summary.get('duplicates_found')}"
+    )
+    assert len(duplicates) == 0, (
+        f"Expected empty duplicates list, got {len(duplicates)} entries"
+    )

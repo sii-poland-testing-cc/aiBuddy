@@ -134,11 +134,11 @@ class AuditWorkflow(Workflow):
 
         requirements_from_docs = await self._extract_requirements(rag_context)
         await ctx.store.set("requirements_from_docs", requirements_from_docs)
-        logger.info("Requirements found in docs: %s", requirements_from_docs)
+        logger.info("[DEBUG] requirements_from_docs: %s", requirements_from_docs)
 
         covered = await self._requirements_in_tests(cases, requirements_from_docs)
         await ctx.store.set("requirements_covered", covered)
-        logger.info("Requirements covered by tests: %s", covered)
+        logger.info("[DEBUG] requirements_covered: %s", covered)
 
         recommendations = await self._llm_recommendations(cases, rag_context, user_message)
 
@@ -149,6 +149,9 @@ class AuditWorkflow(Workflow):
         total     = len(reqs_from_docs)
         n_covered = len(set(reqs_covered) & set(reqs_from_docs))
         uncovered = [r for r in reqs_from_docs if r not in set(reqs_covered)]
+
+        logger.info("[DEBUG] coverage_pct computed: total=%d, n_covered=%d, pct=%s",
+                    total, n_covered, round((n_covered / total) * 100, 1) if total else 0.0)
 
         if total == 0:
             coverage_pct = 0.0
@@ -247,7 +250,16 @@ class AuditWorkflow(Workflow):
     def _find_duplicates(self, cases: List[Dict]) -> List[Dict]:
         seen, dupes = set(), []
         for c in cases:
-            key = c.get("name", "").lower().strip()
+            key = (
+                c.get("name") or
+                c.get("title") or
+                c.get("test_id") or
+                c.get("id") or
+                ""
+            ).lower().strip()
+            if not key:
+                logger.warning("Test case has no identifiable name/title/id field: %s", c)
+                continue
             if key in seen:
                 dupes.append(c)
             seen.add(key)
@@ -290,6 +302,9 @@ class AuditWorkflow(Workflow):
 
     async def _extract_requirements(self, rag_context: str) -> List[str]:
         """Extract formal requirement IDs (e.g. FR-001) from the RAG context."""
+        logger.info("[DEBUG] _extract_requirements: RAG context length: %d", len(rag_context))
+        logger.info("[DEBUG] _extract_requirements: LLM instance: %s", self.llm)
+
         if not self.llm:
             return ["FR-001", "FR-002", "FR-003"]
 
@@ -303,12 +318,13 @@ class AuditWorkflow(Workflow):
         try:
             response = await self.llm.acomplete(prompt)
             raw = str(response).strip()
+            logger.info("[DEBUG] _extract_requirements: raw LLM response: %r", raw[:500])
             # Strip markdown fences if present
             if raw.startswith("```"):
                 raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
             return json.loads(raw)
         except Exception as exc:
-            logger.warning("Could not extract requirements from docs: %s", exc)
+            logger.exception("[DEBUG] _extract_requirements: exception")
             return []
 
     async def _llm_recommendations(
