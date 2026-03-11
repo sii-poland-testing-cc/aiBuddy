@@ -14,7 +14,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.audit_workflow import AuditWorkflow, AnalysisProgressEvent
@@ -151,8 +151,15 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
     if not file_paths and req.tier in ("audit", "optimize"):
         try:
             async with AsyncSessionLocal() as db:
-                stmt = select(ProjectFile.file_path).where(
-                    ProjectFile.project_id == req.project_id
+                stmt = (
+                    select(ProjectFile.file_path)
+                    .where(ProjectFile.project_id == req.project_id)
+                    .where(
+                        or_(
+                            ProjectFile.last_used_in_audit_id == None,  # noqa: E711
+                            ProjectFile.source_type != "file",
+                        )
+                    )
                 )
                 rows = (await db.execute(stmt)).scalars().all()
                 file_paths = list(rows)

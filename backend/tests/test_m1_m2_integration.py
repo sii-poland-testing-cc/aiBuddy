@@ -625,13 +625,22 @@ def test_coverage_zero_without_m1_context(app_client):
 # pytest: AuditSnapshot persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _run_audit(app_client, project_id: str, mock_llm) -> dict:
-    """Helper: run one audit on a project, return result_data dict."""
+def _run_audit(app_client, project_id: str, mock_llm,
+               file_paths: list | None = None) -> dict:
+    """Helper: run one audit on a project, return result_data dict.
+
+    Pass ``file_paths`` explicitly to bypass auto-selection (needed when
+    re-auditing a file that was already used in a previous audit).
+    """
     from unittest.mock import patch
     with patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         r = app_client.post(
             "/api/chat/stream",
-            json={"project_id": project_id, "message": "audit", "file_paths": []},
+            json={
+                "project_id": project_id,
+                "message": "audit",
+                "file_paths": file_paths or [],
+            },
         )
     assert r.status_code == 200
     result_data: dict = {}
@@ -650,19 +659,22 @@ def _run_audit(app_client, project_id: str, mock_llm) -> dict:
     return result_data
 
 
-def _setup_project_with_csv(app_client) -> str:
-    """Helper: create project and upload sample_tests.csv. Returns project_id."""
+def _setup_project_with_csv(app_client) -> tuple[str, str]:
+    """Helper: create project and upload sample_tests.csv.
+    Returns (project_id, file_path).
+    """
     from pathlib import Path
     csv_path = Path(__file__).parent / "fixtures" / "sample_tests.csv"
     r = app_client.post("/api/projects/", json={"name": "snapshot-test"})
     assert r.status_code in (200, 201)
     project_id = r.json()["project_id"]
     with csv_path.open("rb") as fh:
-        app_client.post(
+        up = app_client.post(
             f"/api/files/{project_id}/upload",
             files={"files": (csv_path.name, fh, "text/csv")},
         )
-    return project_id
+    file_path = up.json()[0]["file_path"]
+    return project_id, file_path
 
 
 def _make_mock_llm():
@@ -680,7 +692,7 @@ def test_snapshot_saved_after_audit(app_client):
     from app.db.models import AuditSnapshot
     from sqlalchemy import select
 
-    project_id = _setup_project_with_csv(app_client)
+    project_id, _ = _setup_project_with_csv(app_client)
     result_data = _run_audit(app_client, project_id, _make_mock_llm())
 
     assert result_data, "No result event received"
@@ -711,10 +723,10 @@ def test_diff_computed_on_second_audit(app_client):
     from app.db.models import AuditSnapshot
     from sqlalchemy import select
 
-    project_id = _setup_project_with_csv(app_client)
+    project_id, file_path = _setup_project_with_csv(app_client)
     mock_llm = _make_mock_llm()
-    _run_audit(app_client, project_id, mock_llm)
-    _run_audit(app_client, project_id, mock_llm)
+    _run_audit(app_client, project_id, mock_llm, file_paths=[file_path])
+    _run_audit(app_client, project_id, mock_llm, file_paths=[file_path])
 
     async def _query():
         async with AsyncSessionLocal() as db:
@@ -743,10 +755,10 @@ def test_max_5_snapshots_enforced(app_client):
     from app.db.models import AuditSnapshot
     from sqlalchemy import select
 
-    project_id = _setup_project_with_csv(app_client)
+    project_id, file_path = _setup_project_with_csv(app_client)
     mock_llm = _make_mock_llm()
     for _ in range(6):
-        _run_audit(app_client, project_id, mock_llm)
+        _run_audit(app_client, project_id, mock_llm, file_paths=[file_path])
 
     async def _query():
         async with AsyncSessionLocal() as db:

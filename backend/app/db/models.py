@@ -83,6 +83,9 @@ class ProjectFile(Base):
     # snapshot id of the last audit that used this file
     # null = never used in any audit → default selected
 
+    source_type: Mapped[str] = mapped_column(String, nullable=False, default="file")
+    # "file" | "url" | "jira" | "confluence"
+
     project: Mapped["Project"] = relationship("Project", back_populates="files")
 
 

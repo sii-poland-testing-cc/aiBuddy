@@ -34,7 +34,7 @@ async def init_db() -> None:
     """
     Create all tables that don't yet exist and apply any missing column migrations.
     Safe to call on every startup (idempotent).
-    schema v3 — AuditSnapshot + ProjectFile.last_used_in_audit_id
+    schema v4 — ProjectFile.source_type
     """
     url = settings.DATABASE_URL
     if url.startswith("sqlite"):
@@ -62,4 +62,8 @@ async def init_db() -> None:
             if "last_used_in_audit_id" not in pf_cols:
                 await conn.execute(
                     text("ALTER TABLE project_files ADD COLUMN last_used_in_audit_id TEXT")
+                )
+            if "source_type" not in pf_cols:
+                await conn.execute(
+                    text("ALTER TABLE project_files ADD COLUMN source_type TEXT NOT NULL DEFAULT 'file'")
                 )
