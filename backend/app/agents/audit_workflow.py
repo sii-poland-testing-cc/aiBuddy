@@ -327,17 +327,22 @@ class AuditWorkflow(Workflow):
             return ["FR-001", "FR-002", "FR-003"]
 
         prompt = (
-            "Extract all requirement IDs from the documentation below.\n"
+            "Extract all formal requirement IDs from the documentation below.\n"
             "Return ONLY a valid JSON array of strings, no preamble, no markdown.\n"
             'Examples: ["FR-001", "FR-002", "NFR-Performance"]\n'
-            "If no formal IDs exist, return [].\n\n"
+            "Rules:\n"
+            "- Include only requirement IDs (e.g. FR-*, NFR-*, REQ-*, US-*)\n"
+            "- Do NOT include test case IDs (e.g. TC-*, test identifiers)\n"
+            "- If no formal requirement IDs exist, return []\n\n"
             f"Documentation:\n{rag_context}"
         )
         try:
             response = await self.llm.acomplete(prompt)
             raw = str(response).strip()
             logger.info("[DEBUG] _extract_requirements: raw LLM response: %r", raw[:500])
-            return self._parse_json_array(raw)
+            items = self._parse_json_array(raw)
+            # Post-filter: drop anything that looks like a test case ID (TC-*)
+            return [r for r in items if not str(r).upper().startswith("TC-")]
         except Exception as exc:
             logger.exception("[DEBUG] _extract_requirements: exception")
             return []
