@@ -6,6 +6,7 @@ import { useAIBuddyChat, type ChatMessage } from "@/lib/useAIBuddyChat";
 import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useContextBuilder } from "@/lib/useContextBuilder";
 import Sidebar from "@/components/Sidebar";
+import ErrorBanner from "@/components/ErrorBanner";
 import PipelineSteps from "@/components/PipelineSteps";
 import MessageList from "@/components/MessageList";
 import ChatInputArea from "@/components/ChatInputArea";
@@ -34,11 +35,11 @@ export default function ChatPage({
   const [refreshKey, setRefreshKey] = useState(0);
   const prevLoadingRef = useRef(false);
 
-  const { messages, progress, isLoading, latestSnapshotId, send, stop } = useAIBuddyChat({
+  const { messages, progress, isLoading, error: chatError, latestSnapshotId, send, stop } = useAIBuddyChat({
     projectId,
     tier,
   });
-  const { files: projectFiles, uploading, uploadFiles } = useProjectFiles(projectId);
+  const { files: projectFiles, uploading, uploadFiles, uploadError, clearUploadError } = useProjectFiles(projectId);
   const { status: contextStatus } = useContextBuilder(projectId);
 
   // Refresh file selector after audit completes
@@ -116,6 +117,18 @@ export default function ChatPage({
                 style={{ width: `${progress.progress * 100}%` }}
               />
             </div>
+          </div>
+        )}
+
+        {chatError && (
+          <div className="mx-6 mt-3 shrink-0">
+            <ErrorBanner message={chatError} />
+          </div>
+        )}
+
+        {uploadError && (
+          <div className="mx-6 mt-3 shrink-0">
+            <ErrorBanner message={uploadError} onDismiss={clearUploadError} />
           </div>
         )}
 

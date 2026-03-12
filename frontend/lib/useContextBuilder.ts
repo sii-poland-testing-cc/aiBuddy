@@ -144,7 +144,9 @@ export function useContextBuilder(projectId: string) {
       // Refresh status to pick up context_files and document_count
       await fetchStatus();
     } catch (err: any) {
-      setError(err.message);
+      if (err.name !== "AbortError") {
+        setError("Nie udało się zbudować kontekstu. Sprawdź czy pliki są w formacie .docx lub .pdf.");
+      }
     } finally {
       setIsBuilding(false);
     }
@@ -160,5 +162,5 @@ export function useContextBuilder(projectId: string) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.artefacts_ready]);
 
-  return { isBuilding, stage, progress, log, result, status, error, buildContext, fetchStatus };
+  return { isBuilding, stage, progress, log, result, status, error, buildContext, fetchStatus, retry: fetchStatus, clearError: () => setError(null) };
 }

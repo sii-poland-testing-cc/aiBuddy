@@ -66,8 +66,8 @@ export function useRequirements(projectId: string) {
       } else {
         setStats(null);
       }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load requirements");
+    } catch {
+      setError("Nie udało się pobrać wymagań. Sprawdź połączenie z serwerem.");
     } finally {
       setLoading(false);
     }
@@ -132,5 +132,6 @@ export function useRequirements(projectId: string) {
     error,
     patchRequirement,
     refresh: fetchAll,
+    retry: fetchAll,
   };
 }

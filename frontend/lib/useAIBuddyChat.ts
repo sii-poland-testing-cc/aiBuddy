@@ -46,6 +46,15 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
   const [error, setError] = useState<string | null>(null);
   const [latestSnapshotId, setLatestSnapshotId] = useState<string | undefined>();
   const abortRef = useRef<AbortController | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetStreamTimeout = (abort: AbortController) => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      abort.abort();
+      setError("Odpowiedź trwa zbyt długo. Spróbuj ponownie.");
+    }, 30_000);
+  };
 
   const addMessage = useCallback(
     (role: MessageRole, content: string, sources?: ChatSource[]) => {
@@ -82,21 +91,27 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ project_id: projectId, message: text, file_paths: filePaths, tier }),
           signal: abort.signal,
+        }).catch(() => {
+          throw new Error("Nie można połączyć z serwerem AI Buddy.");
         });
 
-        if (!res.ok) throw new Error(`Server error: ${res.status}`);
-        if (!res.body) throw new Error("No response body");
+        if (!res.ok) throw new Error(`Nie można połączyć z serwerem AI Buddy.`);
+        if (!res.body) throw new Error("Nie można połączyć z serwerem AI Buddy.");
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let assistantContent = "";
 
+        resetStreamTimeout(abort);
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const text = decoder.decode(value, { stream: true });
-          for (const line of text.split("\n")) {
+          resetStreamTimeout(abort);
+
+          const chunk = decoder.decode(value, { stream: true });
+          for (const line of chunk.split("\n")) {
             if (!line.startsWith("data: ")) continue;
             const payload = line.slice(6).trim();
             if (payload === "[DONE]") break;
@@ -119,17 +134,20 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
                 }
               } else if (event.type === "error") {
                 setError(event.data.message);
-                addMessage("assistant", `❌ Error: ${event.data.message}`);
+                addMessage("assistant", `❌ ${event.data.message}`);
               }
             } catch {
               // malformed JSON line – skip
             }
           }
         }
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
       } catch (err: any) {
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
         if (err.name !== "AbortError") {
-          setError(err.message);
-          addMessage("assistant", `❌ Connection error: ${err.message}`);
+          const msg = err.message ?? "Nie można połączyć z serwerem AI Buddy.";
+          setError(msg);
+          addMessage("assistant", `❌ ${msg}`);
         }
       } finally {
         setIsLoading(false);

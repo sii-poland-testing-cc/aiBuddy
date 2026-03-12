@@ -22,10 +22,12 @@ function scoreToColor(avg: number): "green" | "yellow" | "orange" | "red" {
 export function useHeatmap(projectId: string) {
   const [heatmap, setHeatmap] = useState<HeatmapRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchHeatmap = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch(
         `${API_BASE}/api/mapping/${projectId}/heatmap`
@@ -52,6 +54,7 @@ export function useHeatmap(projectId: string) {
       setHeatmap(modules);
     } catch {
       setHeatmap([]);
+      setError("Nie udało się pobrać heatmapy pokrycia.");
     } finally {
       setLoading(false);
     }
@@ -61,5 +64,5 @@ export function useHeatmap(projectId: string) {
     fetchHeatmap();
   }, [fetchHeatmap]);
 
-  return { heatmap, loading };
+  return { heatmap, loading, error, retry: fetchHeatmap };
 }

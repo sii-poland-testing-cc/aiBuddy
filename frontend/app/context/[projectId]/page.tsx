@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
+import ErrorBanner from "@/components/ErrorBanner";
 import MindMap from "@/components/MindMap";
 import Glossary, { type GlossaryTerm } from "@/components/Glossary";
 import MessageList from "@/components/MessageList";
@@ -190,8 +191,8 @@ export default function ContextPage({ params }: { params: { projectId: string } 
   const projectId = decodeURIComponent(params.projectId);
   const router = useRouter();
 
-  const { files: projectFiles, uploading, uploadFiles } = useProjectFiles(projectId);
-  const { isBuilding, stage, progress, log, result, status, error, buildContext } =
+  const { files: projectFiles, uploading, uploadFiles, uploadError, clearUploadError } = useProjectFiles(projectId);
+  const { isBuilding, stage, progress, log, result, status, error, clearError, buildContext } =
     useContextBuilder(projectId);
 
   const [pendingFiles, setPendingFiles]         = useState<File[]>([]);
@@ -521,9 +522,10 @@ export default function ContextPage({ params }: { params: { projectId: string } 
 
                 {/* Error */}
                 {error && (
-                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-xs text-red-400">
-                    ❌ {error}
-                  </div>
+                  <ErrorBanner message={error} onDismiss={clearError} />
+                )}
+                {uploadError && (
+                  <ErrorBanner message={uploadError} onDismiss={clearUploadError} />
                 )}
 
                 {/* Result stats */}

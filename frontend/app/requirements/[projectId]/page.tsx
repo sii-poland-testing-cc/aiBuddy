@@ -7,6 +7,7 @@ import { useContextBuilder } from "@/lib/useContextBuilder";
 import { useRequirements, type Requirement } from "@/lib/useRequirements";
 import { useHeatmap } from "@/lib/useHeatmap";
 import Sidebar from "@/components/Sidebar";
+import ErrorBanner from "@/components/ErrorBanner";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -143,7 +144,7 @@ interface HeatmapSectionProps {
 }
 
 function HeatmapSection({ projectId }: HeatmapSectionProps) {
-  const { heatmap, loading } = useHeatmap(projectId);
+  const { heatmap, loading, error, retry } = useHeatmap(projectId);
   const [open, setOpen] = useState(true);
 
   return (
@@ -162,13 +163,17 @@ function HeatmapSection({ projectId }: HeatmapSectionProps) {
 
       {open && (
         <div className="border-t border-buddy-border">
-          {loading ? (
+          {error ? (
+            <div className="p-3">
+              <ErrorBanner message={error} onRetry={retry} />
+            </div>
+          ) : loading ? (
             <div className="px-4 py-6 flex items-center gap-2 text-xs text-buddy-text-muted">
-              <span className="animate-spin">⟳</span> Loading heatmap…
+              <span className="animate-spin">⟳</span> Ładowanie…
             </div>
           ) : heatmap.length === 0 ? (
             <div className="px-4 py-6 text-xs text-buddy-text-faint">
-              Run Mapping workflow first to see coverage scores.
+              Uruchom Mapping, by zobaczyć wyniki pokrycia.
             </div>
           ) : (
             <table className="w-full text-xs">
@@ -382,7 +387,7 @@ export default function RequirementsPage({
 
   const { files: projectFiles, uploading, uploadFiles } = useProjectFiles(projectId);
   const { status: contextStatus } = useContextBuilder(projectId);
-  const { requirements, stats, loading, patchRequirement } = useRequirements(projectId);
+  const { requirements, stats, loading, error: reqError, patchRequirement, retry: retryRequirements } = useRequirements(projectId);
 
   const handleMarkReviewed = (id: string) => {
     patchRequirement(id, { human_reviewed: true, needs_review: false });
@@ -426,6 +431,12 @@ export default function RequirementsPage({
 
         {/* Main content */}
         <div className="flex-1 flex flex-col gap-4 overflow-hidden p-5">
+          {reqError && (
+            <div className="shrink-0">
+              <ErrorBanner message={reqError} onRetry={retryRequirements} onDismiss={retryRequirements} />
+            </div>
+          )}
+
           {/* Section A: Heatmap */}
           <div className="shrink-0">
             <HeatmapSection projectId={projectId} />

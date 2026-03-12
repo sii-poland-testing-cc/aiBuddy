@@ -12,6 +12,7 @@ export interface ProjectFile {
 export function useProjectFiles(projectId: string) {
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -31,6 +32,7 @@ export function useProjectFiles(projectId: string) {
     async (newFiles: File[]): Promise<string[]> => {
       if (!newFiles.length) return [];
       setUploading(true);
+      setUploadError(null);
       try {
         const formData = new FormData();
         newFiles.forEach((f) => formData.append("files", f));
@@ -44,8 +46,9 @@ export function useProjectFiles(projectId: string) {
           // API returns [{file_path: "...", ...}] — extract the paths
           return Array.isArray(data) ? data.map((f: any) => f.file_path).filter(Boolean) : [];
         }
+        setUploadError("Nie udało się wgrać pliku. Maksymalny rozmiar: 50MB.");
       } catch {
-        // ignore
+        setUploadError("Nie udało się wgrać pliku. Maksymalny rozmiar: 50MB.");
       } finally {
         setUploading(false);
       }
@@ -58,5 +61,5 @@ export function useProjectFiles(projectId: string) {
     fetchFiles();
   }, [fetchFiles]);
 
-  return { files, uploading, uploadFiles, fetchFiles };
+  return { files, uploading, uploadFiles, fetchFiles, uploadError, clearUploadError: () => setUploadError(null) };
 }

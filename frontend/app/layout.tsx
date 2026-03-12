@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { DM_Sans, DM_Mono } from "next/font/google";
 import "@llamaindex/chat-ui/styles/markdown.css";
 import "./globals.css";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const dmSans = DM_Sans({
   subsets: ["latin"],
@@ -27,7 +28,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${dmSans.variable} ${dmMono.variable}`}>
-      <body>{children}</body>
+      <body><ErrorBoundary>{children}</ErrorBoundary></body>
     </html>
   );
 }
