@@ -123,8 +123,11 @@ export function useRequirements(projectId: string) {
           }
         }
       }
-    } catch {
-      setError("Nie udało się wyodrębnić wymagań. Sprawdź czy kontekst projektu jest zbudowany.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg.includes("Server error") || msg.includes("No response")
+        ? msg
+        : "Nie udało się wyodrębnić wymagań. Sprawdź połączenie z serwerem i czy kontekst projektu jest zbudowany.");
     } finally {
       setIsExtracting(false);
       setExtractionProgress(null);

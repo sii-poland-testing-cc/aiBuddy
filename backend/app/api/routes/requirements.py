@@ -72,7 +72,7 @@ async def extract_requirements(project_id: str, req: ExtractRequest = ExtractReq
 
 async def _run_extraction(project_id: str, user_message: str):
     llm = get_llm()
-    workflow = RequirementsWorkflow(llm=llm, timeout=180)
+    workflow = RequirementsWorkflow(llm=llm, timeout=300)
 
     try:
         handler = workflow.run(

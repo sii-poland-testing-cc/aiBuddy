@@ -52,15 +52,16 @@ def _strip_fences(text: str) -> str:
 
 EXTRACT_REQUIREMENTS_PROMPT = """You are a senior QA architect performing requirements analysis on project documentation.
 
-Your task: Extract ALL testable requirements from the documentation below.
+Your task: Extract the 20 most important testable requirements from the documentation below.
 Build a hierarchical structure: Features → Functional Requirements → Acceptance Criteria.
 
 Rules:
-1. Extract EVERY testable requirement — explicit (FR-001, REQ-*, SHALL/MUST) AND implicit (described behaviors, business rules, constraints).
-2. For each requirement, determine:
+1. Prefer explicit requirements (FR-001, REQ-*, SHALL/MUST). Include implicit ones only if clearly testable.
+2. Limit to max 20 functional requirements total across all features.
+3. For each requirement, determine:
    - external_id: the original ID if one exists (e.g. "FR-001"), or null if implicit
-   - title: concise name (max 80 chars)
-   - description: full requirement text
+   - title: concise name (max 60 chars)
+   - description: requirement text (max 200 chars)
    - level: "feature" | "functional_req" | "acceptance_criterion"
    - parent_feature: which feature this belongs to (use feature title)
    - source_type: "formal" if has an explicit ID, "implicit" if inferred from text
@@ -68,9 +69,10 @@ Rules:
    - testability: "high" | "medium" | "low" — can this be directly tested?
    - confidence: 0.0–1.0 — how certain are you this is a real requirement?
 
-3. Group requirements under features. If no features are explicit, infer them from domain areas.
-4. Mark requirements with confidence < 0.7 as needs_review: true.
-5. Identify GAPS: areas mentioned in the docs but without clear requirements.
+4. Group requirements under features (max 5 features). If no features are explicit, infer from domain areas.
+5. Include at most 2 acceptance criteria per requirement. Keep each AC under 100 chars.
+6. Mark requirements with confidence < 0.7 as needs_review: true.
+7. Identify up to 5 GAPS: areas mentioned in the docs but without clear requirements.
 
 Return ONLY valid JSON — no preamble, no markdown fences:
 {
@@ -81,11 +83,11 @@ Return ONLY valid JSON — no preamble, no markdown fences:
       "module": "module_name",
       "requirements": [
         {
-          "external_id": "FR-001" or null,
+          "external_id": "FR-001",
           "title": "Requirement title",
-          "description": "Full requirement description",
+          "description": "Requirement description (max 200 chars)",
           "level": "functional_req",
-          "source_type": "formal" or "implicit",
+          "source_type": "formal",
           "taxonomy": {
             "module": "payments",
             "risk_level": "high|medium|low",
@@ -96,23 +98,14 @@ Return ONLY valid JSON — no preamble, no markdown fences:
           "needs_review": false,
           "review_reason": null,
           "acceptance_criteria": [
-            {
-              "title": "AC title",
-              "description": "When X then Y",
-              "testability": "high",
-              "confidence": 0.9
-            }
+            {"title": "AC title", "description": "When X then Y", "testability": "high", "confidence": 0.9}
           ]
         }
       ]
     }
   ],
   "gaps": [
-    {
-      "area": "Area name",
-      "description": "What seems to be missing",
-      "severity": "high|medium|low"
-    }
+    {"area": "Area name", "description": "What is missing", "severity": "high|medium|low"}
   ],
   "metadata": {
     "total_features": 0,
@@ -272,7 +265,7 @@ class RequirementsWorkflow(Workflow):
                 stage="extract"
             ))
             context_text, sources = await self.context_builder.build_with_sources(
-                project_id, query=query, top_k=8
+                project_id, query=query, top_k=4
             )
             all_context_parts.append(context_text)
             for s in sources:
@@ -281,8 +274,8 @@ class RequirementsWorkflow(Workflow):
                     all_sources.append(s)
 
         combined_context = "\n\n---\n\n".join(all_context_parts)
-        # Deduplicate chunks that appear in multiple queries
-        combined_context = self._deduplicate_context(combined_context, max_chars=60000)
+        # Deduplicate chunks that appear in multiple queries; cap at 20K chars to keep LLM fast
+        combined_context = self._deduplicate_context(combined_context, max_chars=20000)
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
             message=f"Extracting requirements from {len(seen_filenames)} source document(s)…",
@@ -332,17 +325,20 @@ class RequirementsWorkflow(Workflow):
             progress=0.55, stage="validate"
         ))
 
-        # Build flat list for validation
-        flat_reqs = self._flatten_requirements(features)
+        # Rule-based validation only (no second LLM call — avoids timeout)
+        validation = {
+            "validated_requirements": [],
+            "duplicates": [],
+            "additional_gaps": [],
+            "overall_assessment": {
+                "completeness_rating": "medium",
+                "testability_rating": "medium",
+                "recommendation": "",
+            },
+        }
 
-        validation = await self._validate_with_llm(flat_reqs)
-
-        # Apply validation results back to features
+        # Apply rule-based validation (auto-flag low confidence, etc.)
         features = self._apply_validation(features, validation)
-
-        # Merge gaps from extraction + validation
-        additional_gaps = validation.get("additional_gaps", [])
-        all_gaps = gaps + additional_gaps
 
         # Recompute metadata after validation
         metadata = self._compute_metadata(features)
@@ -360,7 +356,7 @@ class RequirementsWorkflow(Workflow):
 
         return ValidatedRequirementsEvent(
             features=features,
-            gaps=all_gaps,
+            gaps=gaps,
             validation=validation,
             metadata=metadata,
             rag_sources=ev.rag_sources,
@@ -403,10 +399,10 @@ class RequirementsWorkflow(Workflow):
             logger.info("No LLM configured — returning mock requirements")
             return self._mock_extraction()
 
-        prompt = EXTRACT_REQUIREMENTS_PROMPT + context[:60000]
+        prompt = EXTRACT_REQUIREMENTS_PROMPT + context[:20000]
 
         try:
-            response = await self.llm.acomplete(prompt)
+            response = await self.llm.acomplete(prompt, max_tokens=4096)
             raw = _strip_fences(str(response).strip())
             result = json.loads(raw)
 
