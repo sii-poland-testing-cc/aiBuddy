@@ -24,7 +24,7 @@ interface SidebarProps {
   onUploadFiles: (files: File[]) => Promise<string[]>;
   isUploading?: boolean;
   contextReady?: boolean;
-  activeModule?: "m1" | "m2";
+  activeModule?: "m1" | "requirements" | "m2";
 }
 
 export default function Sidebar({
@@ -82,8 +82,9 @@ export default function Sidebar({
           Modules
         </div>
         {([
-          { id: "m1", icon: "🧠", label: "Context Builder", path: `/context/${encodeURIComponent(activeProjectId)}`, locked: false },
-          { id: "m2", icon: "🔍", label: "Suite Analyzer",  path: `/chat/${encodeURIComponent(activeProjectId)}`,    locked: !contextReady },
+          { id: "m1",           icon: "🧠", label: "Context Builder",       path: `/context/${encodeURIComponent(activeProjectId)}`,      locked: false          },
+          { id: "requirements", icon: "📋", label: "Requirements",           path: `/requirements/${encodeURIComponent(activeProjectId)}`, locked: !contextReady },
+          { id: "m2",           icon: "🔍", label: "Suite Analyzer",         path: `/chat/${encodeURIComponent(activeProjectId)}`,         locked: !contextReady },
         ] as const).map((m) => {
           const isActive = activeModule === m.id;
           return (
