@@ -415,8 +415,10 @@ class AuditWorkflow(Workflow):
             )
             batch = sorted(candidates, key=lambda p: p["similarity"], reverse=True)[:20]
 
-        confirmed: List[Dict] = []
-        for pair in batch:
+        # Judge all candidate pairs concurrently (semaphore limits to 5 parallel API calls)
+        sem = asyncio.Semaphore(5)
+
+        async def _judge_one(pair: Dict):
             tc_a, tc_b = pair["tc_a"], pair["tc_b"]
             prompt = f"""You are a QA expert. Determine if these two test cases are duplicates.
 
@@ -440,22 +442,21 @@ Rules:
 Respond with ONLY a JSON object, no markdown:
 {{"verdict": "DUPLICATE|SIMILAR|DIFFERENT", "reason": "one sentence"}}"""
 
-            try:
-                response = await self.llm.acomplete(prompt)
-                data = self._parse_json_object(str(response).strip())
-                verdict = str(data.get("verdict", "")).upper()
-                reason  = data.get("reason", "")
-                logger.info(
-                    "LLM verdict for pair (sim=%.4f): %s — %s",
-                    pair["similarity"], verdict, reason,
-                )
-                if verdict == "DUPLICATE":
-                    confirmed.append({**pair, "reason": reason})
-                # SIMILAR and DIFFERENT → not added to confirmed
-            except Exception:
-                logger.exception("LLM judgment failed for candidate pair; treating as non-duplicate")
+            async with sem:
+                try:
+                    response = await self.llm.acomplete(prompt, max_tokens=200)
+                    data = self._parse_json_object(str(response).strip())
+                    verdict = str(data.get("verdict", "")).upper()
+                    reason  = data.get("reason", "")
+                    logger.info("LLM verdict for pair (sim=%.4f): %s — %s", pair["similarity"], verdict, reason)
+                    if verdict == "DUPLICATE":
+                        return {**pair, "reason": reason}
+                except Exception:
+                    logger.exception("LLM judgment failed for candidate pair; treating as non-duplicate")
+            return None
 
-        return confirmed
+        results = await asyncio.gather(*[_judge_one(p) for p in batch])
+        return [r for r in results if r is not None]
 
     async def _requirements_in_tests(
         self, cases: List[Dict], known_reqs: List[str]
@@ -488,7 +489,7 @@ Respond with ONLY a JSON object, no markdown:
                 "Return ONLY a valid JSON array of covered requirement IDs."
             )
             try:
-                response = await self.llm.acomplete(prompt)
+                response = await self.llm.acomplete(prompt, max_tokens=512)
                 raw = str(response).strip()
                 covered = set(self._parse_json_array(raw))
             except Exception as exc:
@@ -552,7 +553,7 @@ Respond with ONLY a JSON object, no markdown:
             f"Documentation:\n{rag_context}"
         )
         try:
-            response = await self.llm.acomplete(prompt)
+            response = await self.llm.acomplete(prompt, max_tokens=512)
             raw = str(response).strip()
             logger.info("[DEBUG] _extract_requirements: raw LLM response: %r", raw[:500])
             items = self._parse_json_array(raw)
@@ -592,9 +593,9 @@ Test suite summary:
 
 Respond ONLY with a valid JSON array of 5 strings. No preamble, no markdown."""
 
-        response = await self.llm.acomplete(prompt)
-        raw = str(response).strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         try:
+            response = await self.llm.acomplete(prompt, max_tokens=1024)
+            raw = str(response).strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             return json.loads(raw)
         except Exception:
-            return [raw]
+            return ["Enable LLM for AI-powered recommendations."]

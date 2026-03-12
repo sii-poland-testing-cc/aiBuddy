@@ -242,7 +242,7 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
     WorkflowClass = workflow_map.get(req.tier, AuditWorkflow)
     logger.info("workflow=%s", WorkflowClass.__name__)
 
-    workflow = WorkflowClass(llm=llm, timeout=120)
+    workflow = WorkflowClass(llm=llm, timeout=300)
 
     try:
         handler = workflow.run(

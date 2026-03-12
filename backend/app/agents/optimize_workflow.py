@@ -274,7 +274,7 @@ class OptimizeWorkflow(Workflow):
         )
 
         try:
-            response = await self.llm.acomplete(prompt)
+            response = await self.llm.acomplete(prompt, max_tokens=200)
             parsed = json.loads(str(response))
             return {
                 "tags": parsed.get("tags", []),
