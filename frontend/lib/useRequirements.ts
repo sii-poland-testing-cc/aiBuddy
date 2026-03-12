@@ -27,11 +27,19 @@ export interface RequirementsStats {
   human_reviewed_count: number;
 }
 
+export interface ExtractionProgress {
+  message: string;
+  progress: number;
+  stage: string;
+}
+
 export function useRequirements(projectId: string) {
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [stats, setStats] = useState<RequirementsStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
 
   const fetchAll = useCallback(async () => {
     if (!projectId) return;
@@ -73,6 +81,56 @@ export function useRequirements(projectId: string) {
     }
   }, [projectId]);
 
+  const extractRequirements = useCallback(async (message = "") => {
+    if (!projectId || isExtracting) return;
+    setIsExtracting(true);
+    setError(null);
+    setExtractionProgress({ message: "Łączenie z serwerem…", progress: 0, stage: "extract" });
+
+    try {
+      const res = await fetch(`${API_BASE}/api/requirements/${projectId}/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      if (!res.body) throw new Error("No response body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6).trim();
+          if (payload === "[DONE]") break;
+          try {
+            const ev = JSON.parse(payload);
+            if (ev.type === "progress") {
+              setExtractionProgress(ev.data as ExtractionProgress);
+            } else if (ev.type === "result") {
+              // Stream complete — reload requirements from DB
+              await fetchAll();
+            } else if (ev.type === "error") {
+              setError(ev.data?.message ?? "Ekstrakcja nie powiodła się.");
+            }
+          } catch {
+            // malformed line — skip
+          }
+        }
+      }
+    } catch {
+      setError("Nie udało się wyodrębnić wymagań. Sprawdź czy kontekst projektu jest zbudowany.");
+    } finally {
+      setIsExtracting(false);
+      setExtractionProgress(null);
+    }
+  }, [projectId, isExtracting, fetchAll]);
+
   const patchRequirement = useCallback(
     async (
       reqId: string,
@@ -111,7 +169,6 @@ export function useRequirements(projectId: string) {
           }
         );
         if (!res.ok) {
-          // Revert on failure
           await fetchAll();
         }
       } catch {
@@ -130,7 +187,10 @@ export function useRequirements(projectId: string) {
     stats,
     loading,
     error,
+    isExtracting,
+    extractionProgress,
     patchRequirement,
+    extractRequirements,
     refresh: fetchAll,
     retry: fetchAll,
   };

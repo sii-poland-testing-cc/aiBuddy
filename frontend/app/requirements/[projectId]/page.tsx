@@ -228,9 +228,12 @@ interface RegistryProps {
   loading: boolean;
   onMarkReviewed: (id: string) => void;
   projectId: string;
+  onExtract: () => void;
+  isExtracting: boolean;
+  contextReady: boolean;
 }
 
-function RequirementsRegistry({ requirements, stats, loading, onMarkReviewed, projectId }: RegistryProps) {
+function RequirementsRegistry({ requirements, stats, loading, onMarkReviewed, projectId, onExtract, isExtracting, contextReady }: RegistryProps) {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -314,19 +317,34 @@ function RequirementsRegistry({ requirements, stats, loading, onMarkReviewed, pr
             <p className="text-sm font-medium text-buddy-text mb-1">
               Nie wyodrębniono jeszcze wymagań
             </p>
-            <p className="text-xs text-buddy-text-muted leading-relaxed max-w-sm">
-              Najpierw zbuduj kontekst w{" "}
-              <span className="text-buddy-text font-medium">🧠 Context Builder</span>, wgrywając
-              dokumentację projektu. Potem wróć tutaj i kliknij{" "}
-              <span className="text-buddy-text font-medium">„Wyodrębnij wymagania"</span>.
-            </p>
+            {contextReady ? (
+              <p className="text-xs text-buddy-text-muted leading-relaxed max-w-sm">
+                Kontekst projektu jest gotowy. Kliknij przycisk poniżej, aby wyodrębnić wymagania z dokumentacji.
+              </p>
+            ) : (
+              <p className="text-xs text-buddy-text-muted leading-relaxed max-w-sm">
+                Najpierw zbuduj kontekst w{" "}
+                <span className="text-buddy-text font-medium">🧠 Context Builder</span>, wgrywając
+                dokumentację projektu.
+              </p>
+            )}
           </div>
-          <button
-            onClick={() => router.push(`/context/${encodeURIComponent(projectId)}`)}
-            className="px-4 py-2 bg-gradient-to-r from-buddy-gold to-buddy-gold-light text-buddy-surface text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity"
-          >
-            Przejdź do Context Builder →
-          </button>
+          {contextReady ? (
+            <button
+              onClick={onExtract}
+              disabled={isExtracting}
+              className="px-4 py-2 bg-gradient-to-r from-buddy-gold to-buddy-gold-light text-buddy-surface text-xs font-semibold rounded-lg hover:opacity-90 disabled:opacity-40 transition-opacity"
+            >
+              {isExtracting ? "Wyodrębnianie…" : "Wyodrębnij wymagania"}
+            </button>
+          ) : (
+            <button
+              onClick={() => router.push(`/context/${encodeURIComponent(projectId)}`)}
+              className="px-4 py-2 bg-gradient-to-r from-buddy-gold to-buddy-gold-light text-buddy-surface text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity"
+            >
+              Przejdź do Context Builder →
+            </button>
+          )}
         </div>
       ) : filtered.length === 0 ? (
         <div className="text-xs text-buddy-text-faint text-center py-10">
@@ -387,7 +405,13 @@ export default function RequirementsPage({
 
   const { files: projectFiles, uploading, uploadFiles } = useProjectFiles(projectId);
   const { status: contextStatus } = useContextBuilder(projectId);
-  const { requirements, stats, loading, error: reqError, patchRequirement, retry: retryRequirements } = useRequirements(projectId);
+  const {
+    requirements, stats, loading,
+    error: reqError, isExtracting, extractionProgress,
+    patchRequirement, extractRequirements, retry: retryRequirements,
+  } = useRequirements(projectId);
+
+  const contextReady = contextStatus?.rag_ready ?? false;
 
   const handleMarkReviewed = (id: string) => {
     patchRequirement(id, { human_reviewed: true, needs_review: false });
@@ -400,7 +424,7 @@ export default function RequirementsPage({
         projectFiles={projectFiles}
         onUploadFiles={uploadFiles}
         isUploading={uploading}
-        contextReady={contextStatus?.rag_ready}
+        contextReady={contextReady}
         activeModule="requirements"
       />
 
@@ -415,19 +439,45 @@ export default function RequirementsPage({
               Faza 2 — Requirements Extraction &amp; Review
             </div>
           </div>
-          {stats && (
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-buddy-border text-buddy-text-muted border border-buddy-border-dark">
-                {stats.total} reqs
-              </span>
-              {stats.needs_review_count > 0 && (
-                <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-amber-400/10 text-amber-400 border border-amber-400/20">
-                  {stats.needs_review_count} to review
+          <div className="flex items-center gap-2 shrink-0">
+            {stats && (
+              <>
+                <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-buddy-border text-buddy-text-muted border border-buddy-border-dark">
+                  {stats.total} reqs
                 </span>
-              )}
-            </div>
-          )}
+                {stats.needs_review_count > 0 && (
+                  <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-amber-400/10 text-amber-400 border border-amber-400/20">
+                    {stats.needs_review_count} to review
+                  </span>
+                )}
+              </>
+            )}
+            <button
+              onClick={() => extractRequirements()}
+              disabled={isExtracting || !contextReady}
+              title={!contextReady ? "Najpierw zbuduj kontekst w Context Builder" : undefined}
+              className="px-3 py-1.5 bg-gradient-to-r from-buddy-gold to-buddy-gold-light text-buddy-surface text-xs font-semibold rounded-lg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            >
+              {isExtracting ? "Wyodrębnianie…" : requirements.length > 0 ? "↺ Wyodrębnij ponownie" : "Wyodrębnij wymagania"}
+            </button>
+          </div>
         </div>
+
+        {/* Extraction progress bar */}
+        {isExtracting && extractionProgress && (
+          <div className="px-6 py-2 bg-buddy-gold/10 border-b border-buddy-border shrink-0">
+            <div className="flex justify-between text-xs text-buddy-gold mb-1">
+              <span>{extractionProgress.message}</span>
+              <span>{Math.round(extractionProgress.progress * 100)}%</span>
+            </div>
+            <div className="w-full h-0.5 bg-buddy-border rounded-full overflow-hidden">
+              <div
+                className="h-full bg-buddy-gold rounded-full transition-all duration-300"
+                style={{ width: `${extractionProgress.progress * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Main content */}
         <div className="flex-1 flex flex-col gap-4 overflow-hidden p-5">
@@ -449,6 +499,9 @@ export default function RequirementsPage({
             loading={loading}
             onMarkReviewed={handleMarkReviewed}
             projectId={projectId}
+            onExtract={extractRequirements}
+            isExtracting={isExtracting}
+            contextReady={contextReady}
           />
         </div>
       </div>
