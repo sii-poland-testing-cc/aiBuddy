@@ -53,7 +53,7 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
     timeoutRef.current = setTimeout(() => {
       abort.abort();
       setError("Odpowiedź trwa zbyt długo. Spróbuj ponownie.");
-    }, 30_000);
+    }, 120_000);
   };
 
   const addMessage = useCallback(
