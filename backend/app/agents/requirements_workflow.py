@@ -265,7 +265,7 @@ class RequirementsWorkflow(Workflow):
                 stage="extract"
             ))
             context_text, sources = await self.context_builder.build_with_sources(
-                project_id, query=query, top_k=4
+                project_id, query=query, top_k=8
             )
             all_context_parts.append(context_text)
             for s in sources:
@@ -274,8 +274,9 @@ class RequirementsWorkflow(Workflow):
                     all_sources.append(s)
 
         combined_context = "\n\n---\n\n".join(all_context_parts)
-        # Deduplicate chunks that appear in multiple queries; cap at 20K chars to keep LLM fast
-        combined_context = self._deduplicate_context(combined_context, max_chars=20000)
+        # Deduplicate chunks that appear in multiple queries; cap at 30K chars
+        # (top_k=8 × 4 queries × 512 chars/chunk ≈ 16K unique after dedup — well within this)
+        combined_context = self._deduplicate_context(combined_context, max_chars=30000)
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
             message=f"Extracting requirements from {len(seen_filenames)} source document(s)…",
@@ -399,10 +400,10 @@ class RequirementsWorkflow(Workflow):
             logger.info("No LLM configured — returning mock requirements")
             return self._mock_extraction()
 
-        prompt = EXTRACT_REQUIREMENTS_PROMPT + context[:20000]
+        prompt = EXTRACT_REQUIREMENTS_PROMPT + context[:30000]
 
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=4096)
+            response = await self.llm.acomplete(prompt, max_tokens=8192)
             raw = _strip_fences(str(response).strip())
             result = json.loads(raw)
 
