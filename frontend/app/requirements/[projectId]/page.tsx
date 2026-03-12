@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useContextBuilder } from "@/lib/useContextBuilder";
 import { useRequirements, type Requirement } from "@/lib/useRequirements";
@@ -221,9 +222,11 @@ interface RegistryProps {
   stats: import("@/lib/useRequirements").RequirementsStats | null;
   loading: boolean;
   onMarkReviewed: (id: string) => void;
+  projectId: string;
 }
 
-function RequirementsRegistry({ requirements, stats, loading, onMarkReviewed }: RegistryProps) {
+function RequirementsRegistry({ requirements, stats, loading, onMarkReviewed, projectId }: RegistryProps) {
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
@@ -300,8 +303,25 @@ function RequirementsRegistry({ requirements, stats, loading, onMarkReviewed }: 
           <span className="animate-spin">⟳</span> Loading requirements…
         </div>
       ) : requirements.length === 0 ? (
-        <div className="text-xs text-buddy-text-faint text-center py-10">
-          Run Faza 2 Requirements Extraction first.
+        <div className="flex flex-col items-center gap-4 py-12 px-6 text-center">
+          <span className="text-4xl leading-none">📋</span>
+          <div>
+            <p className="text-sm font-medium text-buddy-text mb-1">
+              Nie wyodrębniono jeszcze wymagań
+            </p>
+            <p className="text-xs text-buddy-text-muted leading-relaxed max-w-sm">
+              Najpierw zbuduj kontekst w{" "}
+              <span className="text-buddy-text font-medium">🧠 Context Builder</span>, wgrywając
+              dokumentację projektu. Potem wróć tutaj i kliknij{" "}
+              <span className="text-buddy-text font-medium">„Wyodrębnij wymagania"</span>.
+            </p>
+          </div>
+          <button
+            onClick={() => router.push(`/context/${encodeURIComponent(projectId)}`)}
+            className="px-4 py-2 bg-gradient-to-r from-buddy-gold to-buddy-gold-light text-buddy-surface text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity"
+          >
+            Przejdź do Context Builder →
+          </button>
         </div>
       ) : filtered.length === 0 ? (
         <div className="text-xs text-buddy-text-faint text-center py-10">
@@ -417,6 +437,7 @@ export default function RequirementsPage({
             stats={stats}
             loading={loading}
             onMarkReviewed={handleMarkReviewed}
+            projectId={projectId}
           />
         </div>
       </div>

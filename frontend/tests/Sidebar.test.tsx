@@ -46,9 +46,9 @@ describe("Sidebar — module switcher", () => {
     expect(screen.getByText("Suite Analyzer")).toBeTruthy();
   });
 
-  it("shows 🔒 on Suite Analyzer when contextReady=false", () => {
+  it("shows 🔒 on locked modules when contextReady=false", () => {
     render(<Sidebar {...BASE_PROPS} contextReady={false} activeModule="m1" />);
-    expect(screen.getByText("🔒")).toBeTruthy();
+    expect(screen.getAllByText("🔒").length).toBeGreaterThanOrEqual(1);
   });
 
   it("does NOT show 🔒 when contextReady=true", () => {

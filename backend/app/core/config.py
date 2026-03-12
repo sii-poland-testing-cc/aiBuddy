@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL_ID: str = "claude-sonnet-4-6"
 
+    # HuggingFace embedding model (used when LLM_PROVIDER != "bedrock")
+    EMBED_MODEL_NAME: str = "BAAI/bge-m3"
+
     # Vector store (local Chroma by default, swap to pgvector in prod)
     VECTOR_STORE_TYPE: str = "chroma"          # "chroma" | "pgvector"
     CHROMA_PERSIST_DIR: str = "./data/chroma"

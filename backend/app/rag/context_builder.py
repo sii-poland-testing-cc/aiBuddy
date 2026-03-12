@@ -7,6 +7,7 @@ and retrieves relevant chunks for the Audit/Optimize/Regenerate agents.
 Swap VECTOR_STORE_TYPE to "pgvector" for production deployments.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,8 @@ import chromadb
 
 from app.core.config import settings as cfg
 
+logger = logging.getLogger("ai_buddy")
+
 
 def _build_embed_model():
     """Return embed model based on LLM_PROVIDER. Bedrock for AWS, local HuggingFace otherwise."""
@@ -33,9 +36,13 @@ def _build_embed_model():
             model_name=cfg.BEDROCK_EMBED_MODEL_ID,
             region_name=cfg.AWS_REGION,
         )
-    # Anthropic (or any non-Bedrock provider) → local model, no API key needed
+    # Anthropic (or any non-Bedrock provider) → local multilingual model, no API key needed
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-    return HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    logger.warning(
+        "Embedding model changed — rebuild M1 context for existing projects "
+        "to re-embed with the new model."
+    )
+    return HuggingFaceEmbedding(model_name=cfg.EMBED_MODEL_NAME)
 
 
 class ContextBuilder:

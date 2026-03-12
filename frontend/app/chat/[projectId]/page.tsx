@@ -119,6 +119,30 @@ export default function ChatPage({
           </div>
         )}
 
+        {projectFiles.length === 0 && !uploading && (
+          <div className="mx-6 mt-3 shrink-0 flex items-start gap-2 px-3 py-2 rounded-lg bg-buddy-border/40 border border-buddy-border text-[11px] text-buddy-text-muted leading-relaxed">
+            <span className="shrink-0 mt-0.5">💡</span>
+            <span>
+              <span className="font-medium text-buddy-text">Wskazówka:</span>{" "}
+              Dla najlepszych wyników, najpierw{" "}
+              <button
+                onClick={() => router.push(`/context/${encodeURIComponent(projectId)}`)}
+                className="text-buddy-gold hover:text-buddy-gold-light underline underline-offset-2 transition-colors"
+              >
+                zbuduj kontekst
+              </button>{" "}
+              i{" "}
+              <button
+                onClick={() => router.push(`/requirements/${encodeURIComponent(projectId)}`)}
+                className="text-buddy-gold hover:text-buddy-gold-light underline underline-offset-2 transition-colors"
+              >
+                wyodrębnij wymagania
+              </button>
+              .
+            </span>
+          </div>
+        )}
+
         <MessageList
           messages={displayMessages}
           isLoading={isLoading}

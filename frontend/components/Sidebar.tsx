@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useProjects } from "@/lib/useProjects";
 import { useContextStatuses } from "@/lib/useContextStatuses";
 import type { ProjectFile } from "@/lib/useProjectFiles";
@@ -265,6 +266,19 @@ export default function Sidebar({
           })}
         </div>
       )}
+
+      {/* Getting started link */}
+      <div className="px-3 py-2 border-t border-buddy-border">
+        <Link
+          href="/getting-started"
+          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left hover:bg-buddy-border/40 transition-colors"
+        >
+          <span className="text-sm leading-none">📖</span>
+          <span className="text-[11px] text-buddy-text-faint hover:text-buddy-text-muted transition-colors">
+            Jak zacząć
+          </span>
+        </Link>
+      </div>
 
       {/* User footer */}
       <div className="px-4 py-3 border-t border-buddy-border flex items-center gap-2.5 text-sm">

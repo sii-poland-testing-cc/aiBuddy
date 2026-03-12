@@ -115,7 +115,7 @@ After `/build` completes, artefacts are written to the `Project` DB row:
 - Context page sends `tier: "rag_chat"` to `/api/chat/stream`; this tier bypasses M2 file auto-loading.
 
 ### Known gaps (M1)
-- Embeddings use `BAAI/bge-small-en-v1.5` (HuggingFace local) when `LLM_PROVIDER=anthropic`; Bedrock Titan when `LLM_PROVIDER=bedrock`
+- Embeddings use `BAAI/bge-m3` (multilingual, 100+ languages including Polish) when `LLM_PROVIDER=anthropic`; Bedrock Titan when `LLM_PROVIDER=bedrock`. Override with `EMBED_MODEL_NAME` env var.
 - Backend doesn't return `x,y` on mind map nodes; `MindMap.tsx` uses dagre for layout (TB direction)
 
 ---
@@ -244,7 +244,7 @@ Controlled by `LLM_PROVIDER` env var. Logic in `backend/app/core/llm.py`.
 | Provider | Embed model |
 |----------|------------|
 | `bedrock` | Bedrock Titan (`BEDROCK_EMBED_MODEL_ID`) |
-| `anthropic` (or non-bedrock) | `BAAI/bge-small-en-v1.5` via HuggingFace (local, no API key) |
+| `anthropic` (or non-bedrock) | `BAAI/bge-m3` via HuggingFace (multilingual, ~560 MB on first run, no API key). Override with `EMBED_MODEL_NAME` env var. |
 
 `_build_embed_model()` in `context_builder.py` handles the switch.
 
@@ -354,6 +354,7 @@ cd frontend && npm test
 | `BEDROCK_EMBED_MODEL_ID` | `amazon.titan-embed-text-v2:0` | |
 | `ANTHROPIC_API_KEY` | `""` | Required when `LLM_PROVIDER=anthropic` |
 | `ANTHROPIC_MODEL_ID` | `claude-sonnet-4-6` | |
+| `EMBED_MODEL_NAME` | `BAAI/bge-m3` | HuggingFace embed model (non-Bedrock only) |
 | `VECTOR_STORE_TYPE` | `chroma` | `chroma` or `pgvector` |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/ai_buddy.db` | |
 | `MAX_UPLOAD_MB` | `50` | |
