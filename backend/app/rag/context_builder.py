@@ -28,21 +28,29 @@ from app.core.config import settings as cfg
 logger = logging.getLogger("ai_buddy")
 
 
+_embed_model_singleton = None
+
+
 def _build_embed_model():
-    """Return embed model based on LLM_PROVIDER. Bedrock for AWS, local HuggingFace otherwise."""
+    """Return embed model based on LLM_PROVIDER. Cached as a module-level singleton."""
+    global _embed_model_singleton
+    if _embed_model_singleton is not None:
+        return _embed_model_singleton
+
     if cfg.LLM_PROVIDER.lower() == "bedrock":
         from llama_index.embeddings.bedrock import BedrockEmbedding
-        return BedrockEmbedding(
+        _embed_model_singleton = BedrockEmbedding(
             model_name=cfg.BEDROCK_EMBED_MODEL_ID,
             region_name=cfg.AWS_REGION,
         )
-    # Anthropic (or any non-Bedrock provider) → local multilingual model, no API key needed
-    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-    logger.warning(
-        "Embedding model changed — rebuild M1 context for existing projects "
-        "to re-embed with the new model."
-    )
-    return HuggingFaceEmbedding(model_name=cfg.EMBED_MODEL_NAME)
+    else:
+        # Anthropic (or any non-Bedrock provider) → local multilingual model, no API key needed
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+        logger.info("Loading HuggingFace embedding model '%s' (first load only)…", cfg.EMBED_MODEL_NAME)
+        _embed_model_singleton = HuggingFaceEmbedding(model_name=cfg.EMBED_MODEL_NAME)
+        logger.info("Embedding model loaded and cached.")
+
+    return _embed_model_singleton
 
 
 class ContextBuilder:

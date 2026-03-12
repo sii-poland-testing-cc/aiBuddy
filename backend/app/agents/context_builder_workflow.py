@@ -216,9 +216,10 @@ class ContextBuilderWorkflow(Workflow):
         logger.info("[DEBUG] _extract_entities: llm present (%s) → LLM BRANCH", type(self.llm).__name__)
 
         prompt = f"""You are a domain analyst reviewing software QA documentation.
-Extract ALL domain entities and their relationships.
+Extract the 40 most important domain entities and their relationships.
+Keep each description under 15 words. Prefer specificity over completeness.
 
-Return ONLY valid JSON — no preamble, no markdown fences:
+Return ONLY valid JSON — no preamble, no markdown fences, no commentary:
 {{
   "entities": [
     {{"id": "e1", "name": "...", "type": "process|actor|system|data|rule", "description": "..."}}
