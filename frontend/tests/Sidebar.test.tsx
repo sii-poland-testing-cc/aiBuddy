@@ -11,6 +11,8 @@ vi.mock("next/navigation", () => ({
 
 // ── Mock useProjects hook ──────────────────────────────────────────────────
 
+const mockCreateProject = vi.fn();
+
 vi.mock("../lib/useProjects", () => ({
   useProjects: () => ({
     projects: [
@@ -21,7 +23,7 @@ vi.mock("../lib/useProjects", () => ({
         files: [],
       },
     ],
-    createProject: vi.fn(),
+    createProject: mockCreateProject,
   }),
 }));
 
@@ -37,6 +39,7 @@ const BASE_PROPS = {
 describe("Sidebar — module switcher", () => {
   beforeEach(() => {
     mockPush.mockClear();
+    mockCreateProject.mockClear();
   });
 
   it("renders both module buttons", () => {
@@ -93,5 +96,57 @@ describe("Sidebar — module switcher", () => {
     // Active item has border-buddy-gold class applied
     const activeBtn = container.querySelector(".border-buddy-gold");
     expect(activeBtn).toBeTruthy();
+  });
+
+  it("clicking '+ Nowy projekt' shows the inline creation form", async () => {
+    render(<Sidebar {...BASE_PROPS} contextReady={true} activeModule="m1" />);
+    await userEvent.click(screen.getByText(/Nowy projekt/));
+    expect(screen.getByPlaceholderText("Nazwa projektu")).toBeTruthy();
+  });
+
+  it("submitting a project name calls createProject and navigates", async () => {
+    mockCreateProject.mockResolvedValue({
+      project_id: "proj-new",
+      name: "My New Project",
+    });
+
+    render(<Sidebar {...BASE_PROPS} contextReady={true} activeModule="m1" />);
+
+    // Open the creation form
+    await userEvent.click(screen.getByText(/Nowy projekt/));
+
+    // Type the project name
+    const input = screen.getByPlaceholderText("Nazwa projektu");
+    await userEvent.type(input, "My New Project");
+
+    // Click the ✓ submit button
+    await userEvent.click(screen.getByRole("button", { name: "✓" }));
+
+    expect(mockCreateProject).toHaveBeenCalledWith("My New Project");
+    expect(mockPush).toHaveBeenCalledWith(
+      expect.stringContaining("/chat/proj-new")
+    );
+  });
+
+  it("does NOT navigate when createProject returns null (backend error)", async () => {
+    mockCreateProject.mockResolvedValue(null);
+
+    render(<Sidebar {...BASE_PROPS} contextReady={true} activeModule="m1" />);
+    await userEvent.click(screen.getByText(/Nowy projekt/));
+    const input = screen.getByPlaceholderText("Nazwa projektu");
+    await userEvent.type(input, "Broken Project");
+    await userEvent.click(screen.getByRole("button", { name: "✓" }));
+
+    expect(mockCreateProject).toHaveBeenCalledWith("Broken Project");
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("pressing Escape cancels the creation form", async () => {
+    render(<Sidebar {...BASE_PROPS} contextReady={true} activeModule="m1" />);
+    await userEvent.click(screen.getByText(/Nowy projekt/));
+    expect(screen.getByPlaceholderText("Nazwa projektu")).toBeTruthy();
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByPlaceholderText("Nazwa projektu")).toBeNull();
   });
 });

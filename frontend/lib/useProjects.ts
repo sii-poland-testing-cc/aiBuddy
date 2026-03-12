@@ -26,7 +26,7 @@ export function useProjects() {
   const createProject = useCallback(
     async (name: string): Promise<Project | null> => {
       try {
-        const res = await fetch(`${API_BASE}/api/projects`, {
+        const res = await fetch(`${API_BASE}/api/projects/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
