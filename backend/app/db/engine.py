@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import settings
 from app.db.models import Base
+# engine.py — ADD this import
+import app.db.requirements_models  # noqa: F401 — registers Faza 2 tables
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -34,7 +36,7 @@ async def init_db() -> None:
     """
     Create all tables that don't yet exist and apply any missing column migrations.
     Safe to call on every startup (idempotent).
-    schema v4 — ProjectFile.source_type
+    schema v5 — ProjectFile.source_type
     """
     url = settings.DATABASE_URL
     if url.startswith("sqlite"):

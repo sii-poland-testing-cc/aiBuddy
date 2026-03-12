@@ -10,6 +10,11 @@ then returns a structured audit report with:
 
 Events:
   StartAuditEvent  →  ParseEvent  →  AnalyseEvent  →  StopEvent
+
+Faza 2 integration:
+  When a Requirements Registry exists (from requirements_workflow.py),
+  the analyse step uses it for richer coverage computation.
+  Falls back to original LLM extraction when no registry is available.
 """
 
 import asyncio
@@ -153,39 +158,53 @@ class AuditWorkflow(Workflow):
         else:
             logger.info("project=%s — retrieved %d RAG source(s)", project_id, len(rag_sources))
 
-        requirements_from_docs = await self._extract_requirements(rag_context)
+        # ── Faza 2: Use Requirements Registry when available ──────────────
+        # compute_registry_coverage() checks the DB for a Faza 2 registry.
+        # If found → uses rich requirement details for matching.
+        # If not found → falls back to original _extract_requirements() logic.
+        from app.agents.audit_workflow_integration import compute_registry_coverage
+
+        coverage_result = await compute_registry_coverage(
+            project_id, cases, rag_context, self.llm
+        )
+
+        requirements_from_docs = coverage_result["requirements_from_docs"]
         await ctx.store.set("requirements_from_docs", requirements_from_docs)
         logger.info("[DEBUG] requirements_from_docs: %s", requirements_from_docs)
 
-        covered = await self._requirements_in_tests(cases, requirements_from_docs)
+        covered = coverage_result["requirements_covered"]
         await ctx.store.set("requirements_covered", covered)
         logger.info("[DEBUG] requirements_covered: %s", covered)
+
+        # Store Faza 2 enrichment data for the report step
+        await ctx.store.set(
+            "per_requirement_scores",
+            coverage_result.get("per_requirement_scores", []),
+        )
+        await ctx.store.set(
+            "registry_available",
+            coverage_result.get("registry_available", False),
+        )
+        # ── End Faza 2 block ──────────────────────────────────────────────
 
         recommendations = await self._llm_recommendations(cases, rag_context, user_message)
 
         # Requirement-based coverage
-        reqs_from_docs = await ctx.store.get("requirements_from_docs") or []
-        reqs_covered   = await ctx.store.get("requirements_covered") or []
-
-        total     = len(reqs_from_docs)
-        n_covered = len(set(reqs_covered) & set(reqs_from_docs))
-        uncovered = [r for r in reqs_from_docs if r not in set(reqs_covered)]
-
-        logger.info("[DEBUG] coverage_pct computed: total=%d, n_covered=%d, pct=%s",
-                    total, n_covered, round((n_covered / total) * 100, 1) if total else 0.0)
+        total     = coverage_result["requirements_total"]
+        n_covered = coverage_result["requirements_covered_count"]
+        uncovered = coverage_result["requirements_uncovered"]
+        coverage_pct = coverage_result["coverage_pct"]
 
         if total == 0:
-            coverage_pct = 0.0
             recommendations = list(recommendations) + [
                 "No domain context available — run M1 Context Builder "
                 "first for accurate requirement coverage analysis"
             ]
-        else:
-            coverage_pct = round((n_covered / total) * 100, 1)
 
         logger.info(
-            "project=%s — coverage=%s%% (%d/%d reqs covered); uncovered=%s",
+            "project=%s — coverage=%s%% (%d/%d reqs covered); uncovered=%s; registry=%s",
             project_id, coverage_pct, n_covered, total, uncovered,
+            coverage_result.get("registry_available", False),
         )
 
         ctx.write_event_to_stream(
@@ -250,6 +269,14 @@ class AuditWorkflow(Workflow):
             "rag_sources": ev.rag_sources,
             "next_tier": "optimize" if ev.coverage_pct >= 50 else "regenerate",
         }
+
+        # ── Faza 2: Append per-requirement scores when available ──────────
+        per_req_scores = await ctx.store.get("per_requirement_scores") or []
+        registry_available = await ctx.store.get("registry_available") or False
+
+        report["per_requirement_scores"] = per_req_scores
+        report["registry_available"] = registry_available
+        # ── End Faza 2 block ──────────────────────────────────────────────
 
         return StopEvent(result=report)
 
@@ -433,7 +460,13 @@ Respond with ONLY a JSON object, no markdown:
     async def _requirements_in_tests(
         self, cases: List[Dict], known_reqs: List[str]
     ) -> List[str]:
-        """Return which known requirement IDs are mentioned in the test suite."""
+        """Return which known requirement IDs are mentioned in the test suite.
+
+        NOTE: This method is kept for backward compatibility.
+        The primary path now goes through audit_workflow_integration.compute_registry_coverage(),
+        which calls its own matching logic. This method is still used as a fallback
+        inside that integration layer.
+        """
         if not known_reqs:
             return []
 
@@ -496,7 +529,12 @@ Respond with ONLY a JSON object, no markdown:
         return json.loads(text)
 
     async def _extract_requirements(self, rag_context: str) -> List[str]:
-        """Extract formal requirement IDs (e.g. FR-001) from the RAG context."""
+        """Extract formal requirement IDs (e.g. FR-001) from the RAG context.
+
+        NOTE: This method is kept for backward compatibility.
+        The primary path now goes through audit_workflow_integration.compute_registry_coverage().
+        This method is still called as a fallback when no Faza 2 registry exists.
+        """
         logger.info("[DEBUG] _extract_requirements: RAG context length: %d", len(rag_context))
         logger.info("[DEBUG] _extract_requirements: LLM instance: %s", self.llm)
 

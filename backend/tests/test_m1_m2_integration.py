@@ -508,20 +508,32 @@ def test_coverage_reflects_requirement_gaps(app_client):
         )
     assert up.status_code == 200
 
-    # 3. Patch _extract_requirements to return 10 deterministic FRs.
-    #    Pattern matching in _requirements_in_tests will find FR-002 and FR-003
-    #    from the sample CSV test case names — the other 8 are uncovered.
+    # 3. Patch compute_registry_coverage to return 10 deterministic FRs.
+    #    FR-002 and FR-003 are covered; the other 8 are uncovered.
     FAKE_REQS = [
         "FR-001", "FR-002", "FR-003", "FR-004", "FR-005",
         "FR-006", "FR-007", "FR-008", "FR-009", "FR-010",
     ]
+    FAKE_COVERAGE_RESULT = {
+        "requirements_from_docs": FAKE_REQS,
+        "requirements_covered": ["FR-002", "FR-003"],
+        "coverage_pct": 20.0,
+        "requirements_total": 10,
+        "requirements_covered_count": 2,
+        "requirements_uncovered": [r for r in FAKE_REQS if r not in ("FR-002", "FR-003")],
+        "registry_available": False,
+        "per_requirement_scores": [],
+    }
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(
         return_value='["Add tests for uncovered FRs","Improve tag coverage",'
                      '"Review FR-001 scenarios","Add negative tests","Add integration tests"]'
     )
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=FAKE_REQS)), \
+    with patch(
+             "app.agents.audit_workflow_integration.compute_registry_coverage",
+             AsyncMock(return_value=FAKE_COVERAGE_RESULT),
+         ), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -589,7 +601,21 @@ def test_coverage_zero_without_m1_context(app_client):
         return_value='["Add more edge case tests."]'
     )
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    EMPTY_COVERAGE_RESULT = {
+        "requirements_from_docs": [],
+        "requirements_covered": [],
+        "coverage_pct": 0.0,
+        "requirements_total": 0,
+        "requirements_covered_count": 0,
+        "requirements_uncovered": [],
+        "registry_available": False,
+        "per_requirement_scores": [],
+    }
+
+    with patch(
+             "app.agents.audit_workflow_integration.compute_registry_coverage",
+             AsyncMock(return_value=EMPTY_COVERAGE_RESULT),
+         ), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
