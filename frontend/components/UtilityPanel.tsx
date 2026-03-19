@@ -503,7 +503,14 @@ export default function UtilityPanel({
             <div data-testid="panel-mode-context" className="flex flex-col" style={{ gap: 6 }}>
               <SourcesCard
                 cardId="sources-context"
-                projectFiles={projectFiles}
+                projectFiles={(contextStatus?.context_files ?? []).map((filename) => ({
+                  id: filename,
+                  filename,
+                  file_path: filename,
+                  source_type: "file" as const,
+                  selected: true,
+                  isNew: false,
+                }))}
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
               />
