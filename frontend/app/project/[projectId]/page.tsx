@@ -368,7 +368,7 @@ export default function ProjectPage() {
           open={panelOpen}
           activeMode={activeMode}
           projectId={projectId}
-          projectFiles={panelFiles}
+          auditFiles={panelFiles}
           onAddFiles={handleAttachFiles}
           onFileToggle={handleFileToggle}
           onOpenMindMap={() => setMmModalOpen(true)}

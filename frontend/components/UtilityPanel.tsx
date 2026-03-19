@@ -31,7 +31,7 @@ interface UtilityPanelProps {
   activeMode: Mode;
   projectId: string;
   // Sources
-  projectFiles?: PanelFile[];
+  auditFiles?: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
   // Mind Map
@@ -154,20 +154,20 @@ function PanelCard({
 
 function SourcesCard({
   cardId,
-  projectFiles = [],
+  auditFiles = [],
   onAddFiles,
   onFileToggle,
 }: {
   cardId: string;
-  projectFiles: PanelFile[];
+  auditFiles: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"files" | "links">("files");
 
-  const newFiles  = projectFiles.filter((f) => f.source_type === "file" && f.isNew);
-  const usedFiles = projectFiles.filter((f) => f.source_type === "file" && !f.isNew);
-  const links     = projectFiles.filter((f) => f.source_type !== "file");
+  const newFiles  = auditFiles.filter((f) => f.source_type === "file" && f.isNew);
+  const usedFiles = auditFiles.filter((f) => f.source_type === "file" && !f.isNew);
+  const links     = auditFiles.filter((f) => f.source_type !== "file");
 
   const linkBadgeStyle = (type: string) => {
     if (type === "confluence") return { bg: "rgba(91,127,186,0.2)", color: "#5b7fba" };
@@ -214,7 +214,7 @@ function SourcesCard({
               <FileList files={usedFiles} isNew={false} onFileToggle={onFileToggle} />
             </>
           )}
-          {projectFiles.filter((f) => f.source_type === "file").length === 0 && (
+          {auditFiles.filter((f) => f.source_type === "file").length === 0 && (
             <p className="text-buddy-text-faint" style={{ fontSize: 11, textAlign: "center", padding: "8px 0" }}>
               Brak plików
             </p>
@@ -450,7 +450,7 @@ function MindMapThumbnail() {
 export default function UtilityPanel({
   open,
   activeMode,
-  projectFiles = [],
+  auditFiles = [],
   onAddFiles = () => console.log("onAddFiles"),
   onFileToggle,
   onOpenMindMap = () => console.log("onOpenMindMap"),
@@ -503,7 +503,7 @@ export default function UtilityPanel({
             <div data-testid="panel-mode-context" className="flex flex-col" style={{ gap: 6 }}>
               <SourcesCard
                 cardId="sources-context"
-                projectFiles={(contextStatus?.context_files ?? []).map((filename) => ({
+                auditFiles={(contextStatus?.context_files ?? []).map((filename) => ({
                   id: filename,
                   filename,
                   file_path: filename,
@@ -681,7 +681,7 @@ export default function UtilityPanel({
             <div data-testid="panel-mode-requirements" className="flex flex-col" style={{ gap: 6 }}>
               <SourcesCard
                 cardId="sources-requirements"
-                projectFiles={projectFiles}
+                auditFiles={auditFiles}
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
               />
@@ -743,7 +743,7 @@ export default function UtilityPanel({
             <div data-testid="panel-mode-audit" className="flex flex-col" style={{ gap: 6 }}>
               <SourcesCard
                 cardId="sources-audit"
-                projectFiles={projectFiles}
+                auditFiles={auditFiles}
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
               />

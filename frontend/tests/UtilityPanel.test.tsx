@@ -95,11 +95,11 @@ describe("UtilityPanel", () => {
 
   // ── Sources card ────────────────────────────────────────────────────────────
 
-  // SourcesCard with projectFiles is used in audit/requirements mode.
+  // SourcesCard with auditFiles is used in audit/requirements mode.
   // Context mode derives its file list from contextStatus.context_files instead.
 
   it("renders new and used file sections in sources card (audit mode)", () => {
-    renderPanel("audit", { projectFiles: FILES });
+    renderPanel("audit", { auditFiles: FILES });
     expect(screen.getByText("Nowe")).toBeInTheDocument();
     expect(screen.getByText("Poprzednio użyte")).toBeInTheDocument();
     expect(screen.getByText("new_suite.xlsx")).toBeInTheDocument();
@@ -107,17 +107,17 @@ describe("UtilityPanel", () => {
   });
 
   it("NEW badge visible only for new files (audit mode)", () => {
-    renderPanel("audit", { projectFiles: FILES });
+    renderPanel("audit", { auditFiles: FILES });
     expect(screen.getByText("NEW")).toBeInTheDocument();
   });
 
   it("switching to Links tab shows link sources (audit mode)", async () => {
-    renderPanel("audit", { projectFiles: FILES });
+    renderPanel("audit", { auditFiles: FILES });
     await userEvent.click(screen.getByTestId("src-tab-links"));
     expect(screen.getByText("conf_page")).toBeInTheDocument();
   });
 
-  it("context mode sources card shows contextStatus.context_files, not projectFiles", () => {
+  it("context mode sources card shows contextStatus.context_files, not auditFiles", () => {
     const contextStatus = {
       project_id: "p1",
       rag_ready: true,
@@ -125,7 +125,7 @@ describe("UtilityPanel", () => {
       stats: null,
       context_files: ["srs_payment.docx", "test_plan.docx"],
     };
-    renderPanel("context", { projectFiles: FILES, contextStatus });
+    renderPanel("context", { auditFiles: FILES, contextStatus });
     expect(screen.getByText("srs_payment.docx")).toBeInTheDocument();
     expect(screen.getByText("test_plan.docx")).toBeInTheDocument();
     // audit test files must NOT appear in context sources
@@ -134,7 +134,7 @@ describe("UtilityPanel", () => {
 
   it("+ Dodaj pliki button calls onAddFiles", async () => {
     const onAddFiles = vi.fn();
-    renderPanel("context", { projectFiles: FILES, onAddFiles });
+    renderPanel("context", { auditFiles: FILES, onAddFiles });
     await userEvent.click(screen.getByText("+ Dodaj pliki"));
     expect(onAddFiles).toHaveBeenCalledTimes(1);
   });
