@@ -1,59 +1,117 @@
 "use client";
 
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useProjects } from "../lib/useProjects";
+import { useContextStatuses } from "../lib/useContextStatuses";
 
 export default function Home() {
   const router = useRouter();
-  const [projectId, setProjectId] = useState("");
+  const { projects, createProject } = useProjects();
+  const statuses = useContextStatuses(projects.map((p) => p.project_id));
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (creating) inputRef.current?.focus();
+  }, [creating]);
+
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    const id = projectId.trim();
-    if (id) router.push(`/chat/${encodeURIComponent(id)}`);
+    const name = newName.trim();
+    if (!name || submitting) return;
+    setSubmitting(true);
+    const project = await createProject(name);
+    setSubmitting(false);
+    if (project) {
+      router.push(`/project/${encodeURIComponent(project.project_id)}`);
+    }
+  };
+
+  const formatDate = (iso?: string) => {
+    if (!iso) return "";
+    return new Date(iso).toLocaleDateString("pl-PL", {
+      day: "numeric", month: "short", year: "numeric",
+    });
   };
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-buddy-base p-8">
-      <div className="w-full max-w-md space-y-6">
-        <div className="text-center space-y-2">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-buddy-gold to-buddy-gold-light text-xl font-bold text-buddy-surface mb-2">
+      <div className="w-full max-w-[420px] px-2">
+
+        {/* Logo + title */}
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-buddy-gold to-buddy-gold-light text-xl font-bold text-buddy-surface mb-4">
             Q
           </div>
-          <h1 className="text-3xl font-semibold text-buddy-gold-light">AI Buddy</h1>
-          <p className="text-buddy-text-muted text-sm">
-            QA Agent Platform — Test Suite Audit &amp; Optimization
-          </p>
+          <h1 className="text-xl font-semibold text-buddy-text">AI Buddy</h1>
+          <p className="text-sm text-buddy-text-muted mt-1">QA Agent Platform</p>
         </div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="bg-buddy-surface border border-buddy-border rounded-xl p-6 space-y-4"
-        >
-          <div className="space-y-1.5">
-            <label
-              className="text-sm font-medium text-buddy-text-muted"
-              htmlFor="project-id"
+        {/* Project list */}
+        <div className="flex flex-col gap-0.5 mb-6">
+          {projects.map((p) => (
+            <button
+              key={p.project_id}
+              onClick={() => router.push(`/chat/${encodeURIComponent(p.project_id)}`)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-buddy-elevated transition-colors text-left group"
             >
-              Project ID
-            </label>
+              <div className={`w-2 h-2 rounded-full shrink-0 transition-colors ${
+                statuses[p.project_id] ? "bg-buddy-success" : "bg-buddy-border-dark"
+              }`} />
+              <div className="flex-1 min-w-0">
+                <span className="block text-sm font-medium text-buddy-text group-hover:text-buddy-gold-light transition-colors truncate">
+                  {p.name}
+                </span>
+                {p.created_at && (
+                  <span className="block text-xs text-buddy-text-dim mt-0.5">
+                    {formatDate(p.created_at)}
+                  </span>
+                )}
+              </div>
+              <span className="text-buddy-text-faint opacity-0 group-hover:opacity-100 transition-opacity">
+                →
+              </span>
+            </button>
+          ))}
+
+          {projects.length === 0 && (
+            <p className="text-center text-xs text-buddy-text-dim py-4">
+              Brak projektów — utwórz pierwszy poniżej.
+            </p>
+          )}
+        </div>
+
+        {/* Create form / dashed button */}
+        {creating ? (
+          <form onSubmit={handleCreate} className="flex gap-2">
             <input
-              id="project-id"
-              type="text"
-              value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-              placeholder="e.g. my-project"
-              className="w-full rounded-lg border border-buddy-border-dark bg-buddy-elevated px-3 py-2 text-sm text-buddy-text placeholder:text-buddy-text-faint focus:outline-none focus:border-buddy-gold"
+              ref={inputRef}
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setCreating(false)}
+              placeholder="Nazwa projektu…"
+              className="flex-1 bg-buddy-elevated border border-buddy-border-dark rounded-xl px-4 py-3 text-sm text-buddy-text placeholder:text-buddy-text-faint focus:outline-none focus:border-buddy-gold"
             />
-          </div>
+            <button
+              type="submit"
+              disabled={!newName.trim() || submitting}
+              className="px-4 py-3 bg-buddy-gold rounded-xl text-sm font-medium text-buddy-surface hover:bg-buddy-gold-light disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {submitting ? "…" : "Utwórz"}
+            </button>
+          </form>
+        ) : (
           <button
-            type="submit"
-            disabled={!projectId.trim()}
-            className="w-full rounded-lg bg-gradient-to-r from-buddy-gold to-buddy-gold-light px-4 py-2 text-sm font-semibold text-buddy-surface hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            onClick={() => setCreating(true)}
+            className="w-full py-3 text-sm text-buddy-text-muted hover:text-buddy-gold-light border border-dashed border-buddy-border-dark rounded-xl hover:border-buddy-gold transition-all"
           >
-            Open Chat
+            + Nowy projekt
           </button>
-        </form>
+        )}
       </div>
     </main>
   );
