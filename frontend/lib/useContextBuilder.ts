@@ -91,21 +91,28 @@ export function useContextBuilder(projectId: string) {
   }, [projectId]);
 
   const buildContext = useCallback(async (files: File[], mode: "append" | "rebuild" = "append") => {
-    if (!files.length) return;
     setIsBuilding(true);
     setLog([]);
     setStage("parse");
     setProgress(0);
     setError(null);
 
-    const formData = new FormData();
-    for (const f of files) formData.append("files", f);
-
     try {
-      const res = await fetch(
-        `${API_BASE}/api/context/${encodeURIComponent(projectId)}/build?mode=${mode}`,
-        { method: "POST", body: formData }
-      );
+      let res: Response;
+      if (files.length === 0) {
+        // No new files supplied — rebuild from documents already on disk
+        res = await fetch(
+          `${API_BASE}/api/context/${encodeURIComponent(projectId)}/rebuild-existing?mode=${mode}`,
+          { method: "POST" }
+        );
+      } else {
+        const formData = new FormData();
+        for (const f of files) formData.append("files", f);
+        res = await fetch(
+          `${API_BASE}/api/context/${encodeURIComponent(projectId)}/build?mode=${mode}`,
+          { method: "POST", body: formData }
+        );
+      }
       if (!res.ok) throw new Error(`Server error ${res.status}: ${await res.text()}`);
       if (!res.body) throw new Error("No response body");
 
@@ -145,7 +152,7 @@ export function useContextBuilder(projectId: string) {
       await fetchStatus();
     } catch (err: any) {
       if (err.name !== "AbortError") {
-        setError("Nie udało się zbudować kontekstu. Sprawdź czy pliki są w formacie .docx lub .pdf.");
+        setError(err.message || "Nie udało się zbudować kontekstu. Sprawdź czy pliki są w formacie .docx lub .pdf.");
       }
     } finally {
       setIsBuilding(false);

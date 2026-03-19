@@ -150,16 +150,37 @@ export default function ProjectPage() {
   const ragReady = contextStatus?.rag_ready ?? false;
 
   // ── Handlers ────────────────────────────────────────────────────────────────
+
+  const handleBuild = useCallback(
+    async (mode: BuildMode) => {
+      await buildContext([], mode);
+    },
+    [buildContext]
+  );
+
+  // Matches: "rebuild", "rebuild context", "przebuduj kontekst", "odbuduj kontekst", etc.
+  const REBUILD_RE = /^(rebuild(\s+(context|kontekst))?|przebuduj(\s+kontekst)?|odbuduj(\s+kontekst)?)$/i;
+
   const handleSend = useCallback(async () => {
     if (!inputValue.trim() && attachedFiles.length === 0) return;
-    const selectedPaths = panelFiles
-      .filter((f) => f.selected)
-      .map((f) => f.file_path);
-    const attachedPaths = attachedFiles.map((f) => f.name); // placeholder paths
+
+    // Context mode: intercept rebuild chat commands → trigger context rebuild
+    if (activeMode === "context" && REBUILD_RE.test(inputValue.trim())) {
+      setInputValue("");
+      await handleBuild(buildMode);
+      return;
+    }
+
+    // Context mode: never include audit panel files — they would bypass the
+    // conversational RAG path and fall back to AuditWorkflow on the backend
+    const selectedPaths = activeMode !== "context"
+      ? panelFiles.filter((f) => f.selected).map((f) => f.file_path)
+      : [];
+    const attachedPaths = attachedFiles.map((f) => f.name);
     await send(inputValue, [...selectedPaths, ...attachedPaths]);
     setInputValue("");
     setAttachedFiles([]);
-  }, [inputValue, attachedFiles, panelFiles, send]);
+  }, [inputValue, attachedFiles, panelFiles, send, activeMode, buildMode, handleBuild]);
 
   const handleTermClick = useCallback((term: ContextGlossaryTerm) => {
     setInputValue(`wyjaśnij termin: ${term.term}`);
@@ -186,22 +207,6 @@ export default function ProjectPage() {
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
     [uploadFiles]
-  );
-
-  const handleBuild = useCallback(
-    async (mode: BuildMode) => {
-      // Trigger a file picker for context documents
-      const input = document.createElement("input");
-      input.type = "file";
-      input.multiple = true;
-      input.accept = ".docx,.pdf";
-      input.onchange = async () => {
-        const files = Array.from(input.files ?? []);
-        if (files.length) await buildContext(files, mode);
-      };
-      input.click();
-    },
-    [buildContext]
   );
 
   const handleExtract = useCallback(async () => {

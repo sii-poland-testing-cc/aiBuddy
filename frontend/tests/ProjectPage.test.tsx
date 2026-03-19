@@ -48,12 +48,14 @@ vi.mock("@/lib/useAIBuddyChat", () => ({
 
 // ── Other hooks — minimal stubs ───────────────────────────────────────────────
 
+const mockBuildContext = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("@/lib/useContextBuilder", () => ({
   useContextBuilder: () => ({
     result: null,
     status: null,
     isBuilding: false,
-    buildContext: vi.fn(),
+    buildContext: mockBuildContext,
     fetchStatus: vi.fn(),
   }),
 }));
@@ -98,7 +100,7 @@ beforeEach(() => {
 // It also renders the current tier via data-testid so tier changes are visible.
 
 vi.mock("@/components/UtilityPanel", () => ({
-  default: ({ onTermClick, tier }: any) => (
+  default: ({ onTermClick, tier, onBuild, buildMode }: any) => (
     <div data-testid="utility-panel-mock">
       <span data-testid="panel-tier">{tier}</span>
       <button
@@ -106,6 +108,12 @@ vi.mock("@/components/UtilityPanel", () => ({
         onClick={() => onTermClick?.("TestTerm")}
       >
         Click Term
+      </button>
+      <button
+        data-testid="build-btn"
+        onClick={() => onBuild?.(buildMode ?? "append")}
+      >
+        Uruchom budowanie
       </button>
     </div>
   ),
@@ -212,6 +220,82 @@ describe("ProjectPage — regression tests", () => {
       await userEvent.click(screen.getByTestId("mode-pill-requirements"));
 
       expect(screen.getByTestId("panel-tier").textContent).toBe("audit");
+    });
+  });
+
+  // ── Bug fixes: context rebuild ──────────────────────────────────────────────
+
+  describe("Context rebuild", () => {
+    afterEach(() => {
+      vi.clearAllMocks();
+      capturedChatConfig = null;
+      mockSearchParams = new URLSearchParams();
+    });
+
+    it("'Uruchom budowanie' calls buildContext with empty files array (no file picker)", async () => {
+      mockSearchParams = new URLSearchParams("mode=context");
+      render(<ProjectPage />);
+      await userEvent.click(screen.getByTestId("build-btn"));
+      expect(mockBuildContext).toHaveBeenCalledTimes(1);
+      expect(mockBuildContext).toHaveBeenCalledWith([], expect.any(String));
+    });
+
+    it("typing 'rebuild context' in context mode calls buildContext, not send", async () => {
+      mockSearchParams = new URLSearchParams("mode=context");
+      render(<ProjectPage />);
+
+      await userEvent.type(screen.getByRole("textbox"), "rebuild context");
+      await userEvent.click(screen.getByTestId("send-btn"));
+
+      expect(mockBuildContext).toHaveBeenCalledTimes(1);
+      expect(mockBuildContext).toHaveBeenCalledWith([], expect.any(String));
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it("typing 'przebuduj kontekst' in context mode calls buildContext, not send", async () => {
+      mockSearchParams = new URLSearchParams("mode=context");
+      render(<ProjectPage />);
+
+      await userEvent.type(screen.getByRole("textbox"), "przebuduj kontekst");
+      await userEvent.click(screen.getByTestId("send-btn"));
+
+      expect(mockBuildContext).toHaveBeenCalledTimes(1);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it("rebuild command in audit mode does NOT trigger buildContext (sent normally)", async () => {
+      render(<ProjectPage />); // default = audit mode
+      await userEvent.type(screen.getByRole("textbox"), "rebuild context");
+      await userEvent.click(screen.getByTestId("send-btn"));
+
+      expect(mockBuildContext).not.toHaveBeenCalled();
+      expect(mockSend).toHaveBeenCalledWith("rebuild context", expect.any(Array));
+    });
+
+    it("context mode send does NOT include panel file paths", async () => {
+      // Override fetch to return a selected panel file
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string) => {
+          if (url.includes("audit-selection")) {
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve([
+                { id: "f1", filename: "suite.xlsx", file_path: "/uploads/suite.xlsx", source_type: "file", selected: true, last_used_in_audit_id: null },
+              ]),
+            });
+          }
+          return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+        })
+      );
+
+      mockSearchParams = new URLSearchParams("mode=context");
+      render(<ProjectPage />);
+
+      await userEvent.type(screen.getByRole("textbox"), "explain term");
+      await userEvent.click(screen.getByTestId("send-btn"));
+
+      expect(mockSend).toHaveBeenCalledWith("explain term", []);
     });
   });
 });
