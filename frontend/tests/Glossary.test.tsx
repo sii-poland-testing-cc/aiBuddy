@@ -42,7 +42,7 @@ describe("Glossary", () => {
 
   it("filters items by term on search input", async () => {
     render(<Glossary items={ITEMS} />);
-    const input = screen.getByPlaceholderText("Search terms…");
+    const input = screen.getByPlaceholderText("Szukaj terminów...");
     await userEvent.type(input, "defect");
 
     expect(screen.getByText("Defect")).toBeTruthy();
@@ -52,7 +52,7 @@ describe("Glossary", () => {
 
   it("filters items by definition text", async () => {
     render(<Glossary items={ITEMS} />);
-    const input = screen.getByPlaceholderText("Search terms…");
+    const input = screen.getByPlaceholderText("Szukaj terminów...");
     await userEvent.type(input, "fraction");
 
     expect(screen.getByText("Coverage")).toBeTruthy();
@@ -61,7 +61,7 @@ describe("Glossary", () => {
 
   it("shows empty state when no results match", async () => {
     render(<Glossary items={ITEMS} />);
-    const input = screen.getByPlaceholderText("Search terms…");
+    const input = screen.getByPlaceholderText("Szukaj terminów...");
     await userEvent.type(input, "xyznotfound");
 
     expect(screen.getByText("Brak wyników")).toBeTruthy();
@@ -69,7 +69,7 @@ describe("Glossary", () => {
 
   it("renders empty list without crashing", () => {
     render(<Glossary items={[]} />);
-    expect(screen.getByPlaceholderText("Search terms…")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Szukaj terminów...")).toBeTruthy();
   });
 
   it("test_term_click_calls_callback", async () => {

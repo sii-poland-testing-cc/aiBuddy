@@ -78,7 +78,7 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
       setError(null);
       addMessage("user", text || `[Uploaded: ${filePaths.join(", ")}]`);
       setIsLoading(true);
-      setProgress({ message: "Connecting…", progress: 0 });
+      setProgress({ message: "Łączenie…", progress: 0 });
 
       // Cancel any previous stream
       abortRef.current?.abort();
@@ -168,7 +168,11 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
     setError(null);
   }, []);
 
-  return { messages, progress, isLoading, error, latestSnapshotId, send, stop, clear };
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
+  return { messages, progress, isLoading, error, latestSnapshotId, send, stop, clear, clearError };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -185,9 +189,9 @@ async function formatResult(
   const { summary, recommendations, next_tier, rag_sources } = data;
   const uncovered: string[] = summary.requirements_uncovered ?? [];
   const covLine = summary.requirements_total > 0
-    ? `- Coverage: ${summary.coverage_pct}%  ` +
-      `(${summary.requirements_covered}/${summary.requirements_total} requirements)`
-    : `- Coverage: ${summary.coverage_pct}%  (no requirements found in context)`;
+    ? `- Pokrycie: ${summary.coverage_pct}%  ` +
+      `(${summary.requirements_covered}/${summary.requirements_total} wymagań)`
+    : `- Pokrycie: ${summary.coverage_pct}%  (brak wymagań w kontekście)`;
 
   const duplicatesFound: number = summary.duplicates_found ?? 0;
   const similarPairsFound: number = summary.similar_pairs_found ?? 0;
@@ -200,7 +204,7 @@ async function formatResult(
     if (duplicatesFound > 0) {
       dupLines.push(`- Duplikaty: ⚠️ ${duplicatesFound} znalezionych`);
       duplicatePairs.slice(0, 3).forEach((p: any) => {
-        dupLines.push(`  · ${p.tc_a} ↔ ${p.tc_b} (similarity: ${p.similarity})`);
+        dupLines.push(`  · ${p.tc_a} ↔ ${p.tc_b} (podobieństwo: ${p.similarity})`);
       });
     }
     if (similarPairsFound > 0) {
@@ -209,14 +213,14 @@ async function formatResult(
   }
 
   const lines = [
-    `**Audit complete ✅**`,
+    `**Audyt zakończony ✅**`,
     ``,
-    `📊 **Summary**`,
+    `📊 **Podsumowanie**`,
     ...dupLines,
-    `- Untagged cases:   ${summary.untagged_cases}`,
+    `- Przypadki bez tagów:   ${summary.untagged_cases}`,
     covLine,
     ``,
-    `💡 **Recommendations**`,
+    `💡 **Rekomendacje**`,
     ...(recommendations ?? []).map((r: string, i: number) => `${i + 1}. ${r}`),
   ];
 
@@ -225,7 +229,7 @@ async function formatResult(
     uncovered.forEach((r) => lines.push(`- ${r}`));
   }
 
-  lines.push(``, `➡️  Suggested next tier: **${next_tier?.toUpperCase()}**`);
+  lines.push(``, `➡️  Sugerowany następny krok: **${next_tier?.toUpperCase()}**`);
 
   // Append diff summary if snapshot was saved
   if (data?.snapshot_id) {
@@ -244,14 +248,14 @@ async function formatResult(
           const prevPct = +(currPct - delta).toFixed(1);
           if (delta > 0) {
             lines.push(``, `📈 **Poprawa vs poprzedni audyt**`);
-            lines.push(`- Coverage: ${prevPct}% → ${currPct}% (▲ +${delta.toFixed(1)}%)`);
+            lines.push(`- Pokrycie: ${prevPct}% → ${currPct}% (▲ +${delta.toFixed(1)}%)`);
             if (diff.new_covered?.length)
               lines.push(`- Nowo pokryte: ${diff.new_covered.join(", ")}`);
             if (diff.newly_uncovered?.length)
               lines.push(`- ⚠️ Utracone: ${diff.newly_uncovered.join(", ")}`);
           } else if (delta < 0) {
             lines.push(``, `📉 **Regresja vs poprzedni audyt**`);
-            lines.push(`- Coverage: ${prevPct}% → ${currPct}% (▼ ${delta.toFixed(1)}%)`);
+            lines.push(`- Pokrycie: ${prevPct}% → ${currPct}% (▼ ${delta.toFixed(1)}%)`);
             if (diff.new_covered?.length)
               lines.push(`- Nowo pokryte: ${diff.new_covered.join(", ")}`);
             if (diff.newly_uncovered?.length)

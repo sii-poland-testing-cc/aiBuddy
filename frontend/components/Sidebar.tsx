@@ -42,6 +42,7 @@ export default function Sidebar({
   const [tab, setTab] = useState<"projects" | "files">("projects");
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [mobileOpen, setMobileOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -62,8 +63,8 @@ export default function Sidebar({
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  return (
-    <div className="w-[260px] bg-buddy-surface border-r border-buddy-border flex flex-col shrink-0">
+  const sidebarContent = (
+    <>
       {/* Logo */}
       <div className="px-[18px] py-5 border-b border-buddy-border flex items-center gap-2.5">
         <div className="w-[30px] h-[30px] rounded-lg bg-gradient-to-br from-buddy-gold to-buddy-gold-light flex items-center justify-center text-sm font-bold text-buddy-surface shrink-0">
@@ -91,7 +92,7 @@ export default function Sidebar({
           return (
             <button
               key={m.id}
-              onClick={() => !m.locked && router.push(m.path)}
+              onClick={() => { if (!m.locked) { router.push(m.path); setMobileOpen(false); } }}
               disabled={m.locked}
               className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all mb-1 border-l-2 ${
                 isActive
@@ -169,16 +170,16 @@ export default function Sidebar({
             )}
             {projects.map((p) => {
               const isActive = p.project_id === activeProjectId;
-              // Prefer live prop for the active project (most up-to-date), batch fetch for others
               const hasContext = isActive
                 ? (contextReady ?? contextStatuses[p.project_id] ?? false)
                 : (contextStatuses[p.project_id] ?? false);
               return (
                 <div key={p.project_id}>
                   <button
-                    onClick={() =>
-                      router.push(`/chat/${encodeURIComponent(p.project_id)}`)
-                    }
+                    onClick={() => {
+                      router.push(`/chat/${encodeURIComponent(p.project_id)}`);
+                      setMobileOpen(false);
+                    }}
                     className={`w-full text-left px-4 py-2.5 border-l-2 transition-all ${
                       isActive
                         ? "bg-buddy-border border-buddy-gold"
@@ -190,7 +191,7 @@ export default function Sidebar({
                         {p.name}
                       </span>
                       {hasContext ? (
-                        <span style={{ color: "#4a9e6b", fontSize: 10 }} title="Context ready">●</span>
+                        <span className="text-buddy-success text-[10px]" title="Context ready">●</span>
                       ) : (
                         <span className="w-1.5 h-1.5 rounded-full bg-buddy-border-dark shrink-0" title="No context" />
                       )}
@@ -206,9 +207,10 @@ export default function Sidebar({
                   {/* Context Builder shortcut for active project */}
                   {isActive && (
                     <button
-                      onClick={() =>
-                        router.push(`/context/${encodeURIComponent(p.project_id)}`)
-                      }
+                      onClick={() => {
+                        router.push(`/context/${encodeURIComponent(p.project_id)}`);
+                        setMobileOpen(false);
+                      }}
                       className="w-full text-left pl-8 pr-4 py-1.5 flex items-center gap-1.5 hover:bg-buddy-border/30 transition-colors"
                     >
                       <span className={`text-[10px] font-mono ${hasContext ? "text-emerald-400" : "text-buddy-text-faint"}`}>
@@ -233,7 +235,7 @@ export default function Sidebar({
             className="w-full px-3 py-7 bg-buddy-elevated border-2 border-dashed border-buddy-border-dark rounded-xl text-buddy-text-muted text-sm text-center leading-relaxed hover:border-buddy-muted transition-colors disabled:opacity-60"
           >
             <div className="text-2xl mb-1.5">📁</div>
-            {isUploading ? "Przesyłanie…" : "Wgraj pliki do projektu"}
+            {isUploading ? "Przesyłanie..." : "Wgraj pliki do projektu"}
             <div className="text-[11px] mt-1 text-buddy-text-faint">
               .xlsx .csv .json .pdf
             </div>
@@ -271,6 +273,7 @@ export default function Sidebar({
       <div className="px-3 py-2 border-t border-buddy-border">
         <Link
           href="/getting-started"
+          onClick={() => setMobileOpen(false)}
           className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left hover:bg-buddy-border/40 transition-colors"
         >
           <span className="text-sm leading-none">📖</span>
@@ -280,16 +283,50 @@ export default function Sidebar({
         </Link>
       </div>
 
-      {/* User footer */}
-      <div className="px-4 py-3 border-t border-buddy-border flex items-center gap-2.5 text-sm">
-        <div className="w-7 h-7 rounded-full bg-buddy-border-dark flex items-center justify-center text-xs font-semibold text-buddy-gold shrink-0">
-          TK
-        </div>
-        <span className="text-buddy-text-muted">Tom K.</span>
-        <span className="ml-auto text-[10px] text-buddy-text-faint bg-buddy-elevated border border-buddy-border px-1.5 py-0.5 rounded">
-          PRO
+      {/* App footer */}
+      <div className="px-4 py-2.5 border-t border-buddy-border flex items-center gap-2 text-[10px] text-buddy-text-faint">
+        <span>AI Buddy</span>
+        <span className="ml-auto font-mono bg-buddy-elevated border border-buddy-border px-1.5 py-0.5 rounded">
+          v0.1.0
         </span>
       </div>
-    </div>
+    </>
+  );
+
+  return (
+    <>
+      {/* Mobile hamburger button */}
+      <button
+        onClick={() => setMobileOpen(true)}
+        className="md:hidden fixed top-3 left-3 z-50 bg-buddy-surface border border-buddy-border rounded-lg p-2 text-buddy-gold"
+        aria-label="Otwórz menu"
+      >
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <line x1="3" y1="5" x2="17" y2="5" />
+          <line x1="3" y1="10" x2="17" y2="10" />
+          <line x1="3" y1="15" x2="17" y2="15" />
+        </svg>
+      </button>
+
+      {/* Desktop sidebar (always visible at md+) */}
+      <div className="hidden md:flex w-[260px] bg-buddy-surface border-r border-buddy-border flex-col shrink-0">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile overlay sidebar */}
+      {mobileOpen && (
+        <>
+          {/* Backdrop */}
+          <div
+            className="md:hidden fixed inset-0 bg-black/50 z-40"
+            onClick={() => setMobileOpen(false)}
+          />
+          {/* Sidebar panel */}
+          <div className="md:hidden fixed inset-y-0 left-0 z-50 w-[260px] bg-buddy-surface border-r border-buddy-border flex flex-col animate-slide-in">
+            {sidebarContent}
+          </div>
+        </>
+      )}
+    </>
   );
 }

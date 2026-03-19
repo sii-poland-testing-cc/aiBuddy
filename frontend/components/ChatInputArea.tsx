@@ -79,7 +79,7 @@ export default function ChatInputArea({
   const canSend = !isUploading && (text.trim().length > 0 || attachedFiles.length > 0);
 
   return (
-    <div className="px-[60px] pb-6 pt-4 bg-buddy-base shrink-0">
+    <div className="px-4 md:px-10 lg:px-[60px] pb-6 pt-4 bg-buddy-base shrink-0">
       {/* Attached file chips */}
       {attachedFiles.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2.5">

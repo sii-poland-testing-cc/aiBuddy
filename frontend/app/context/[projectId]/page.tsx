@@ -11,13 +11,13 @@ import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useContextBuilder } from "@/lib/useContextBuilder";
 import type { ChatMessage } from "@/lib/useAIBuddyChat";
 
-// ── Constants ──────────────────────────────────────────────────────────────────
+// -- Constants ----------------------------------------------------------------
 
 const STAGES = [
-  { id: "parse",    label: "Parsing documents",    icon: "📄" },
-  { id: "embed",    label: "Building RAG index",   icon: "🧠" },
-  { id: "extract",  label: "Extracting entities",  icon: "🔍" },
-  { id: "assemble", label: "Assembling artefacts", icon: "⚙️" },
+  { id: "parse",    label: "Parsowanie dokumentów",  icon: "📄" },
+  { id: "embed",    label: "Budowanie indeksu RAG", icon: "🧠" },
+  { id: "extract",  label: "Ekstrakcja encji",      icon: "🔍" },
+  { id: "assemble", label: "Składanie artefaktów",  icon: "⚙️" },
 ];
 
 const MONTHS = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"];
@@ -27,7 +27,7 @@ function fmtDate(iso: string) {
   return `${d.getDate()} ${MONTHS[d.getMonth()]}, ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
 }
 
-// ── File chip ──────────────────────────────────────────────────────────────────
+// -- File chip ----------------------------------------------------------------
 
 function FileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
   const ext = file.name.split(".").pop()?.toUpperCase() ?? "FILE";
@@ -40,7 +40,7 @@ function FileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
   );
 }
 
-// ── RAG chat ──────────────────────────────────────────────────────────────────
+// -- RAG chat -----------------------------------------------------------------
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -54,7 +54,7 @@ interface RagChatProps {
 function RagChat({ projectId, prefillQuery, onTermClick, glossary }: RagChatProps) {
   const msgSeq = useRef(0);
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { id: "0", role: "assistant", content: "Knowledge base ready ✅ Ask anything about the domain.", timestamp: new Date() },
+    { id: "0", role: "assistant", content: "Baza wiedzy gotowa ✅ Zapytaj o cokolwiek dotyczącego domeny.", timestamp: new Date() },
   ]);
   const [lastId, setLastId] = useState<string | undefined>();
   const [input, setInput] = useState("");
@@ -90,7 +90,7 @@ function RagChat({ projectId, prefillQuery, onTermClick, glossary }: RagChatProp
         } catch { /* skip */ }
       }
       const botId = String(++msgSeq.current);
-      setMessages((prev) => [...prev, { id: botId, role: "assistant", content: reply || "…", sources, timestamp: new Date() }]);
+      setMessages((prev) => [...prev, { id: botId, role: "assistant", content: reply || "...", sources, timestamp: new Date() }]);
       setLastId(botId);
     } catch (err: any) {
       const errId = String(++msgSeq.current);
@@ -108,7 +108,7 @@ function RagChat({ projectId, prefillQuery, onTermClick, glossary }: RagChatProp
   return (
     <div className="flex flex-col h-full gap-2 overflow-hidden">
       <div className="px-2.5 py-2 bg-emerald-900/20 border border-emerald-700/30 rounded-lg text-xs text-emerald-400 shrink-0">
-        ✅ Knowledge base ready — ask anything about the domain
+        ✅ Baza wiedzy gotowa — zapytaj o cokolwiek dotyczącego domeny
       </div>
       <div className="flex-1 overflow-hidden">
         <MessageList
@@ -124,7 +124,7 @@ function RagChat({ projectId, prefillQuery, onTermClick, glossary }: RagChatProp
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !loading && send()}
-          placeholder="Ask about the domain…"
+          placeholder="Zapytaj o domenę..."
           className="flex-1 bg-buddy-elevated border border-buddy-border-dark rounded-lg text-xs text-buddy-text placeholder:text-buddy-text-faint px-2.5 py-2 focus:outline-none focus:border-buddy-gold"
         />
         <button
@@ -139,35 +139,37 @@ function RagChat({ projectId, prefillQuery, onTermClick, glossary }: RagChatProp
   );
 }
 
-// ── Rebuild confirmation modal ─────────────────────────────────────────────────
+// -- Rebuild confirmation modal -----------------------------------------------
 
 function RebuildModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}
+      className="fixed inset-0 bg-black/65 flex items-center justify-center z-50"
       onClick={onCancel}
+      role="dialog"
+      aria-labelledby="rebuild-modal-title"
     >
       <div
-        style={{ background: "#1e1a16", border: "1px solid #3a3028", borderRadius: 12, padding: 24, maxWidth: 360, width: "90%", boxShadow: "0 20px 60px rgba(0,0,0,0.6)" }}
+        className="bg-buddy-elevated border border-buddy-border-dark rounded-xl p-6 max-w-[360px] w-[90%] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ fontSize: 15, fontWeight: 600, color: "#f0c060", marginBottom: 10 }}>
+        <div id="rebuild-modal-title" className="text-[15px] font-semibold text-buddy-gold-light mb-2.5">
           Przebudować kontekst?
         </div>
-        <div style={{ fontSize: 13, color: "#c8b89a", lineHeight: 1.6, marginBottom: 20 }}>
+        <div className="text-[13px] text-[#c8b89a] leading-relaxed mb-5">
           Ta operacja usunie istniejący indeks RAG oraz artefakty
           (mind mapa, słownik) dla tego projektu.
         </div>
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <div className="flex gap-2.5 justify-end">
           <button
             onClick={onCancel}
-            style={{ padding: "7px 16px", borderRadius: 7, border: "1px solid #3a3028", background: "transparent", color: "#c8b89a", fontSize: 13, cursor: "pointer" }}
+            className="px-4 py-[7px] rounded-lg border border-buddy-border-dark bg-transparent text-[#c8b89a] text-[13px] cursor-pointer hover:bg-buddy-border transition-colors"
           >
             Anuluj
           </button>
           <button
             onClick={onConfirm}
-            style={{ padding: "7px 16px", borderRadius: 7, border: "none", background: "#c8902a", color: "#1a1612", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+            className="px-4 py-[7px] rounded-lg border-none bg-buddy-gold text-buddy-surface text-[13px] font-semibold cursor-pointer hover:opacity-90 transition-opacity"
           >
             Przebuduj
           </button>
@@ -177,7 +179,7 @@ function RebuildModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel
   );
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────────
+// -- Main page ----------------------------------------------------------------
 
 interface DiffSummary {
   mode: "append" | "rebuild";
@@ -292,26 +294,26 @@ export default function ContextPage({ params }: { params: { projectId: string } 
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Header */}
-        <div className="px-6 py-3.5 border-b border-buddy-border bg-buddy-surface flex items-center gap-3 shrink-0">
+        <div className="pl-14 md:pl-6 pr-6 py-3.5 border-b border-buddy-border bg-buddy-surface flex items-center gap-3 shrink-0">
           <div className="flex-1 min-w-0">
             <div className="text-[15px] font-semibold text-buddy-text">🧠 M1 — Context Builder</div>
             {builtAtLabel ? (
               <div className="text-[11px] text-emerald-400/80">{builtAtLabel}</div>
             ) : (
-              <div className="text-xs text-buddy-text-dim">Upload documentation → RAG knowledge base + mind map + glossary</div>
+              <div className="text-xs text-buddy-text-dim">Prześlij dokumentację — baza wiedzy RAG + mapa myśli + glosariusz</div>
             )}
           </div>
           {contextReady && result && (
             <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-emerald-400/10 text-emerald-400 border border-emerald-400/20">RAG READY</span>
+              <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-emerald-400/10 text-emerald-400 border border-emerald-400/20">RAG GOTOWY</span>
               {result.stats?.entity_count != null && (
                 <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-buddy-gold/10 text-buddy-gold border border-buddy-gold/20">
-                  {result.stats.entity_count} entities
+                  {result.stats.entity_count} encji
                 </span>
               )}
               {result.stats?.term_count != null && (
                 <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-buddy-border text-buddy-text-muted border border-buddy-border-dark">
-                  {result.stats.term_count} terms
+                  {result.stats.term_count} terminów
                 </span>
               )}
             </div>
@@ -341,30 +343,26 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                   onClick={() => { setDismissed(true); setPendingFiles([]); setDiffSummary(null); }}
                   className="shrink-0 text-xs text-buddy-text-faint hover:text-buddy-gold-light border border-buddy-border rounded-lg px-3 py-1.5 transition-colors"
                 >
-                  ↺ Rebuild context
+                  ↺ Przebuduj kontekst
                 </button>
               </>
             ) : (
               <>
                 {/* A: Indexed documents */}
                 {hasContext && status?.context_files && status.context_files.length > 0 && (
-                  <div style={{ background: "#1e1a16", border: "1px solid #2a2520", borderRadius: 8, padding: "10px 12px" }}>
-                    <div style={{ fontSize: 11, color: "#c8b89a", fontWeight: 600, marginBottom: 7 }}>
+                  <div className="bg-buddy-elevated border border-buddy-border rounded-lg px-3 py-2.5">
+                    <div className="text-[11px] text-[#c8b89a] font-semibold mb-[7px]">
                       Zaindeksowane dokumenty
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <div className="flex flex-col gap-[5px]">
                       {status.context_files.map((filename, i) => {
                         const ext = filename.split(".").pop()?.toUpperCase() ?? "FILE";
                         return (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11 }}>
-                            <span style={{
-                              fontFamily: "monospace", color: "#c8902a", fontSize: 10,
-                              padding: "1px 5px", background: "#c8902a18",
-                              border: "1px solid #c8902a33", borderRadius: 3,
-                            }}>
+                          <div key={i} className="flex items-center gap-[7px] text-[11px]">
+                            <span className="font-mono text-buddy-gold text-[10px] px-1.5 py-px bg-[#c8902a18] border border-[#c8902a33] rounded-sm">
                               {ext}
                             </span>
-                            <span style={{ color: "#c8b89a", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <span className="text-[#c8b89a] font-mono overflow-hidden text-ellipsis whitespace-nowrap">
                               {filename}
                             </span>
                           </div>
@@ -372,7 +370,7 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                       })}
                     </div>
                     {builtAt && (
-                      <div style={{ marginTop: 8, fontSize: 10, color: "#5a4e42" }}>
+                      <div className="mt-2 text-[10px] text-buddy-text-faint">
                         Ostatnia aktualizacja: {fmtDate(builtAt)}
                       </div>
                     )}
@@ -381,10 +379,10 @@ export default function ContextPage({ params }: { params: { projectId: string } 
 
                 {/* B: Mode selector */}
                 {hasContext && (
-                  <div style={{ background: "#1e1a16", border: "1px solid #2a2520", borderRadius: 8, padding: "10px 12px" }}>
-                    <div style={{ fontSize: 11, color: "#c8b89a", fontWeight: 600, marginBottom: 8 }}>Tryb</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <div className="bg-buddy-elevated border border-buddy-border rounded-lg px-3 py-2.5">
+                    <div className="text-[11px] text-[#c8b89a] font-semibold mb-2">Tryb</div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
                           name="build-mode"
@@ -392,9 +390,9 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                           onChange={() => setBuildMode("append")}
                           style={{ accentColor: "#c8902a" }}
                         />
-                        <span style={{ fontSize: 12, color: "#c8b89a" }}>➕ Dodaj dokumenty</span>
+                        <span className="text-xs text-[#c8b89a]">➕ Dodaj dokumenty</span>
                       </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <label className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
                           name="build-mode"
@@ -402,11 +400,11 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                           onChange={() => setBuildMode("rebuild")}
                           style={{ accentColor: "#c8902a" }}
                         />
-                        <span style={{ fontSize: 12, color: "#c8b89a" }}>🔄 Przebuduj kontekst</span>
+                        <span className="text-xs text-[#c8b89a]">🔄 Przebuduj kontekst</span>
                       </label>
                     </div>
                     {buildMode === "rebuild" && (
-                      <div style={{ fontSize: 10, color: "#c8902a", marginTop: 7, lineHeight: 1.5 }}>
+                      <div className="text-[10px] text-buddy-gold mt-[7px] leading-relaxed">
                         Uwaga: usunie istniejący kontekst i indeks wektorowy projektu
                       </div>
                     )}
@@ -420,17 +418,13 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                     onDragLeave={() => setIsDragging(false)}
                     onDrop={handleDrop}
                     onClick={() => !isBuilding && fileInputRef.current?.click()}
-                    style={{
-                      background: "#1e1a16",
-                      border: `2px dashed ${isDragging ? "#c8902a" : "#3a3028"}`,
-                      borderRadius: 12, padding: 20, textAlign: "center",
-                      cursor: isBuilding ? "not-allowed" : "pointer",
-                      transition: "border-color 0.2s",
-                    }}
+                    className={`bg-buddy-elevated border-2 border-dashed rounded-xl p-5 text-center transition-[border-color] duration-200 ${
+                      isDragging ? "border-buddy-gold" : "border-buddy-border-dark"
+                    } ${isBuilding ? "cursor-not-allowed" : "cursor-pointer"}`}
                   >
-                    <div style={{ fontSize: 32, marginBottom: 6 }}>📂</div>
-                    <div style={{ color: "#c8b89a", fontSize: 13, fontWeight: 500 }}>Drop Word / PDF files here</div>
-                    <div style={{ color: "#5a4e42", fontSize: 11, marginTop: 4 }}>.docx, .pdf — SRS, test plans, process docs</div>
+                    <div className="text-[32px] mb-1.5">📂</div>
+                    <div className="text-[#c8b89a] text-[13px] font-medium">Upuść pliki Word / PDF tutaj</div>
+                    <div className="text-buddy-text-faint text-[11px] mt-1">lub kliknij, aby przeglądać</div>
                   </div>
                 )}
                 <input ref={fileInputRef} type="file" multiple accept=".docx,.pdf" className="hidden"
@@ -446,39 +440,33 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                       onClick={handleBuild}
                       disabled={isBuilding}
                       style={{
-                        width: "100%", padding: "10px", borderRadius: 8, border: "none",
-                        cursor: isBuilding ? "not-allowed" : "pointer",
                         background: buildMode === "rebuild"
                           ? "linear-gradient(135deg, #a06020, #c8902a)"
                           : "linear-gradient(135deg, #c8902a, #f0c060)",
-                        color: "#1a1612", fontWeight: 600, fontSize: 13,
-                        fontFamily: "DM Sans, sans-serif", marginTop: 4,
-                        opacity: isBuilding ? 0.5 : 1,
                       }}
+                      className="w-full p-2.5 rounded-lg border-none text-buddy-surface font-semibold text-[13px] font-sans mt-1 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                     >
                       {isBuilding
-                        ? "Building…"
+                        ? "Budowanie..."
                         : buildMode === "rebuild"
                           ? `🔄 Przebuduj kontekst (${pendingFiles.length} plik${pendingFiles.length > 1 ? "i" : ""})`
-                          : `Build Context from ${pendingFiles.length} file(s)`}
+                          : `Zbuduj kontekst z ${pendingFiles.length} pliku(ów)`}
                     </button>
                   </div>
                 )}
 
                 {/* Progress */}
                 {isBuilding && (
-                  <div style={{ padding: 14, background: "#1e1a16", borderRadius: 10, border: "1px solid #2a2520" }}>
+                  <div className="p-3.5 bg-buddy-elevated rounded-[10px] border border-buddy-border">
                     <div className="flex gap-1.5 mb-3">
                       {STAGES.map((s, i) => (
                         <div
                           key={s.id}
+                          className="flex-1 p-[5px] rounded-md text-center text-[10px] font-semibold transition-all duration-300"
                           style={{
-                            flex: 1, padding: "5px 4px", borderRadius: 6, textAlign: "center",
-                            fontSize: 10, fontWeight: 600,
                             background: i <= stageIndex ? "#c8902a22" : "#1a1612",
                             color: i <= stageIndex ? "#c8902a" : "#3a3028",
                             border: `1px solid ${i === stageIndex ? "#c8902a" : "#2a2520"}`,
-                            transition: "all 0.3s",
                           }}
                         >
                           {s.icon}<br />{s.id}
@@ -486,15 +474,15 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                       ))}
                     </div>
                     <div className="mb-2">
-                      <div className="flex justify-between text-xs mb-1" style={{ color: "#c8902a" }}>
-                        <span>{log[log.length - 1] ?? "Initialising…"}</span>
-                        <span style={{ fontFamily: "monospace", color: "#5a4e42" }}>{Math.round(progress * 100)}%</span>
+                      <div className="flex justify-between text-xs mb-1 text-buddy-gold">
+                        <span>{log[log.length - 1] ?? "Inicjalizacja..."}</span>
+                        <span className="font-mono text-buddy-text-faint">{Math.round(progress * 100)}%</span>
                       </div>
-                      <div style={{ height: 4, background: "#2a2520", borderRadius: 2, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${progress * 100}%`, background: "#c8902a", borderRadius: 2, transition: "width 0.4s ease", boxShadow: "0 0 8px #c8902a88" }} />
+                      <div className="h-1 bg-buddy-border rounded-sm overflow-hidden">
+                        <div className="h-full bg-buddy-gold rounded-sm transition-[width] duration-400 ease-out shadow-[0_0_8px_#c8902a88]" style={{ width: `${progress * 100}%` }} />
                       </div>
                     </div>
-                    <div style={{ maxHeight: 80, overflowY: "auto", fontFamily: "monospace", fontSize: 11, color: "#5a4e42", lineHeight: 1.7 }}>
+                    <div className="max-h-20 overflow-y-auto font-mono text-[11px] text-buddy-text-faint leading-[1.7]">
                       {log.map((msg, i) => <div key={i}>{msg}</div>)}
                       <div ref={logEndRef} />
                     </div>
@@ -503,15 +491,15 @@ export default function ContextPage({ params }: { params: { projectId: string } 
 
                 {/* D: Post-build diff summary */}
                 {diffSummary && !isBuilding && (
-                  <div style={{ padding: "10px 12px", background: "#1a2e1a", border: "1px solid #2a4a2a", borderRadius: 8 }}>
+                  <div className="px-3 py-2.5 bg-[#1a2e1a] border border-[#2a4a2a] rounded-lg">
                     {diffSummary.mode === "append" ? (
-                      <div style={{ fontSize: 12, color: "#4a9e6b" }}>
+                      <div className="text-xs text-buddy-success">
                         ✅ Dodano do kontekstu:{" "}
                         <strong>+{diffSummary.deltaEntities ?? 0} encji</strong>,{" "}
                         <strong>+{diffSummary.deltaTerms ?? 0} terminów</strong>
                       </div>
                     ) : (
-                      <div style={{ fontSize: 12, color: "#4a9e6b" }}>
+                      <div className="text-xs text-buddy-success">
                         ✅ Kontekst przebudowany:{" "}
                         <strong>{diffSummary.entities} encji</strong>,{" "}
                         <strong>{diffSummary.terms} terminów</strong>
@@ -532,14 +520,14 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                 {result && !dismissed && (
                   <div className="flex items-center justify-between bg-buddy-surface border border-buddy-border rounded-lg px-3 py-2 text-xs">
                     <span className="text-buddy-text-muted">
-                      <span className="text-buddy-gold-light font-semibold">{result.stats.entity_count}</span> entities ·{" "}
-                      <span className="text-buddy-gold-light font-semibold">{result.stats.term_count}</span> terms
+                      <span className="text-buddy-gold-light font-semibold">{result.stats.entity_count}</span> encji ·{" "}
+                      <span className="text-buddy-gold-light font-semibold">{result.stats.term_count}</span> terminów
                     </span>
                     <button
                       onClick={() => { setDismissed(true); setPendingFiles([]); }}
                       className="text-buddy-text-faint hover:text-buddy-gold-light transition-colors"
                     >
-                      Rebuild
+                      Przebuduj
                     </button>
                   </div>
                 )}
@@ -547,7 +535,7 @@ export default function ContextPage({ params }: { params: { projectId: string } 
                 {/* Empty state */}
                 {!isBuilding && (!result || dismissed) && pendingFiles.length === 0 && !hasContext && (
                   <p className="text-[11px] text-buddy-text-faint text-center pt-1">
-                    Upload .docx or .pdf docs, then click <strong className="text-buddy-text-dim">Build Context</strong>.
+                    Prześlij pliki .docx lub .pdf, a następnie kliknij <strong className="text-buddy-text-dim">Zbuduj kontekst</strong>.
                   </p>
                 )}
               </>
@@ -558,8 +546,8 @@ export default function ContextPage({ params }: { params: { projectId: string } 
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex px-5 pt-2.5 pb-0 border-b border-buddy-border bg-buddy-surface gap-1">
               {([
-                { id: "mindmap",  label: "🗺 Mind Map" },
-                { id: "glossary", label: "📖 Glossary" },
+                { id: "mindmap",  label: "🗺 Mapa myśli" },
+                { id: "glossary", label: "📖 Glosariusz" },
               ] as const).map((t) => (
                 <button
                   key={t.id}
@@ -577,12 +565,12 @@ export default function ContextPage({ params }: { params: { projectId: string } 
 
             <div className="flex-1 p-5 overflow-hidden flex flex-col">
               {!contextReady || (!result && !status?.rag_ready) ? (
-                <div className="flex-1 flex flex-col items-center justify-center gap-3" style={{ color: "#3a3028" }}>
-                  <div style={{ fontSize: 40 }}>📭</div>
-                  <div style={{ fontSize: 13 }}>Upload documents and build context to see artefacts here</div>
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 text-buddy-text-ghost">
+                  <div className="text-[40px]">📭</div>
+                  <div className="text-[13px]">Prześlij dokumenty i zbuduj kontekst, aby zobaczyć artefakty</div>
                 </div>
               ) : activeTab === "mindmap" ? (
-                <div className="flex-1 rounded-xl overflow-hidden" style={{ background: "#1a1612", border: "1px solid #2a2520" }}>
+                <div className="flex-1 rounded-xl overflow-hidden bg-buddy-surface border border-buddy-border">
                   <MindMap
                     nodes={result?.mind_map?.nodes ?? []}
                     edges={result?.mind_map?.edges ?? []}

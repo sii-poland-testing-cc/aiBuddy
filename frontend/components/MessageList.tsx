@@ -94,7 +94,10 @@ function renderAssistantContent(
           chunk.isGlossaryTerm && onTermClick ? (
             <span
               key={i}
+              role="button"
+              tabIndex={0}
               onClick={() => onTermClick(chunk.glossaryItem!)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onTermClick(chunk.glossaryItem!); } }}
               style={{
                 cursor: "pointer",
                 color: "#f0c060",
@@ -172,7 +175,7 @@ export default function MessageList({
   }, [messages, isLoading]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-[60px] py-6">
+    <div className="flex-1 overflow-y-auto px-4 md:px-10 lg:px-[60px] py-6">
       {messages.map((msg) => {
         const isUser = msg.role === "user";
         const isNew = msg.id === lastMessageId;

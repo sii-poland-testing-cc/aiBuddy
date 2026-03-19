@@ -35,7 +35,7 @@ export default function ChatPage({
   const [refreshKey, setRefreshKey] = useState(0);
   const prevLoadingRef = useRef(false);
 
-  const { messages, progress, isLoading, error: chatError, latestSnapshotId, send, stop } = useAIBuddyChat({
+  const { messages, progress, isLoading, error: chatError, latestSnapshotId, send, stop, clearError } = useAIBuddyChat({
     projectId,
     tier,
   });
@@ -75,10 +75,10 @@ export default function ChatPage({
 
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <div className="px-6 py-3.5 border-b border-buddy-border bg-buddy-surface flex items-center gap-3 shrink-0">
+        <div className="pl-14 md:pl-6 pr-6 py-3.5 border-b border-buddy-border bg-buddy-surface flex items-center gap-3 shrink-0">
           <div className="min-w-0 shrink-0">
             <div className="text-[15px] font-semibold text-buddy-text truncate">{projectId}</div>
-            <div className="text-xs text-buddy-text-dim">Test Suite Audit &amp; Optimization</div>
+            <div className="text-xs text-buddy-text-dim">Audyt i optymalizacja zestawu testów</div>
           </div>
 
           {/* Context status badge */}
@@ -122,7 +122,7 @@ export default function ChatPage({
 
         {chatError && (
           <div className="mx-6 mt-3 shrink-0">
-            <ErrorBanner message={chatError} />
+            <ErrorBanner message={chatError} onDismiss={() => clearError()} />
           </div>
         )}
 
@@ -133,26 +133,38 @@ export default function ChatPage({
         )}
 
         {projectFiles.length === 0 && !uploading && (
-          <div className="mx-6 mt-3 shrink-0 flex items-start gap-2 px-3 py-2 rounded-lg bg-buddy-border/40 border border-buddy-border text-[11px] text-buddy-text-muted leading-relaxed">
-            <span className="shrink-0 mt-0.5">💡</span>
-            <span>
-              <span className="font-medium text-buddy-text">Wskazówka:</span>{" "}
-              Dla najlepszych wyników, najpierw{" "}
+          <div className="mx-6 mt-3 shrink-0">
+            <div className="flex flex-col items-center gap-3 px-6 py-6 rounded-xl bg-buddy-elevated border border-buddy-border text-center">
+              <span className="text-3xl leading-none">📂</span>
+              <div>
+                <p className="text-sm font-medium text-buddy-text mb-1">
+                  Wgraj pliki testowe, aby rozpocząć audyt
+                </p>
+                <p className="text-xs text-buddy-text-muted leading-relaxed max-w-sm">
+                  Przeciągnij pliki lub użyj przycisku poniżej. Dla najlepszych wyników, najpierw{" "}
+                  <button
+                    onClick={() => router.push(`/context/${encodeURIComponent(projectId)}`)}
+                    className="text-buddy-gold hover:text-buddy-gold-light underline underline-offset-2 transition-colors"
+                  >
+                    zbuduj kontekst
+                  </button>{" "}
+                  i{" "}
+                  <button
+                    onClick={() => router.push(`/requirements/${encodeURIComponent(projectId)}`)}
+                    className="text-buddy-gold hover:text-buddy-gold-light underline underline-offset-2 transition-colors"
+                  >
+                    wyodrębnij wymagania
+                  </button>
+                  .
+                </p>
+              </div>
               <button
-                onClick={() => router.push(`/context/${encodeURIComponent(projectId)}`)}
-                className="text-buddy-gold hover:text-buddy-gold-light underline underline-offset-2 transition-colors"
+                onClick={() => uploadFiles([]).catch(() => {})}
+                className="px-4 py-2 bg-gradient-to-r from-buddy-gold to-buddy-gold-light text-buddy-surface text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity"
               >
-                zbuduj kontekst
-              </button>{" "}
-              i{" "}
-              <button
-                onClick={() => router.push(`/requirements/${encodeURIComponent(projectId)}`)}
-                className="text-buddy-gold hover:text-buddy-gold-light underline underline-offset-2 transition-colors"
-              >
-                wyodrębnij wymagania
+                Wgraj pliki testowe
               </button>
-              .
-            </span>
+            </div>
           </div>
         )}
 
@@ -162,16 +174,18 @@ export default function ChatPage({
           lastMessageId={lastMessageId}
         />
 
-        <AuditFileSelector
-          projectId={projectId}
-          onSelectionChange={setSelectedFiles}
-          refreshKey={refreshKey}
-        />
+        <div className="shrink-0 max-h-[200px] overflow-y-auto">
+          <AuditFileSelector
+            projectId={projectId}
+            onSelectionChange={setSelectedFiles}
+            refreshKey={refreshKey}
+          />
 
-        <AuditHistory
-          projectId={projectId}
-          latestSnapshotId={latestSnapshotId}
-        />
+          <AuditHistory
+            projectId={projectId}
+            latestSnapshotId={latestSnapshotId}
+          />
+        </div>
 
         <ChatInputArea
           onSend={handleSend}
