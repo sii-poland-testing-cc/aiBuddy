@@ -371,7 +371,7 @@ Long-running SSE operations (M1 context build, requirements extraction, mapping)
 ```bash
 cd frontend && npm test
 ```
-171 tests across 13 files:
+185 tests across 14 files:
 - `frontend/tests/TopBar.test.tsx` — 9 tests: renders, project id, RAG indicator, panel toggle, back navigation
 - `frontend/tests/ModeInputBox.test.tsx` — 17 tests: mode pills, locked pills, file chips, placeholder, send/stop, artifact chips, attach button
 - `frontend/tests/MindMapModal.test.tsx` — 26 tests: visibility, toolbar, close/Escape, node rendering, search dimming, match count, tooltip show/hide, cluster collapse, `layoutModalNodes` unit tests; **cycle-safety tests** (direct cycle e1↔e2, longer cycle e1→e2→e3→e1, LLM-style numeric IDs)
@@ -385,6 +385,7 @@ cd frontend && npm test
 - `frontend/tests/AuditFileSelector.test.tsx` — 4 tests: new files checked, used files unchecked+muted, URL source always-checked/disabled, onSelectionChange called correctly
 - `frontend/tests/AuditHistory.test.tsx` — 5 tests: empty state, snapshot rows rendered, latest highlight, coverage badge colors, trend chart requires ≥2 snapshots
 - `frontend/tests/useRequirements.test.ts` — 8 tests: fetch, extract SSE, patch optimistic update; **re-mount after navigation** (isExtracting context true→false triggers fetchAll)
+- `frontend/tests/useAuditPipeline.test.ts` — 12 tests: fresh project (extract+map+send), sequential order, status messages, skip-when-done, guards (isExtracting/isMappingRunning), fetch failure resilience, send arguments
 - `frontend/tests/setup.ts` — `@testing-library/jest-dom` setup
 - `frontend/vitest.config.ts` — jsdom environment, `@vitejs/plugin-react`, `@` alias
 

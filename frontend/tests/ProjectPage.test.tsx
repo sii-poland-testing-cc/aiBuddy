@@ -70,6 +70,16 @@ vi.mock("@/lib/useHeatmap", () => ({
   useHeatmap: () => ({ heatmap: [], retry: vi.fn() }),
 }));
 
+vi.mock("@/lib/useMapping", () => ({
+  useMapping: () => ({
+    isRunning: false,
+    progress: null,
+    error: null,
+    lastRunAt: null,
+    runMapping: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
 vi.mock("@/lib/useRequirements", () => ({
   useRequirements: () => ({
     requirements: [],
