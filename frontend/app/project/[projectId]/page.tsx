@@ -25,6 +25,7 @@ type BuildMode = "append" | "rebuild";
 
 interface AttachedFile {
   name: string;
+  path: string;  // full server-side path returned by uploadFiles
 }
 
 // ── Snapshot fetching ──────────────────────────────────────────────────────────
@@ -217,7 +218,7 @@ export default function ProjectPage() {
     }
 
     const messageText = inputValue;
-    const attachedPaths = attachedFiles.map((f) => f.name);
+    const attachedPaths = attachedFiles.map((f) => f.path);
     setInputValue("");
     setAttachedFiles([]);
 
@@ -253,7 +254,7 @@ export default function ProjectPage() {
       const paths = await uploadFiles(files);
       setAttachedFiles((prev) => [
         ...prev,
-        ...files.map((f) => ({ name: f.name })),
+        ...files.map((f, i) => ({ name: f.name, path: paths[i] ?? f.name })),
       ]);
       setRefreshKey((k) => k + 1);
       if (fileInputRef.current) fileInputRef.current.value = "";
