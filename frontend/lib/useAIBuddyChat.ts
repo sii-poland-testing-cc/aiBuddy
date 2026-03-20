@@ -43,6 +43,7 @@ export interface ChatMessage {
   timestamp: Date;
   sources?: ChatSource[];
   auditData?: AuditData;
+  isStatus?: boolean;  // true = pipeline status injection (no card, no sources)
 }
 
 export interface ProgressUpdate {
@@ -90,12 +91,26 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
     []
   );
 
+  const addStatusMessage = useCallback((text: string) => {
+    setMessages((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), role: "assistant" as const, content: text, timestamp: new Date(), isStatus: true },
+    ]);
+  }, []);
+
+  const addUserMessage = useCallback(
+    (text: string) => { addMessage("user", text); },
+    [addMessage]
+  );
+
   const send = useCallback(
-    async (text: string, filePaths: string[] = []) => {
+    async (text: string, filePaths: string[] = [], opts: { skipUserMessage?: boolean } = {}) => {
       if (!text.trim() && filePaths.length === 0) return;
 
       setError(null);
-      addMessage("user", text || `[Uploaded: ${filePaths.join(", ")}]`);
+      if (!opts.skipUserMessage) {
+        addMessage("user", text || `[Uploaded: ${filePaths.join(", ")}]`);
+      }
       setIsLoading(true);
       setProgress({ message: "Łączenie…", progress: 0 });
 
@@ -191,7 +206,7 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
     setError(null);
   }, []);
 
-  return { messages, progress, isLoading, error, latestSnapshotId, send, stop, clear, clearError };
+  return { messages, progress, isLoading, error, latestSnapshotId, send, stop, clear, clearError, addStatusMessage, addUserMessage };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

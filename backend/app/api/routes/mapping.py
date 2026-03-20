@@ -14,17 +14,18 @@ Endpoints:
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.mapping_workflow import MappingWorkflow, MappingProgressEvent
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
+from app.db.models import ProjectFile
 from app.db.requirements_models import CoverageScore, Requirement, RequirementTCMapping
 
 logger = logging.getLogger("ai_buddy.mapping_api")
@@ -152,6 +153,41 @@ async def _persist_scores(db: AsyncSession, project_id: str, scores: List[Dict])
 
     await db.commit()
     logger.info("project=%s — persisted %d coverage scores", project_id, len(scores))
+
+
+# ─── Staleness check ─────────────────────────────────────────────────────────
+
+@router.get("/{project_id}/staleness")
+async def mapping_staleness(project_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Check whether mapping/scoring results are stale relative to uploaded files.
+    Returns: {is_stale, reason: "never_run"|"new_files"|"current", last_run_at}
+    """
+    last_score_ts = await db.scalar(
+        select(func.max(CoverageScore.created_at))
+        .where(CoverageScore.project_id == project_id)
+    )
+
+    if last_score_ts is None:
+        return {"project_id": project_id, "is_stale": True, "reason": "never_run", "last_run_at": None}
+
+    last_file_ts = await db.scalar(
+        select(func.max(ProjectFile.uploaded_at))
+        .where(ProjectFile.project_id == project_id)
+    )
+
+    try:
+        is_stale = (last_file_ts is not None) and (last_file_ts > last_score_ts)
+    except TypeError:
+        # tz-naive vs tz-aware mismatch on old rows — treat as stale
+        is_stale = True
+
+    return {
+        "project_id": project_id,
+        "is_stale": is_stale,
+        "reason": "new_files" if is_stale else "current",
+        "last_run_at": last_score_ts.isoformat() if last_score_ts else None,
+    }
 
 
 # ─── List Mappings ───────────────────────────────────────────────────────────

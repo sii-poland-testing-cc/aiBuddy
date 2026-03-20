@@ -222,6 +222,21 @@ describe("UtilityPanel", () => {
     expect(screen.getByText(/Brak danych heatmapy/)).toBeInTheDocument();
   });
 
+  // ── Audit pipeline button ────────────────────────────────────────────────────
+
+  it("Uruchom audyt button calls onAuditPipeline in audit mode", async () => {
+    const onAuditPipeline = vi.fn();
+    renderPanel("audit", { onAuditPipeline });
+    await userEvent.click(screen.getByTestId("run-audit-pipeline-btn"));
+    expect(onAuditPipeline).toHaveBeenCalledTimes(1);
+    expect(onAuditPipeline).toHaveBeenCalledWith("Uruchom audyt");
+  });
+
+  it("Uruchom audyt button is disabled when onAuditPipeline is not provided", () => {
+    renderPanel("audit");
+    expect(screen.getByTestId("run-audit-pipeline-btn")).toBeDisabled();
+  });
+
   // ── Mapping (audit mode) ─────────────────────────────────────────────────────
 
   it("Uruchom mapowanie calls onRunMapping in audit mode", async () => {

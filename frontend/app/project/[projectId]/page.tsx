@@ -8,6 +8,7 @@ import ModeInputBox from "@/components/ModeInputBox";
 import UtilityPanel, { PanelFile, AuditSnapshot } from "@/components/UtilityPanel";
 import MindMapModal, { layoutModalNodes } from "@/components/MindMapModal";
 import { useAIBuddyChat } from "@/lib/useAIBuddyChat";
+import { useAuditPipeline } from "@/lib/useAuditPipeline";
 import { useContextBuilder } from "@/lib/useContextBuilder";
 import type { GlossaryTerm as ContextGlossaryTerm } from "@/lib/useContextBuilder";
 import { useProjectFiles } from "@/lib/useProjectFiles";
@@ -117,7 +118,7 @@ export default function ProjectPage() {
   // ── Hooks ───────────────────────────────────────────────────────────────────
   const {
     messages, progress, isLoading, error: chatError,
-    latestSnapshotId, send, stop, clearError,
+    latestSnapshotId, send, stop, clearError, addStatusMessage, addUserMessage,
   } = useAIBuddyChat({ projectId, tier });
 
   const {
@@ -141,6 +142,23 @@ export default function ProjectPage() {
 
   const snapshots = useSnapshots(projectId, latestSnapshotId);
   const [panelFiles, handleFileToggle] = usePanelFiles(projectId, refreshKey);
+
+  const getSelectedFilePaths = useCallback(
+    () => panelFiles.filter((f) => f.selected).map((f) => f.file_path),
+    [panelFiles]
+  );
+
+  const { handleAuditPipeline } = useAuditPipeline({
+    projectId,
+    extractRequirements,
+    isExtracting,
+    runMapping,
+    isMappingRunning,
+    send,
+    addUserMessage,
+    addStatusMessage,
+    getSelectedFilePaths,
+  });
 
   // Refresh panel files + snapshots after audit completes
   useEffect(() => {
@@ -198,16 +216,23 @@ export default function ProjectPage() {
       return;
     }
 
-    // Context mode: never include audit panel files — they would bypass the
-    // conversational RAG path and fall back to AuditWorkflow on the backend
+    const messageText = inputValue;
+    const attachedPaths = attachedFiles.map((f) => f.name);
+    setInputValue("");
+    setAttachedFiles([]);
+
+    // Audit mode: run full pipeline (requirements → mapping → audit) if needed
+    if (activeMode === "audit") {
+      await handleAuditPipeline(messageText, attachedPaths);
+      return;
+    }
+
+    // Context mode: never include audit panel files
     const selectedPaths = activeMode !== "context"
       ? panelFiles.filter((f) => f.selected).map((f) => f.file_path)
       : [];
-    const attachedPaths = attachedFiles.map((f) => f.name);
-    await send(inputValue, [...selectedPaths, ...attachedPaths]);
-    setInputValue("");
-    setAttachedFiles([]);
-  }, [inputValue, attachedFiles, panelFiles, send, activeMode, buildMode, handleBuild]);
+    await send(messageText, [...selectedPaths, ...attachedPaths]);
+  }, [inputValue, attachedFiles, panelFiles, send, activeMode, buildMode, handleBuild, handleAuditPipeline]);
 
   const handleTermClick = useCallback((term: ContextGlossaryTerm) => {
     setInputValue(`wyjaśnij termin: ${term.term}`);
@@ -405,6 +430,7 @@ export default function ProjectPage() {
           open={panelOpen}
           activeMode={activeMode}
           projectId={projectId}
+          onAuditPipeline={handleAuditPipeline}
           auditFiles={panelFiles}
           pendingContextFiles={pendingContextFiles.map((f) => f.name)}
           onAddFiles={activeMode === "context" ? handleContextAddFiles : handleAttachFiles}

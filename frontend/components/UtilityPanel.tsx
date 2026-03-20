@@ -58,6 +58,8 @@ interface UtilityPanelProps {
   // Audit snapshots
   snapshots?: AuditSnapshot[];
   latestSnapshotId?: string | null;
+  // Audit pipeline
+  onAuditPipeline?: (message: string) => void;
   // Tier
   tier?: Tier;
   onTierChange?: (tier: Tier) => void;
@@ -471,6 +473,7 @@ export default function UtilityPanel({
   isMappingRunning = false,
   mappingProgress,
   onRunMapping = () => console.log("onRunMapping"),
+  onAuditPipeline,
   snapshots = [],
   latestSnapshotId,
   tier = "audit",
@@ -743,6 +746,16 @@ export default function UtilityPanel({
           {/* ── AUDIT mode ── */}
           {activeMode === "audit" && (
             <div data-testid="panel-mode-audit" className="flex flex-col" style={{ gap: 6 }}>
+              <button
+                data-testid="run-audit-pipeline-btn"
+                onClick={() => onAuditPipeline?.("Uruchom audyt")}
+                disabled={!onAuditPipeline}
+                className="w-full font-semibold text-buddy-surface disabled:opacity-40 disabled:cursor-not-allowed transition-opacity hover:opacity-[0.88]"
+                style={{ padding: "9px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, background: "linear-gradient(135deg, #c8902a, #e0aa42)" }}
+              >
+                ▶ Uruchom audyt
+              </button>
+
               <SourcesCard
                 cardId="sources-audit"
                 auditFiles={auditFiles}

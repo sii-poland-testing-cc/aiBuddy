@@ -42,6 +42,8 @@ vi.mock("@/lib/useAIBuddyChat", () => ({
       send: mockSend,
       stop: vi.fn(),
       clearError: vi.fn(),
+      addStatusMessage: vi.fn(),
+      addUserMessage: vi.fn(),
     };
   },
 }));
@@ -263,13 +265,18 @@ describe("ProjectPage — regression tests", () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it("rebuild command in audit mode does NOT trigger buildContext (sent normally)", async () => {
+    it("rebuild command in audit mode does NOT trigger buildContext (sent via pipeline)", async () => {
       render(<ProjectPage />); // default = audit mode
       await userEvent.type(screen.getByRole("textbox"), "rebuild context");
       await userEvent.click(screen.getByTestId("send-btn"));
 
       expect(mockBuildContext).not.toHaveBeenCalled();
-      expect(mockSend).toHaveBeenCalledWith("rebuild context", expect.any(Array));
+      // In audit mode, send() is called via the pipeline with skipUserMessage:true
+      expect(mockSend).toHaveBeenCalledWith(
+        "rebuild context",
+        expect.any(Array),
+        expect.objectContaining({ skipUserMessage: true })
+      );
     });
 
     it("context mode send does NOT include panel file paths", async () => {
