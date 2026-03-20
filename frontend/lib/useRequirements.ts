@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useContext } from "react";
+import { ProjectOperationsContext } from "./ProjectOperationsContext";
+
+const OP_TYPE = "requirements" as const;
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -34,12 +37,21 @@ export interface ExtractionProgress {
 }
 
 export function useRequirements(projectId: string) {
+  const ops = useContext(ProjectOperationsContext);
+
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [stats, setStats] = useState<RequirementsStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
+  const [localIsExtracting, setIsExtracting] = useState(false);
+  const [localExtractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
+
+  // Context wins (survives navigation), local is fallback
+  const ctxOp = ops?.getOp(projectId, OP_TYPE);
+  const isExtracting = ctxOp?.isRunning ?? localIsExtracting;
+  const extractionProgress: ExtractionProgress | null = ctxOp?.isRunning
+    ? { message: ctxOp.message ?? "", progress: ctxOp.progress, stage: ctxOp.stage ?? "extract" }
+    : localExtractionProgress;
 
   const fetchAll = useCallback(async () => {
     if (!projectId) return;
@@ -86,6 +98,7 @@ export function useRequirements(projectId: string) {
     setIsExtracting(true);
     setError(null);
     setExtractionProgress({ message: "Łączenie z serwerem…", progress: 0, stage: "extract" });
+    ops?.updateOp(projectId, OP_TYPE, { isRunning: true, progress: 0, stage: "extract", message: "Łączenie z serwerem…", error: null });
 
     try {
       const res = await fetch(`${API_BASE}/api/requirements/${projectId}/extract`, {
@@ -112,11 +125,14 @@ export function useRequirements(projectId: string) {
             const ev = JSON.parse(payload);
             if (ev.type === "progress") {
               setExtractionProgress(ev.data as ExtractionProgress);
+              ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
             } else if (ev.type === "result") {
               // Stream complete — reload requirements from DB
               await fetchAll();
             } else if (ev.type === "error") {
-              setError(ev.data?.message ?? "Ekstrakcja nie powiodła się.");
+              const errMsg = ev.data?.message ?? "Ekstrakcja nie powiodła się.";
+              setError(errMsg);
+              ops?.updateOp(projectId, OP_TYPE, { error: errMsg });
             }
           } catch {
             // malformed line — skip
@@ -125,14 +141,18 @@ export function useRequirements(projectId: string) {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(msg.includes("Server error") || msg.includes("No response")
+      const errMsg = msg.includes("Server error") || msg.includes("No response")
         ? msg
-        : "Nie udało się wyodrębnić wymagań. Sprawdź połączenie z serwerem i czy kontekst projektu jest zbudowany.");
+        : "Nie udało się wyodrębnić wymagań. Sprawdź połączenie z serwerem i czy kontekst projektu jest zbudowany.";
+      setError(errMsg);
+      ops?.updateOp(projectId, OP_TYPE, { error: errMsg });
     } finally {
       setIsExtracting(false);
       setExtractionProgress(null);
+      ops?.updateOp(projectId, OP_TYPE, { isRunning: false });
     }
-  }, [projectId, isExtracting, fetchAll]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, isExtracting, fetchAll, ops]);
 
   const patchRequirement = useCallback(
     async (
@@ -184,6 +204,17 @@ export function useRequirements(projectId: string) {
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  // When isExtracting transitions true→false (e.g. extraction finished while
+  // user had navigated away and returned), reload requirements from DB.
+  const prevIsExtractingRef = useRef<boolean>(isExtracting);
+  useEffect(() => {
+    const wasExtracting = prevIsExtractingRef.current;
+    prevIsExtractingRef.current = isExtracting;
+    if (wasExtracting && !isExtracting) {
+      fetchAll();
+    }
+  }, [isExtracting, fetchAll]);
 
   return {
     requirements,

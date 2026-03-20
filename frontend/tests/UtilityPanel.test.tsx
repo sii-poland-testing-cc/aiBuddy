@@ -222,13 +222,24 @@ describe("UtilityPanel", () => {
     expect(screen.getByText(/Brak danych heatmapy/)).toBeInTheDocument();
   });
 
-  // ── Mapping ─────────────────────────────────────────────────────────────────
+  // ── Mapping (audit mode) ─────────────────────────────────────────────────────
 
-  it("Uruchom mapowanie calls onRunMapping", async () => {
+  it("Uruchom mapowanie calls onRunMapping in audit mode", async () => {
     const onRunMapping = vi.fn();
-    renderPanel("requirements", { onRunMapping });
+    renderPanel("audit", { onRunMapping });
     await userEvent.click(screen.getByTestId("run-mapping-btn"));
     expect(onRunMapping).toHaveBeenCalledTimes(1);
+  });
+
+  it("mapping button is disabled and shows progress while running", () => {
+    renderPanel("audit", {
+      isMappingRunning: true,
+      mappingProgress: { message: "Dopasowywanie…", progress: 0.5, stage: "coarse" },
+    });
+    const btn = screen.getByTestId("run-mapping-btn");
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveTextContent("Mapowanie w toku…");
+    expect(screen.getByText("Dopasowywanie…")).toBeInTheDocument();
   });
 
   // ── Audit snapshots ─────────────────────────────────────────────────────────

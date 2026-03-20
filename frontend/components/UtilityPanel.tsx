@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { GlossaryTerm, ContextStatus } from "../lib/useContextBuilder";
 import { HeatmapRow } from "../lib/useHeatmap";
+import { MappingProgress } from "../lib/useMapping";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,10 +46,14 @@ interface UtilityPanelProps {
   buildMode?: BuildMode;
   onBuildModeChange?: (mode: BuildMode) => void;
   onBuild?: (mode: BuildMode) => void;
+  // Pending context files (selected but not yet built)
+  pendingContextFiles?: string[];
   // Heatmap
   heatmapData?: HeatmapRow[];
   // Mapping
   lastMappingDate?: string | null;
+  isMappingRunning?: boolean;
+  mappingProgress?: MappingProgress | null;
   onRunMapping?: () => void;
   // Audit snapshots
   snapshots?: AuditSnapshot[];
@@ -460,8 +465,11 @@ export default function UtilityPanel({
   buildMode = "append",
   onBuildModeChange,
   onBuild = (m) => console.log("onBuild", m),
+  pendingContextFiles = [],
   heatmapData = [],
   lastMappingDate,
+  isMappingRunning = false,
+  mappingProgress,
   onRunMapping = () => console.log("onRunMapping"),
   snapshots = [],
   latestSnapshotId,
@@ -503,14 +511,26 @@ export default function UtilityPanel({
             <div data-testid="panel-mode-context" className="flex flex-col" style={{ gap: 6 }}>
               <SourcesCard
                 cardId="sources-context"
-                auditFiles={(contextStatus?.context_files ?? []).map((filename) => ({
-                  id: filename,
-                  filename,
-                  file_path: filename,
-                  source_type: "file" as const,
-                  selected: true,
-                  isNew: false,
-                }))}
+                auditFiles={[
+                  ...pendingContextFiles.map((filename) => ({
+                    id: `pending-${filename}`,
+                    filename,
+                    file_path: filename,
+                    source_type: "file" as const,
+                    selected: true,
+                    isNew: true,
+                  })),
+                  ...(contextStatus?.context_files ?? [])
+                    .filter((f) => !pendingContextFiles.includes(f))
+                    .map((filename) => ({
+                      id: filename,
+                      filename,
+                      file_path: filename,
+                      source_type: "file" as const,
+                      selected: true,
+                      isNew: false,
+                    })),
+                ]}
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
               />
@@ -686,7 +706,7 @@ export default function UtilityPanel({
                 onFileToggle={onFileToggle}
               />
 
-              {/* Heatmap */}
+              {/* Heatmap — read-only result of last mapping run */}
               <PanelCard id="heatmap" icon="🗂" title="Heatmap pokrycia" defaultOpen>
                 {heatmapData.length > 0 ? (
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -713,27 +733,9 @@ export default function UtilityPanel({
                   </table>
                 ) : (
                   <p className="text-buddy-text-faint" style={{ fontSize: 11, textAlign: "center", padding: "8px 0" }}>
-                    Brak danych heatmapy. Uruchom mapowanie.
+                    Brak danych heatmapy. Uruchom mapowanie w trybie Audyt.
                   </p>
                 )}
-              </PanelCard>
-
-              {/* Mapping */}
-              <PanelCard id="mapping" icon="🔗" title="Mapowanie" defaultOpen>
-                {lastMappingDate && (
-                  <div className="text-buddy-text-dim" style={{ fontSize: 11, marginBottom: 8 }}>
-                    Ostatnie mapowanie:{" "}
-                    {new Date(lastMappingDate).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" })}
-                  </div>
-                )}
-                <button
-                  data-testid="run-mapping-btn"
-                  onClick={onRunMapping}
-                  className="w-full border border-buddy-border text-buddy-text-muted hover:border-buddy-border-dark hover:text-buddy-text transition-all"
-                  style={{ padding: "8px 12px", borderRadius: 5, fontSize: 11, background: "transparent", cursor: "pointer", textAlign: "center" }}
-                >
-                  Uruchom mapowanie →
-                </button>
               </PanelCard>
             </div>
           )}
@@ -747,6 +749,38 @@ export default function UtilityPanel({
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
               />
+
+              {/* Mapping */}
+              <PanelCard id="mapping" icon="🔗" title="Mapowanie" defaultOpen>
+                {lastMappingDate && !isMappingRunning && (
+                  <div className="text-buddy-text-dim" style={{ fontSize: 11, marginBottom: 8 }}>
+                    Ostatnie mapowanie:{" "}
+                    {new Date(lastMappingDate).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" })}
+                  </div>
+                )}
+                {isMappingRunning && mappingProgress && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div className="text-buddy-text-muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                      {mappingProgress.message}
+                    </div>
+                    <div className="bg-buddy-surface2 rounded-full overflow-hidden" style={{ height: 4 }}>
+                      <div
+                        className="h-full transition-all duration-300"
+                        style={{ width: `${Math.round(mappingProgress.progress * 100)}%`, background: "#c8902a" }}
+                      />
+                    </div>
+                  </div>
+                )}
+                <button
+                  data-testid="run-mapping-btn"
+                  onClick={onRunMapping}
+                  disabled={isMappingRunning}
+                  className="w-full border border-buddy-border text-buddy-text-muted hover:border-buddy-border-dark hover:text-buddy-text transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ padding: "8px 12px", borderRadius: 5, fontSize: 11, background: "transparent", cursor: isMappingRunning ? "not-allowed" : "pointer", textAlign: "center" }}
+                >
+                  {isMappingRunning ? "Mapowanie w toku…" : "Uruchom mapowanie →"}
+                </button>
+              </PanelCard>
 
               {/* Audit History */}
               <PanelCard

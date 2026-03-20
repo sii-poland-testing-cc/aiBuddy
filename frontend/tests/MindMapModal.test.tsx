@@ -197,6 +197,56 @@ describe("MindMapModal", () => {
     expect(zoom030.some((n) => n.depth === 2)).toBe(true);
   });
 
+  // ── getCluster cycle safety ─────────────────────────────────────────────────
+
+  it("renders without crashing when edges form a direct cycle (e1↔e2)", () => {
+    // LLM can produce cyclic relations; getCluster must not infinite-recurse
+    const cyclicNodes: ModalNode[] = [
+      { id: "e1", label: "Test Case",   type: "data",    x: 100, y: 100, depth: 0 },
+      { id: "e2", label: "Test Suite",  type: "data",    x: 200, y: 200, depth: 1 },
+    ];
+    const cyclicEdges = [
+      { source: "e1", target: "e2" },
+      { source: "e2", target: "e1" },  // cycle
+    ];
+    expect(() => renderModal({ nodes: cyclicNodes, edges: cyclicEdges })).not.toThrow();
+    expect(screen.getByTestId("mm-node-e1")).toBeInTheDocument();
+    expect(screen.getByTestId("mm-node-e2")).toBeInTheDocument();
+  });
+
+  it("renders without crashing when edges form a longer cycle (e1→e2→e3→e1)", () => {
+    const cyclicNodes: ModalNode[] = [
+      { id: "e1", label: "Defect",        type: "data",    x: 100, y: 100, depth: 0 },
+      { id: "e2", label: "Test Coverage", type: "process", x: 200, y: 200, depth: 1 },
+      { id: "e3", label: "QA Engineer",   type: "actor",   x: 300, y: 300, depth: 2 },
+    ];
+    const cyclicEdges = [
+      { source: "e1", target: "e2" },
+      { source: "e2", target: "e3" },
+      { source: "e3", target: "e1" },  // cycle back
+    ];
+    expect(() => renderModal({ nodes: cyclicNodes, edges: cyclicEdges })).not.toThrow();
+    expect(screen.getByTestId("mm-node-e1")).toBeInTheDocument();
+    expect(screen.getByTestId("mm-node-e3")).toBeInTheDocument();
+  });
+
+  it("renders correctly with LLM-style numeric IDs (e1, e2, ...) and no cycles", () => {
+    // Sanity check: real LLM output with e1/e2/e3 IDs and no cycles must work fine
+    const llmNodes: ModalNode[] = [
+      { id: "e1", label: "Test Case",   type: "data",    x: 300, y: 100, depth: 0 },
+      { id: "e2", label: "Test Suite",  type: "data",    x: 150, y: 250, depth: 1 },
+      { id: "e3", label: "QA Engineer", type: "actor",   x: 450, y: 250, depth: 1 },
+    ];
+    const llmEdges = [
+      { source: "e1", target: "e2" },
+      { source: "e1", target: "e3" },
+    ];
+    expect(() => renderModal({ nodes: llmNodes, edges: llmEdges })).not.toThrow();
+    expect(screen.getByTestId("mm-node-e1")).toBeInTheDocument();
+    expect(screen.getByTestId("mm-node-e2")).toBeInTheDocument();
+    expect(screen.getByTestId("mm-node-e3")).toBeInTheDocument();
+  });
+
   // ── layoutModalNodes ────────────────────────────────────────────────────────
 
   describe("layoutModalNodes", () => {

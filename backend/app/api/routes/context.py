@@ -118,7 +118,7 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
         _context_store.pop(project_id, None)
 
     llm = get_llm()
-    workflow = ContextBuilderWorkflow(llm=llm, timeout=300)
+    workflow = ContextBuilderWorkflow(llm=llm, timeout=settings.M1_WORKFLOW_TIMEOUT_SECONDS)
 
     try:
         handler = workflow.run(project_id=project_id, file_paths=file_paths)
@@ -238,11 +238,14 @@ def _merge_glossaries(existing: list, new: list) -> list:
 
 @router.get("/{project_id}/status")
 async def context_status(project_id: str, db: AsyncSession = Depends(get_db)):
-    rag_ready = await _context_builder.is_indexed(project_id)
-
     # Prefer DB as authoritative source; fall back to in-memory cache
     project = await db.get(Project, project_id)
     if project and project.context_built_at:
+        # rag_ready only True when M1 completed (context_built_at set) AND Chroma
+        # still has vectors (guards against manual collection deletion).
+        # Crucially this prevents M2 test-file uploads (which write to the same
+        # Chroma collection) from falsely advertising rag_ready=True.
+        rag_ready = await _context_builder.is_indexed(project_id)
         stats = json.loads(project.context_stats) if project.context_stats else None
         built_at = (
             project.context_built_at.isoformat()
@@ -260,12 +263,13 @@ async def context_status(project_id: str, db: AsyncSession = Depends(get_db)):
             "context_files": files,
         }
 
-    # Cache fallback (same server instance, pre-restart state)
+    # M1 has never run for this project — Chroma may contain M2 test-file
+    # vectors but those do not constitute M1 context.  Always return False.
     cache = _context_store.get(project_id, {})
     files = cache.get("context_files", [])
     return {
         "project_id": project_id,
-        "rag_ready": rag_ready,
+        "rag_ready": False,
         "artefacts_ready": bool(cache),
         "stats": cache.get("stats"),
         "context_built_at": cache.get("context_built_at"),

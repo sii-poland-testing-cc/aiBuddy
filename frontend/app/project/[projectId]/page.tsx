@@ -12,6 +12,7 @@ import { useContextBuilder } from "@/lib/useContextBuilder";
 import type { GlossaryTerm as ContextGlossaryTerm } from "@/lib/useContextBuilder";
 import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useHeatmap } from "@/lib/useHeatmap";
+import { useMapping } from "@/lib/useMapping";
 import { useRequirements } from "@/lib/useRequirements";
 import RequirementsView from "@/components/RequirementsView";
 
@@ -110,6 +111,8 @@ export default function ProjectPage() {
   const [buildMode, setBuildMode] = useState<BuildMode>("append");
   const [refreshKey, setRefreshKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const contextFileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingContextFiles, setPendingContextFiles] = useState<File[]>([]);
 
   // ── Hooks ───────────────────────────────────────────────────────────────────
   const {
@@ -124,6 +127,12 @@ export default function ProjectPage() {
 
   const { files: rawFiles, uploading, uploadFiles } = useProjectFiles(projectId);
   const { heatmap, retry: retryHeatmap } = useHeatmap(projectId);
+  const {
+    isRunning: isMappingRunning,
+    progress: mappingProgress,
+    lastRunAt: lastMappingDate,
+    runMapping,
+  } = useMapping(projectId, retryHeatmap);
   const {
     requirements, stats: reqStats, loading: reqLoading, error: reqError,
     isExtracting, extractionProgress,
@@ -153,9 +162,27 @@ export default function ProjectPage() {
 
   const handleBuild = useCallback(
     async (mode: BuildMode) => {
-      await buildContext([], mode);
+      await buildContext(pendingContextFiles, mode);
+      setPendingContextFiles([]);
     },
-    [buildContext]
+    [buildContext, pendingContextFiles]
+  );
+
+  const handleContextAddFiles = useCallback(() => {
+    contextFileInputRef.current?.click();
+  }, []);
+
+  const handleContextFileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      if (!files.length) return;
+      setPendingContextFiles((prev) => {
+        const existingNames = new Set(prev.map((f) => f.name));
+        return [...prev, ...files.filter((f) => !existingNames.has(f.name))];
+      });
+      if (contextFileInputRef.current) contextFileInputRef.current.value = "";
+    },
+    []
   );
 
   // Matches: "rebuild", "rebuild context", "przebuduj kontekst", "odbuduj kontekst", etc.
@@ -227,7 +254,7 @@ export default function ProjectPage() {
   return (
     <div className="flex flex-col bg-buddy-base" style={{ height: "100vh" }}>
 
-      {/* Hidden file input for test-file attachment */}
+      {/* Hidden file input for test-file attachment (M2) */}
       <input
         ref={fileInputRef}
         type="file"
@@ -235,6 +262,16 @@ export default function ProjectPage() {
         accept=".xlsx,.csv,.json,.pdf,.feature,.txt,.md"
         className="hidden"
         onChange={handleFileInputChange}
+      />
+
+      {/* Hidden file input for context documents (M1 — .docx/.pdf only) */}
+      <input
+        ref={contextFileInputRef}
+        type="file"
+        multiple
+        accept=".docx,.pdf"
+        className="hidden"
+        onChange={handleContextFileInputChange}
       />
 
       {/* ── TopBar ─────────────────────────────────────────────────────────── */}
@@ -369,7 +406,8 @@ export default function ProjectPage() {
           activeMode={activeMode}
           projectId={projectId}
           auditFiles={panelFiles}
-          onAddFiles={handleAttachFiles}
+          pendingContextFiles={pendingContextFiles.map((f) => f.name)}
+          onAddFiles={activeMode === "context" ? handleContextAddFiles : handleAttachFiles}
           onFileToggle={handleFileToggle}
           onOpenMindMap={() => setMmModalOpen(true)}
           glossary={ctxGlossary}
@@ -379,8 +417,10 @@ export default function ProjectPage() {
           onBuildModeChange={setBuildMode}
           onBuild={handleBuild}
           heatmapData={heatmap}
-          lastMappingDate={null}
-          onRunMapping={() => console.log("run mapping")}
+          lastMappingDate={lastMappingDate}
+          isMappingRunning={isMappingRunning}
+          mappingProgress={mappingProgress}
+          onRunMapping={runMapping}
           snapshots={snapshots}
           latestSnapshotId={latestSnapshotId}
           tier={tier}

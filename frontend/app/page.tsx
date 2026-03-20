@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useContext } from "react";
 import { useRouter } from "next/navigation";
 import { useProjects } from "../lib/useProjects";
 import { useContextStatuses } from "../lib/useContextStatuses";
+import { ProjectOperationsContext } from "../lib/ProjectOperationsContext";
 
 export default function Home() {
   const router = useRouter();
   const { projects, createProject } = useProjects();
   const statuses = useContextStatuses(projects.map((p) => p.project_id));
+  const opsCtx = useContext(ProjectOperationsContext);
+  const runningProjects = opsCtx?.runningProjects ?? new Set<string>();
 
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -60,7 +63,11 @@ export default function Home() {
               className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-buddy-elevated transition-colors text-left group"
             >
               <div className={`w-2 h-2 rounded-full shrink-0 transition-colors ${
-                statuses[p.project_id] ? "bg-buddy-success" : "bg-buddy-border-dark"
+                runningProjects.has(p.project_id)
+                  ? "bg-buddy-gold animate-pulse"
+                  : statuses[p.project_id]
+                    ? "bg-buddy-success"
+                    : "bg-buddy-border-dark"
               }`} />
               <div className="flex-1 min-w-0">
                 <span className="block text-sm font-medium text-buddy-text group-hover:text-buddy-gold-light transition-colors truncate">

@@ -76,14 +76,12 @@ function nodeFontSize(depth: number) {
 
 // ── Cluster helper ────────────────────────────────────────────────────────────
 
-function getCluster(id: string, edges: ModalEdge[]): string {
-  const topLevel = ["payment", "auth", "orders", "reporting", "notif"];
-  if (topLevel.includes(id) || id === "root") return id;
-  const parentEdge = edges.find((e) => e.target === id && topLevel.includes(e.source));
-  if (parentEdge) return parentEdge.source;
+function getCluster(id: string, edges: ModalEdge[], visited: Set<string> = new Set()): string {
+  if (visited.has(id)) return "root"; // cycle detected — bail out
+  visited.add(id);
   const anyParent = edges.find((e) => e.target === id);
-  if (anyParent) return getCluster(anyParent.source, edges);
-  return "root";
+  if (anyParent) return getCluster(anyParent.source, edges, visited);
+  return id; // reached a root (no incoming edge) — use its id as the cluster key
 }
 
 // ── Transform: API nodes → ModalNodes using dagre ────────────────────────────
