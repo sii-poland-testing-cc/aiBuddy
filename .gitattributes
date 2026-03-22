@@ -1,0 +1,71 @@
+# Auto-detect text files
+* text=auto
+
+# Force LF where needed
+*.py text eol=lf
+*.pyi text eol=lf
+*.pyw text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Windows scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.ico -text
+*.pdf -text
+
+# Python diff
+*.py diff=python
+
+# Ignore in exports
+.venv/ export-ignore
+__pypackages__/ export-ignore
+__pycache__/ export-ignore
+*.pyc export-ignore
+*.pyo export-ignore
+*.pyd export-ignore
+
+# IDE
+.idea/ export-ignore
+.vscode/ export-ignore
+
+# ===== Node =====
+node_modules/ export-ignore
+
+# ===== Next.js build artifacts =====
+.next/ export-ignore
+out/ export-ignore
+
+# Windows scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Lock files
+package-lock.json text eol=lf
+pnpm-lock.yaml text eol=lf
+yarn.lock text eol=lf merge=ours
+
+# ===== Styles =====
+*.css text eol=lf
+*.scss text eol=lf
+
+# ===== HTML =====
+*.html text eol=lf
+
+# ===== JavaScript / TypeScript =====
+*.js text eol=lf
+*.jsx text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
