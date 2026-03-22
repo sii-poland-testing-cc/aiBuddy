@@ -8,11 +8,19 @@ dist/
 build/
 .eggs/
 
+# PDM (PEP 582 local packages)
+__pypackages__/
+
 # Virtual environment
 backend/.venv/
 .venv/
 venv/
 env/
+
+# Testing / coverage
+.coverage
+htmlcov/
+.pytest_cache/
 
 # Secrets / local config
 backend/.env
