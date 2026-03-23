@@ -4,6 +4,8 @@ import { useState } from "react";
 import { GlossaryTerm, ContextStatus } from "../lib/useContextBuilder";
 import { HeatmapRow } from "../lib/useHeatmap";
 import { MappingProgress } from "../lib/useMapping";
+import { AuditResultCard } from "./AuditResultCard";
+import type { AuditData } from "../lib/useAIBuddyChat";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -23,8 +25,17 @@ export interface PanelFile {
 export interface AuditSnapshot {
   id: string;
   created_at: string;
-  summary: { coverage_pct: number };
-  diff: { coverage_delta: number | null } | null;
+  summary: {
+    coverage_pct: number;
+    duplicates_found?: number;
+    untagged_cases?: number;
+    requirements_total?: number;
+    requirements_covered?: number;
+  };
+  diff: { coverage_delta: number | null; new_covered?: string[]; newly_uncovered?: string[] } | null;
+  requirements_uncovered?: string[];
+  recommendations?: string[];
+  files_used?: string[];
 }
 
 interface UtilityPanelProps {
@@ -481,6 +492,7 @@ export default function UtilityPanel({
 }: UtilityPanelProps) {
   const [glossarySearch, setGlossarySearch] = useState("");
   const [localBuildMode, setLocalBuildMode] = useState<BuildMode>(buildMode);
+  const [openSnap, setOpenSnap] = useState<AuditSnapshot | null>(null);
 
   const filteredGlossary = glossary.filter(
     (t) =>
@@ -495,6 +507,7 @@ export default function UtilityPanel({
   };
 
   return (
+  <>
     <aside
       data-testid="utility-panel"
       className="flex-shrink-0 bg-buddy-surface border-l border-buddy-border flex flex-col overflow-y-auto"
@@ -712,10 +725,17 @@ export default function UtilityPanel({
               {/* Heatmap — read-only result of last mapping run */}
               <PanelCard id="heatmap" icon="🗂" title="Heatmap pokrycia" defaultOpen>
                 {heatmapData.length > 0 ? (
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "collapse", fontSize: 11 }}>
+                    <colgroup>
+                      <col style={{ width: "auto" }} />
+                      <col style={{ width: 36 }} />
+                      <col style={{ width: 36 }} />
+                      <col style={{ width: 40 }} />
+                      <col style={{ width: 32 }} />
+                    </colgroup>
                     <thead>
                       <tr>
-                        <th className="text-buddy-text-faint font-medium border-b border-buddy-border" style={{ padding: "5px 8px", textAlign: "left" }}>Moduł</th>
+                        <th className="text-buddy-text-faint font-medium border-b border-buddy-border" style={{ padding: "5px 8px", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Moduł</th>
                         <th className="text-buddy-text-faint font-medium border-b border-buddy-border" style={{ padding: "5px 8px", textAlign: "right" }}>Wym.</th>
                         <th className="text-buddy-text-faint font-medium border-b border-buddy-border" style={{ padding: "5px 8px", textAlign: "right" }}>Pokr.</th>
                         <th className="text-buddy-text-faint font-medium border-b border-buddy-border" style={{ padding: "5px 8px", textAlign: "right" }}>Śr.</th>
@@ -725,7 +745,7 @@ export default function UtilityPanel({
                     <tbody>
                       {heatmapData.map((row) => (
                         <tr key={row.module} className="hover:bg-white/[0.02] transition-colors">
-                          <td className="text-buddy-text font-medium font-mono border-b border-buddy-border" style={{ padding: "6px 8px" }}>{row.module}</td>
+                          <td className="text-buddy-text font-medium font-mono border-b border-buddy-border" style={{ padding: "6px 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.module}</td>
                           <td className="text-buddy-text-muted border-b border-buddy-border" style={{ padding: "6px 8px", textAlign: "right" }}>{row.total_requirements}</td>
                           <td className="text-buddy-text-muted border-b border-buddy-border" style={{ padding: "6px 8px", textAlign: "right" }}>{row.covered}</td>
                           <td className="font-mono text-buddy-text-muted border-b border-buddy-border" style={{ padding: "6px 8px", textAlign: "right" }}>{row.avg_score.toFixed(1)}</td>
@@ -827,6 +847,19 @@ export default function UtilityPanel({
                           </span>
                           <CovBadge pct={pct} />
                           <DiffBadge delta={delta} />
+                          <button
+                            data-testid="snapshot-open-btn"
+                            onClick={() => setOpenSnap(snap)}
+                            title="Otwórz wyniki audytu"
+                            style={{
+                              marginLeft: "auto", background: "none", border: "none",
+                              cursor: "pointer", fontSize: 11, color: "#6a5f50",
+                              padding: "0 2px", lineHeight: 1, transition: "color 0.15s",
+                            }}
+                            className="hover:!text-buddy-gold"
+                          >
+                            ↗
+                          </button>
                         </div>
                       );
                     })}
@@ -863,5 +896,60 @@ export default function UtilityPanel({
         </>
       )}
     </aside>
+
+    {/* ── Snapshot detail modal ─────────────────────────────────────────────── */}
+    {openSnap && ((() => {
+      const snap = openSnap;
+      const auditData: AuditData = {
+        summary: {
+          coverage_pct: snap.summary.coverage_pct,
+          duplicates_found: snap.summary.duplicates_found ?? 0,
+          untagged_cases: snap.summary.untagged_cases ?? 0,
+          requirements_total: snap.summary.requirements_total ?? 0,
+          requirements_covered: snap.summary.requirements_covered ?? 0,
+        },
+        uncovered: snap.requirements_uncovered ?? [],
+        recommendations: snap.recommendations ?? [],
+        duplicates: [],
+        diff: snap.diff !== null
+          ? { coverage_delta: snap.diff?.coverage_delta ?? 0, new_covered: snap.diff?.new_covered ?? [], newly_uncovered: snap.diff?.newly_uncovered ?? [] }
+          : null,
+      };
+      const dateStr = new Date(snap.created_at).toLocaleString("pl-PL", {
+        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      });
+      return (
+        <div
+          data-testid="audit-modal"
+          onClick={(e) => { if (e.target === e.currentTarget) setOpenSnap(null); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 2000,
+            background: "rgba(0,0,0,0.65)", backdropFilter: "blur(2px)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 24,
+          }}
+        >
+          <div style={{
+            width: "100%", maxWidth: 640, maxHeight: "85vh",
+            overflowY: "auto", borderRadius: 10,
+            background: "#1a1612", border: "1px solid #3a342c",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
+          }}>
+            <div style={{ padding: "12px 16px 0", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid #2a2520", marginBottom: 0, paddingBottom: 10 }}>
+              <span style={{ fontSize: 11, color: "#6a5f50", fontFamily: "monospace" }}>{dateStr}</span>
+              {snap.files_used && snap.files_used.length > 0 && (
+                <span style={{ fontSize: 10, color: "#4a3f32", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  — {snap.files_used.map((p) => p.split("/").pop()).join(", ")}
+                </span>
+              )}
+            </div>
+            <div style={{ padding: "0 16px 16px" }}>
+              <AuditResultCard data={auditData} onClose={() => setOpenSnap(null)} />
+            </div>
+          </div>
+        </div>
+      );
+    })())}
+  </>
   );
 }

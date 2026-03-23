@@ -10,7 +10,7 @@
 
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 export type MessageRole = "user" | "assistant" | "system";
 
@@ -58,6 +58,8 @@ interface UseAIBuddyChatOptions {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+const STORAGE_KEY = (projectId: string) => `ai-buddy-chat-${projectId}`;
+
 export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
@@ -66,6 +68,31 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
   const [latestSnapshotId, setLatestSnapshotId] = useState<string | undefined>();
   const abortRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Restore persisted messages on mount / project change
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY(projectId));
+      if (!stored) return;
+      const parsed: ChatMessage[] = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        setMessages(parsed.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })));
+      }
+    } catch {
+      // storage unavailable or malformed — start fresh
+    }
+  }, [projectId]);
+
+  // Persist messages on every change (skip empty to avoid wiping during init)
+  useEffect(() => {
+    const toSave = messages.filter((m) => !m.isStatus).slice(-100);
+    if (toSave.length === 0) return;
+    try {
+      localStorage.setItem(STORAGE_KEY(projectId), JSON.stringify(toSave));
+    } catch {
+      // quota exceeded — ignore
+    }
+  }, [messages, projectId]);
 
   const resetStreamTimeout = (abort: AbortController) => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -200,7 +227,8 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
   const clear = useCallback(() => {
     setMessages([]);
     setError(null);
-  }, []);
+    try { localStorage.removeItem(STORAGE_KEY(projectId)); } catch { /* ignore */ }
+  }, [projectId]);
 
   const clearError = useCallback(() => {
     setError(null);

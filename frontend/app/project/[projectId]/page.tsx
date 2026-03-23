@@ -44,6 +44,9 @@ function useSnapshots(projectId: string, latestSnapshotId?: string) {
             created_at: s.created_at,
             summary: typeof s.summary === "string" ? JSON.parse(s.summary) : s.summary,
             diff: typeof s.diff === "string" ? JSON.parse(s.diff) : s.diff,
+            requirements_uncovered: Array.isArray(s.requirements_uncovered) ? s.requirements_uncovered : [],
+            recommendations: Array.isArray(s.recommendations) ? s.recommendations : [],
+            files_used: Array.isArray(s.files_used) ? s.files_used : [],
           }))
         );
       }

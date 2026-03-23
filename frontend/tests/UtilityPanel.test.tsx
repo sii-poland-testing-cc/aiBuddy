@@ -27,6 +27,23 @@ const SNAPSHOTS: AuditSnapshot[] = [
   { id: "s2", created_at: "2026-03-10T10:00:00Z", summary: { coverage_pct: 58 }, diff: null },
 ];
 
+/** Snapshot with full audit data for modal tests */
+const RICH_SNAPSHOT: AuditSnapshot = {
+  id: "r1",
+  created_at: "2026-03-20T12:00:00Z",
+  summary: {
+    coverage_pct: 75,
+    duplicates_found: 2,
+    untagged_cases: 1,
+    requirements_total: 10,
+    requirements_covered: 7,
+  },
+  diff: { coverage_delta: 5 },
+  requirements_uncovered: ["FR-003", "FR-009"],
+  recommendations: ["Add negative tests for FR-003"],
+  files_used: ["/uploads/p1/suite.xlsx"],
+};
+
 function renderPanel(
   mode: "context" | "requirements" | "audit",
   overrides: Partial<Parameters<typeof UtilityPanel>[0]> = {}
@@ -307,5 +324,71 @@ describe("UtilityPanel", () => {
     await userEvent.click(within(card).getByRole("button")); // open card
 
     expect(screen.getByText(/Regeneracja/)).toBeDisabled();
+  });
+
+  // ── Snapshot audit modal ─────────────────────────────────────────────────────
+
+  it("clicking ↗ button opens the audit result modal", async () => {
+    renderPanel("audit", { snapshots: [RICH_SNAPSHOT] });
+    const card = screen.getByTestId("card-history");
+    await userEvent.click(within(card).getByRole("button")); // open card
+
+    await userEvent.click(screen.getByTestId("snapshot-open-btn"));
+    expect(screen.getByTestId("audit-modal")).toBeInTheDocument();
+  });
+
+  it("audit modal displays coverage percentage from the snapshot", async () => {
+    renderPanel("audit", { snapshots: [RICH_SNAPSHOT] });
+    const card = screen.getByTestId("card-history");
+    await userEvent.click(within(card).getByRole("button"));
+
+    await userEvent.click(screen.getByTestId("snapshot-open-btn"));
+    const modal = screen.getByTestId("audit-modal");
+    expect(within(modal).getByText("75%")).toBeInTheDocument();
+  });
+
+  it("audit modal shows 'Audit Summary' header", async () => {
+    renderPanel("audit", { snapshots: [RICH_SNAPSHOT] });
+    const card = screen.getByTestId("card-history");
+    await userEvent.click(within(card).getByRole("button"));
+
+    await userEvent.click(screen.getByTestId("snapshot-open-btn"));
+    expect(screen.getByText("Audit Summary")).toBeInTheDocument();
+  });
+
+  it("audit modal shows uncovered requirements from the snapshot", async () => {
+    renderPanel("audit", { snapshots: [RICH_SNAPSHOT] });
+    const card = screen.getByTestId("card-history");
+    await userEvent.click(within(card).getByRole("button"));
+
+    await userEvent.click(screen.getByTestId("snapshot-open-btn"));
+    expect(screen.getByText("FR-003")).toBeInTheDocument();
+    expect(screen.getByText("FR-009")).toBeInTheDocument();
+  });
+
+  it("audit modal shows recommendations from the snapshot", async () => {
+    renderPanel("audit", { snapshots: [RICH_SNAPSHOT] });
+    const card = screen.getByTestId("card-history");
+    await userEvent.click(within(card).getByRole("button"));
+
+    await userEvent.click(screen.getByTestId("snapshot-open-btn"));
+    expect(screen.getByText("Add negative tests for FR-003")).toBeInTheDocument();
+  });
+
+  it("× button closes the audit modal", async () => {
+    renderPanel("audit", { snapshots: [RICH_SNAPSHOT] });
+    const card = screen.getByTestId("card-history");
+    await userEvent.click(within(card).getByRole("button"));
+
+    await userEvent.click(screen.getByTestId("snapshot-open-btn"));
+    expect(screen.getByTestId("audit-modal")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTitle("Zamknij"));
+    expect(screen.queryByTestId("audit-modal")).not.toBeInTheDocument();
+  });
+
+  it("modal is not visible before opening a snapshot", () => {
+    renderPanel("audit", { snapshots: [RICH_SNAPSHOT] });
+    expect(screen.queryByTestId("audit-modal")).not.toBeInTheDocument();
   });
 });

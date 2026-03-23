@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
-import type { ChatMessage, ChatSource, AuditData } from "@/lib/useAIBuddyChat";
+import { useRef, useEffect } from "react";
+import type { ChatMessage } from "@/lib/useAIBuddyChat";
 import type { GlossaryTerm } from "@/components/Glossary";
 import { parseRelatedTerms } from "@/lib/parseRelatedTerms";
+import { AuditResultCard } from "@/components/AuditResultCard";
 
 // ── Avatars ───────────────────────────────────────────────────────────────────
 
@@ -107,166 +108,6 @@ function renderAssistantContent(
       </div>
       {remaining && renderContent(remaining)}
     </>
-  );
-}
-
-// ── Audit result card ─────────────────────────────────────────────────────────
-
-function coverageColor(pct: number) {
-  if (pct >= 80) return "#4a9e6b";
-  if (pct >= 50) return "#f0c060";
-  return "#c0504a";
-}
-
-function Metric({ label, value, color }: { label: string; value: string | number; color?: string }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <div style={{ fontSize: 10, color: "#6a5f50", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "monospace", color: color ?? "#e8dcc8" }}>{value}</div>
-    </div>
-  );
-}
-
-function DiffBadge({ diff }: { diff: AuditData["diff"] }) {
-  if (diff === undefined) return null;
-  if (diff === null) {
-    return (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 20, fontSize: 11, fontWeight: 700, fontFamily: "monospace", background: "rgba(106,95,80,0.3)", color: "#a09078" }}>
-        📌 Pierwszy
-      </span>
-    );
-  }
-  const delta = diff.coverage_delta ?? 0;
-  if (Math.abs(delta) < 0.05) {
-    return (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 20, fontSize: 11, fontWeight: 700, fontFamily: "monospace", background: "rgba(106,95,80,0.3)", color: "#a09078" }}>
-        → 0%
-      </span>
-    );
-  }
-  if (delta > 0) {
-    return (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 20, fontSize: 11, fontWeight: 700, fontFamily: "monospace", background: "rgba(74,158,107,0.2)", color: "#4a9e6b" }}>
-        ▲ +{delta.toFixed(1)}%
-      </span>
-    );
-  }
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 20, fontSize: 11, fontWeight: 700, fontFamily: "monospace", background: "rgba(192,80,74,0.2)", color: "#c0504a" }}>
-      ▼ {delta.toFixed(1)}%
-    </span>
-  );
-}
-
-function AuditResultCard({ data, sources }: { data: AuditData; sources?: ChatSource[] }) {
-  const [sourcesOpen, setSourcesOpen] = useState(false);
-  const { summary, uncovered, recommendations, diff } = data;
-
-  const covColor = coverageColor(summary.coverage_pct);
-  const dupColor = summary.duplicates_found > 0 ? "#f0c060" : "#4a9e6b";
-  const untagColor = summary.untagged_cases > 0 ? "#f0c060" : "#4a9e6b";
-
-  return (
-    <div style={{ background: "#211d18", border: "1px solid #2a2520", borderRadius: 8, padding: "14px 16px", marginTop: 8 }}>
-
-      {/* Title row */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ color: "#f0c060" }}>
-          <circle cx="8" cy="8" r="6" /><path d="M5 8l2 2 4-4" />
-        </svg>
-        <span style={{ fontSize: 11, fontWeight: 700, color: "#f0c060", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-          Audit Summary
-        </span>
-        <DiffBadge diff={diff} />
-      </div>
-
-      {/* Metrics */}
-      <div style={{ display: "flex", gap: 20, marginBottom: 12, flexWrap: "wrap" }}>
-        <Metric label="Pokrycie" value={`${summary.coverage_pct}%`} color={covColor} />
-        <Metric label="Duplikaty" value={summary.duplicates_found} color={dupColor} />
-        <Metric label="Bez tagów" value={summary.untagged_cases} color={untagColor} />
-        {summary.requirements_total > 0 && (
-          <Metric
-            label="Wymagania"
-            value={`${summary.requirements_covered}/${summary.requirements_total}`}
-          />
-        )}
-      </div>
-
-      {/* Uncovered requirements */}
-      {uncovered.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 11, color: "#6a5f50", marginBottom: 6 }}>Niepokryte wymagania:</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {uncovered.map((r) => (
-              <span
-                key={r}
-                style={{
-                  padding: "2px 7px", borderRadius: 4, fontSize: 10, fontWeight: 700,
-                  fontFamily: "monospace", background: "rgba(192,80,74,0.2)",
-                  color: "#e08080", border: "1px solid rgba(192,80,74,0.3)",
-                }}
-              >
-                {r}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Recommendations */}
-      {recommendations.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: sources && sources.length > 0 ? 0 : 0 }}>
-          {recommendations.map((rec, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 12, color: "#a09078", lineHeight: 1.4 }}>
-              <span style={{ color: "#c8902a", flexShrink: 0, marginTop: 1 }}>→</span>
-              <span>{rec}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Sources toggle */}
-      {sources && sources.length > 0 && (
-        <div style={{ marginTop: 10 }}>
-          <button
-            onClick={() => setSourcesOpen((v) => !v)}
-            style={{
-              display: "flex", alignItems: "center", gap: 6,
-              fontSize: 11, color: "#6a5f50", cursor: "pointer",
-              padding: "6px 0 0", borderTop: "1px solid #2a2520",
-              background: "none", border: "none", borderTop: "1px solid #2a2520",
-              width: "100%", textAlign: "left", transition: "color 0.15s",
-            }}
-            className="hover:text-buddy-text-muted"
-          >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M2 4h12M2 8h8M2 12h5" />
-            </svg>
-            {sources.length} {sources.length === 1 ? "źródło RAG" : "źródła RAG"}
-            <svg
-              width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
-              style={{ marginLeft: "auto", transition: "transform 0.2s", transform: sourcesOpen ? "rotate(180deg)" : "none" }}
-            >
-              <path d="M2 4l3 3 3-3" />
-            </svg>
-          </button>
-          {sourcesOpen && (
-            <div style={{ paddingTop: 8 }}>
-              {sources.map((s, i) => (
-                <div
-                  key={i}
-                  style={{ display: "flex", gap: 6, padding: "5px 8px", borderRadius: 5, background: "#1a1612", marginBottom: 4, fontSize: 11 }}
-                >
-                  <span style={{ color: "#c8902a", fontWeight: 600, fontFamily: "monospace", flexShrink: 0 }}>{s.filename}</span>
-                  <span style={{ color: "#6a5f50" }}>…{s.excerpt}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
