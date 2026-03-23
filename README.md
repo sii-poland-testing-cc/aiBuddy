@@ -58,11 +58,12 @@ load → coarse match (embedding) → fine match (LLM) → score → persist
 | Embeddings | Bedrock Titan `titan-embed-text-v2:0` / `BAAI/bge-m3` | local HuggingFace fallback (~560 MB) |
 | Vector store | Chroma 0.5+ | one collection per project |
 | Backend framework | FastAPI 0.115+ + uvicorn | all long-running ops stream via SSE |
-| ORM / DB | SQLAlchemy 2.0 async + aiosqlite | schema v5; idempotent `ALTER TABLE` migrations |
+| ORM / DB | SQLAlchemy 2.0 async + aiosqlite | schema v5; migrations via Alembic |
+| Migrations | Alembic 1.18+ | async-compatible; `render_as_batch` for SQLite; autogenerate support |
 | Document parsing | python-docx + pdfplumber | `.docx`, `.pdf`, `.xlsx`, `.csv`, `.json`, `.feature` |
 | Frontend | Next.js 14 (App Router) | TypeScript, Tailwind CSS |
 | Charts | Recharts | audit trend panel in `AuditHistory` |
-| Frontend testing | Vitest + Testing Library | jsdom; 154 tests across 12 suites |
+| Frontend testing | Vitest + Testing Library | jsdom; 205 tests across 15 suites |
 | Backend testing | pytest + pytest-asyncio | 82 tests across 7+ suites |
 
 ---
@@ -81,21 +82,24 @@ load → coarse match (embedding) → fine match (LLM) → score → persist
 
 ### Backend
 
+**Option A — PDM (recommended)**
+
+```bash
+cd backend
+pip install pdm          # install PDM globally (once)
+pdm install              # creates .venv and installs all locked dependencies
+cp .env.example .env     # fill in credentials
+alembic upgrade head     # create DB schema (or migrate existing DB)
+```
+
+**Option B — plain venv**
+
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in credentials
-```
-
-or you can use PDM to do so
-
-```bash
-pip install pdm
-pdm init -n
-pdm config python.use_venv true  # if you want to use venv
-pdm install
-cp .env.example .env   # fill in credentials
+cp .env.example .env
+alembic upgrade head
 ```
 
 ### Frontend
@@ -138,6 +142,9 @@ MAX_UPLOAD_MB=50
 ## Running
 
 ```bash
+# Apply DB migrations (first time or after pulling new migrations)
+cd backend && alembic upgrade head
+
 # Backend (from backend/)
 uvicorn app.main:app --reload --port 8000
 
@@ -207,7 +214,11 @@ ai-buddy/
 │   │   ├── db/
 │   │   │   ├── models.py                        # Project, ProjectFile, AuditSnapshot ORM models
 │   │   │   ├── requirements_models.py           # Requirement, RequirementTCMapping, CoverageScore
-│   │   │   └── engine.py                        # Async engine, AsyncSessionLocal, init_db() v5
+│   │   │   └── engine.py                        # Async engine, AsyncSessionLocal, init_db() (test fallback)
+│   ├── alembic.ini                              # Alembic config; DATABASE_URL from .env
+│   ├── migrations/
+│   │   ├── env.py                               # Async-compatible Alembic env
+│   │   └── versions/001_initial_schema.py       # Baseline: all 6 tables (schema v5)
 │   │   ├── parsers/
 │   │   │   └── document_parser.py               # .docx (python-docx) + .pdf (pdfplumber) → Document[]
 │   │   └── rag/
@@ -332,7 +343,16 @@ data: [DONE]
 
 ## Database Schema
 
-Schema v5. `init_db()` applies idempotent `ALTER TABLE ADD COLUMN` on startup for additive changes.
+Schema v5. Managed by **Alembic** — run `alembic upgrade head` to apply all migrations.
+
+```bash
+# Common migration commands (run from backend/)
+alembic upgrade head                          # apply all pending migrations
+alembic downgrade -1                          # roll back last migration
+alembic revision --autogenerate -m "add X"   # auto-generate from model diff
+alembic stamp head                            # mark existing DB as current (first run)
+alembic check                                 # verify models and DB are in sync
+```
 
 ### `projects`
 
@@ -453,9 +473,9 @@ Embeddings fall back to `BAAI/bge-m3` via `llama-index-embeddings-huggingface`. 
 
 ## Known Limitations
 
-- **DB migrations**: `init_db()` applies idempotent `ALTER TABLE ADD COLUMN` for additive changes only. Column renames, type changes, or index additions require manual migration or deleting `./data/ai_buddy.db`. Alembic integration is planned.
+- **DB migrations**: managed by Alembic. Run `alembic upgrade head` after every pull that includes new migrations. `init_db()` is now a test-only fallback (`create_all`); production should always use Alembic.
 - **Regenerate workflow** (M2 Tier 3): the tier selector UI exists but the workflow class is not yet implemented.
 - **Confluence / Jira ingestion**: `source_type` column and UI selection rules are in place; the connector pipelines (OAuth, REST fetch, document transform) are not yet built.
 - **MindMap layout**: dagre runs entirely client-side in `MindMap.tsx` and `MindMapModal.tsx`. The backend returns only node IDs and edge pairs with no coordinates.
-- **SQLite idempotent migrations**: the `PRAGMA table_info` introspection in `init_db()` is SQLite-specific. A PostgreSQL production deployment requires those migration blocks to be replaced with Alembic revisions.
+- **SQLite vs PostgreSQL migrations**: Alembic uses `render_as_batch=True` for SQLite (required for ALTER COLUMN). A PostgreSQL production deployment uses the same migration files without modification.
 - **RAG coverage accuracy**: `_extract_requirements()` uses an LLM call to extract FR IDs from RAG context. If M1 has not been run for a project, `coverage_pct` returns `0.0` and a fallback recommendation is appended prompting the user to run Context Builder first.

@@ -8,8 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cd backend
+
+# Option A — PDM (recommended)
+pdm install
+cp .env.example .env   # fill in credentials
+alembic upgrade head   # apply DB migrations
+
+# Option B — plain venv
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
+alembic upgrade head
 
 # Run dev server
 uvicorn app.main:app --reload
@@ -283,13 +292,26 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 - `backend/app/api/routes/files.py` — File upload (`source_type` param), Chroma indexing, DB metadata, `audit-selection` endpoint
 - `backend/app/api/routes/snapshots.py` — Audit history CRUD (list, trend, latest, delete)
 - `backend/app/db/models.py` — `Project`, `ProjectFile` (`source_type`, `last_used_in_audit_id`), `AuditSnapshot` ORM (SQLAlchemy 2.0 Mapped API)
-- `backend/app/db/engine.py` — async engine, `get_db()`, `AsyncSessionLocal`, `init_db()` (schema v4; idempotent ALTER TABLE migrations for `context_files`, `last_used_in_audit_id`, `source_type`)
+- `backend/app/db/engine.py` — async engine, `get_db()`, `AsyncSessionLocal`, `init_db()` (test/bootstrap fallback only — real migrations via Alembic)
+- `backend/alembic.ini` — Alembic config; `DATABASE_URL` read from app settings (`.env`)
+- `backend/migrations/env.py` — async-compatible Alembic env; imports all ORM models; `render_as_batch=True` for SQLite; `compare_type=False` suppresses TEXT/VARCHAR false positives
+- `backend/migrations/versions/001_initial_schema.py` — baseline migration: all 6 tables as of schema v5
 - `backend/app/rag/context_builder.py` — Chroma manager; `build_with_sources()` returns `(text, sources)`; `delete_collection()` wipes a project's Chroma collection
 
-### DB schema (v4)
+### DB schema (v5) — managed by Alembic
+
+```bash
+alembic upgrade head          # apply all pending migrations
+alembic downgrade -1          # roll back last migration
+alembic revision --autogenerate -m "add X"  # generate migration from model diff
+alembic stamp head            # mark existing DB as current (first run on existing install)
+alembic check                 # verify models and DB are in sync
+```
+
 - `projects` — id, name, description, created_at, mind_map, glossary, context_stats, context_built_at, context_files
-- `project_files` — id, project_id, filename, file_path, size_bytes, indexed, uploaded_at, last_used_in_audit_id, **source_type** (v4)
+- `project_files` — id, project_id, filename, file_path, size_bytes, indexed, uploaded_at, last_used_in_audit_id, source_type
 - `audit_snapshots` — id, project_id, created_at, files_used (JSON), summary (JSON), requirements_uncovered (JSON), recommendations (JSON), diff (JSON)
+- `requirements`, `requirement_tc_mappings`, `coverage_scores` — Faza 2/5+6 tables (see requirements_models.py)
 
 ### Frontend — Routing
 
@@ -371,11 +393,11 @@ Long-running SSE operations (M1 context build, requirements extraction, mapping)
 ```bash
 cd frontend && npm test
 ```
-185 tests across 14 files:
+205 tests across 15 files:
 - `frontend/tests/TopBar.test.tsx` — 9 tests: renders, project id, RAG indicator, panel toggle, back navigation
 - `frontend/tests/ModeInputBox.test.tsx` — 17 tests: mode pills, locked pills, file chips, placeholder, send/stop, artifact chips, attach button
 - `frontend/tests/MindMapModal.test.tsx` — 26 tests: visibility, toolbar, close/Escape, node rendering, search dimming, match count, tooltip show/hide, cluster collapse, `layoutModalNodes` unit tests; **cycle-safety tests** (direct cycle e1↔e2, longer cycle e1→e2→e3→e1, LLM-style numeric IDs)
-- `frontend/tests/UtilityPanel.test.tsx` — 28 tests: panel open/close, mode-specific card content, source tabs, heatmap, tier selector, snapshot rows
+- `frontend/tests/UtilityPanel.test.tsx` — 35 tests: panel open/close, mode-specific card content, source tabs, heatmap, tier selector, snapshot rows, ↗ opens audit modal, × closes modal
 - `frontend/tests/RequirementsView.test.tsx` — 36 tests: header stats, empty state, error, loading skeletons, module groups, search/filter, card badges, mark-reviewed, group collapse
 - `frontend/tests/ProjectPage.test.tsx` — 13 tests: page renders for each mode, hook wiring
 - `frontend/tests/MindMap.test.tsx` — 9 tests: renders, nodes (rect), edges (bezier path), labels, empty state, arrow marker, reset button
@@ -386,6 +408,7 @@ cd frontend && npm test
 - `frontend/tests/AuditHistory.test.tsx` — 5 tests: empty state, snapshot rows rendered, latest highlight, coverage badge colors, trend chart requires ≥2 snapshots
 - `frontend/tests/useRequirements.test.ts` — 8 tests: fetch, extract SSE, patch optimistic update; **re-mount after navigation** (isExtracting context true→false triggers fetchAll)
 - `frontend/tests/useAuditPipeline.test.ts` — 12 tests: fresh project (extract+map+send), sequential order, status messages, skip-when-done, guards (isExtracting/isMappingRunning), fetch failure resilience, send arguments
+- `frontend/tests/useAIBuddyChat.test.ts` — 13 tests: localStorage load/save/clear, status message exclusion, per-project isolation, projectId change re-load
 - `frontend/tests/setup.ts` — `@testing-library/jest-dom` setup
 - `frontend/vitest.config.ts` — jsdom environment, `@vitejs/plugin-react`, `@` alias
 
@@ -426,7 +449,7 @@ cd frontend && npm test
 1. **Regenerate workflow** — `backend/app/agents/regenerate_workflow.py` (M2 Tier 3)
 2. **Confluence connector** — M1 ingestion from Confluence REST API
 3. **Mind map backend coords** — backend doesn't return `x,y` on nodes; dagre layout runs client-side in `MindMap.tsx`; optionally move layout to backend
-4. **DB migration tooling** — add Alembic for schema migrations (currently: idempotent `ALTER TABLE` in `init_db()`; doesn't handle column renames or type changes)
+4. ~~**DB migration tooling**~~ — ✅ Alembic added (migrations/)
 5. **Jira connector** — upload Jira issues as test source (`source_type="jira"`); currently the field exists in the DB and selection UI but no ingestion pipeline
 
 ---
@@ -435,7 +458,7 @@ cd frontend && npm test
 
 - Regenerate workflow (Tier 3) not implemented
 - `build_with_sources()` deduplicates sources by filename only — multiple chunks from the same file are collapsed to one excerpt
-- `init_db()` idempotent migrations only add columns; column renames or type changes require manual migration or deleting `./data/ai_buddy.db`
+- Schema migrations now managed by Alembic (`alembic upgrade head`); `init_db()` is a test/bootstrap fallback only (`create_all`)
 - `_extract_requirements` uses LLM to parse FR IDs from RAG context — accuracy depends on M1 context quality; returns `[]` (coverage 0%) when no context is indexed
 - Trend chart in `AuditHistory` only appears with ≥ 2 snapshots; single-audit projects show no chart
 - `recharts` added as a runtime dependency (`npm install recharts`)
