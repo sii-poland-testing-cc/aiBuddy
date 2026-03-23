@@ -88,13 +88,14 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
   const handleMouseUp = () => setIsPanning(false);
 
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    if (!e.ctrlKey) return;
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.1 : 0.1;
     setZoom((z) => Math.min(2.0, Math.max(0.5, z + delta)));
   };
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+    <div className="relative w-full h-full">
       <svg
         width="100%"
         height="100%"
@@ -105,6 +106,8 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
+        role="img"
+        aria-label="Mapa myśli projektu"
       >
         <defs>
           <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto-start-reverse">
@@ -192,13 +195,8 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
 
       <button
         onClick={() => { setPan({ x: 0, y: 0 }); setZoom(1); }}
-        style={{
-          position: "absolute", top: 8, right: 8,
-          background: "#1e1a16", border: "1px solid #3a3028",
-          color: "#c8902a", borderRadius: 6, padding: "4px 10px",
-          fontSize: 11, fontFamily: "DM Mono, monospace",
-          cursor: "pointer",
-        }}
+        title="Ctrl+scroll aby przybliżać"
+        className="absolute top-2 right-2 bg-buddy-elevated border border-buddy-border-dark text-buddy-gold rounded-md px-2.5 py-1 text-[11px] font-mono cursor-pointer hover:bg-buddy-border transition-colors"
       >
         ⌖ reset
       </button>

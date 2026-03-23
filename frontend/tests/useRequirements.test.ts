@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
+import React from "react";
 import { useRequirements } from "../lib/useRequirements";
+import { ProjectOperationsContext } from "../lib/ProjectOperationsContext";
+import type { OpState, OpType } from "../lib/ProjectOperationsContext";
 
 // ── SSE stream helpers ────────────────────────────────────────────────────────
 
@@ -227,6 +230,74 @@ describe("useRequirements — extractRequirements", () => {
     });
 
     expect(result.current.error).toBe("No context indexed for this project.");
+  });
+
+  // ── Navigation re-mount scenario ────────────────────────────────────────────
+
+  it("fetches requirements when isExtracting transitions from true→false via context (re-mount after navigation)", async () => {
+    // Scenario: user navigated away during extraction, then back.
+    // The new hook instance mounts while context says isRunning=true.
+    // When extraction finishes (context isRunning → false), the hook
+    // must call fetchAll() to pick up newly persisted requirements.
+
+    const REQ = {
+      id: "r1", title: "FR-001", level: "functional_req", confidence: 0.9,
+      human_reviewed: false, needs_review: false, description: "",
+      source_type: "explicit", parent_id: null, external_id: "FR-001",
+      review_reason: null, taxonomy: null,
+    };
+
+    // Build a controllable context: starts with isRunning=true
+    let ctxState: OpState = { isRunning: true, progress: 0.5, stage: "extract", message: "Extracting…", error: null };
+    let getOpFn = (_pid: string, _op: OpType) => ctxState;
+    const updateOpFn = vi.fn((_pid: string, _op: OpType, patch: Partial<OpState>) => {
+      ctxState = { ...ctxState, ...patch };
+    });
+
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/flat")) return jsonResponse({ requirements: [REQ] });
+      if (url.includes("/stats")) return jsonResponse({ total: 1, needs_review_count: 0, human_reviewed_count: 0, by_level: {}, by_source_type: {} });
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Wrapper that injects our controllable context
+    let rerender: () => void;
+    const { result, rerender: hookRerender } = renderHook(
+      () => useRequirements("proj-nav"),
+      {
+        wrapper: ({ children }: { children: React.ReactNode }) =>
+          React.createElement(ProjectOperationsContext.Provider, {
+            value: {
+              getOp: getOpFn,
+              updateOp: updateOpFn,
+              clearOp: vi.fn(),
+              runningProjects: new Set(["proj-nav"]),
+            },
+          }, children),
+      }
+    );
+
+    // On mount with isRunning=true, hook sees isExtracting=true
+    await waitFor(() => expect(result.current.isExtracting).toBe(true));
+
+    // Initial fetchAll() runs on mount but finds empty DB (extraction not done yet)
+    // Reset fetch call count to track the NEXT fetch triggered by the transition
+    fetchMock.mockClear();
+
+    // Simulate extraction completing: context transitions isRunning → false
+    ctxState = { ...ctxState, isRunning: false };
+    getOpFn = (_pid: string, _op: OpType) => ctxState;
+
+    act(() => { hookRerender(); });
+
+    // Hook should detect the true→false transition and call fetchAll()
+    await waitFor(() => expect(result.current.isExtracting).toBe(false));
+    await waitFor(() => expect(result.current.requirements).toHaveLength(1));
+
+    // Verify fetchAll() was called (fetch was invoked for /flat and /stats)
+    const flatCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/flat"));
+    expect(flatCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("sets error state on network failure", async () => {

@@ -10,7 +10,7 @@
 
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 export type MessageRole = "user" | "assistant" | "system";
 
@@ -19,12 +19,31 @@ export interface ChatSource {
   excerpt: string;
 }
 
+export interface AuditData {
+  summary: {
+    coverage_pct: number;
+    duplicates_found: number;
+    similar_pairs_found?: number;
+    untagged_cases: number;
+    requirements_total: number;
+    requirements_covered: number;
+  };
+  uncovered: string[];
+  recommendations: string[];
+  duplicates: Array<{ tc_a: string; tc_b: string; similarity: number | string }>;
+  next_tier?: string;
+  /** null = first audit (no previous); object = diff vs previous; undefined = not fetched yet */
+  diff?: { coverage_delta: number; new_covered?: string[]; newly_uncovered?: string[] } | null;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
   timestamp: Date;
   sources?: ChatSource[];
+  auditData?: AuditData;
+  isStatus?: boolean;  // true = pipeline status injection (no card, no sources)
 }
 
 export interface ProgressUpdate {
@@ -34,10 +53,12 @@ export interface ProgressUpdate {
 
 interface UseAIBuddyChatOptions {
   projectId: string;
-  tier?: "audit" | "optimize" | "regenerate";
+  tier?: "audit" | "optimize" | "regenerate" | "rag_chat";
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+const STORAGE_KEY = (projectId: string) => `ai-buddy-chat-${projectId}`;
 
 export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -48,6 +69,31 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
   const abortRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Restore persisted messages on mount / project change
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY(projectId));
+      if (!stored) return;
+      const parsed: ChatMessage[] = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        setMessages(parsed.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })));
+      }
+    } catch {
+      // storage unavailable or malformed — start fresh
+    }
+  }, [projectId]);
+
+  // Persist messages on every change (skip empty to avoid wiping during init)
+  useEffect(() => {
+    const toSave = messages.filter((m) => !m.isStatus).slice(-100);
+    if (toSave.length === 0) return;
+    try {
+      localStorage.setItem(STORAGE_KEY(projectId), JSON.stringify(toSave));
+    } catch {
+      // quota exceeded — ignore
+    }
+  }, [messages, projectId]);
+
   const resetStreamTimeout = (abort: AbortController) => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
@@ -57,13 +103,14 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
   };
 
   const addMessage = useCallback(
-    (role: MessageRole, content: string, sources?: ChatSource[]) => {
+    (role: MessageRole, content: string, sources?: ChatSource[], auditData?: AuditData) => {
       const msg: ChatMessage = {
         id: crypto.randomUUID(),
         role,
         content,
         timestamp: new Date(),
         sources,
+        auditData,
       };
       setMessages((prev) => [...prev, msg]);
       return msg;
@@ -71,14 +118,28 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
     []
   );
 
+  const addStatusMessage = useCallback((text: string) => {
+    setMessages((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), role: "assistant" as const, content: text, timestamp: new Date(), isStatus: true },
+    ]);
+  }, []);
+
+  const addUserMessage = useCallback(
+    (text: string) => { addMessage("user", text); },
+    [addMessage]
+  );
+
   const send = useCallback(
-    async (text: string, filePaths: string[] = []) => {
+    async (text: string, filePaths: string[] = [], opts: { skipUserMessage?: boolean } = {}) => {
       if (!text.trim() && filePaths.length === 0) return;
 
       setError(null);
-      addMessage("user", text || `[Uploaded: ${filePaths.join(", ")}]`);
+      if (!opts.skipUserMessage) {
+        addMessage("user", text || `[Uploaded: ${filePaths.join(", ")}]`);
+      }
       setIsLoading(true);
-      setProgress({ message: "Connecting…", progress: 0 });
+      setProgress({ message: "Łączenie…", progress: 0 });
 
       // Cancel any previous stream
       abortRef.current?.abort();
@@ -122,13 +183,13 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
               if (event.type === "progress") {
                 setProgress(event.data as ProgressUpdate);
               } else if (event.type === "result") {
-                const { content, sources } = await formatResult(
+                const { content, sources, auditData } = await formatResult(
                   event.data,
                   projectId,
                   API_BASE
                 );
                 assistantContent = content;
-                addMessage("assistant", content, sources);
+                addMessage("assistant", content, sources, auditData);
                 if (event.data?.snapshot_id) {
                   setLatestSnapshotId(event.data.snapshot_id);
                 }
@@ -166,9 +227,14 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
   const clear = useCallback(() => {
     setMessages([]);
     setError(null);
+    try { localStorage.removeItem(STORAGE_KEY(projectId)); } catch { /* ignore */ }
+  }, [projectId]);
+
+  const clearError = useCallback(() => {
+    setError(null);
   }, []);
 
-  return { messages, progress, isLoading, error, latestSnapshotId, send, stop, clear };
+  return { messages, progress, isLoading, error, latestSnapshotId, send, stop, clear, clearError, addStatusMessage, addUserMessage };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -177,99 +243,55 @@ async function formatResult(
   data: Record<string, any>,
   projectId: string,
   apiBase: string
-): Promise<{ content: string; sources?: ChatSource[] }> {
-  // Conversational response (no files attached)
+): Promise<{ content: string; sources?: ChatSource[]; auditData?: AuditData }> {
+  // Conversational / RAG-chat response — no structured audit data
   if (data?.message && !data?.summary) return { content: data.message };
   if (!data?.summary) return { content: JSON.stringify(data, null, 2) };
 
   const { summary, recommendations, next_tier, rag_sources } = data;
   const uncovered: string[] = summary.requirements_uncovered ?? [];
-  const covLine = summary.requirements_total > 0
-    ? `- Coverage: ${summary.coverage_pct}%  ` +
-      `(${summary.requirements_covered}/${summary.requirements_total} requirements)`
-    : `- Coverage: ${summary.coverage_pct}%  (no requirements found in context)`;
 
-  const duplicatesFound: number = summary.duplicates_found ?? 0;
-  const similarPairsFound: number = summary.similar_pairs_found ?? 0;
-  const duplicatePairs: any[] = data.duplicates ?? [];
+  // Short intro sentence shown above the card
+  const reqPart = summary.requirements_total > 0
+    ? ` Sprawdziłem ${summary.requirements_total} wymagań.`
+    : "";
+  const content = `Audyt zakończony ✅${reqPart}`;
 
-  const dupLines: string[] = [];
-  if (duplicatesFound === 0 && similarPairsFound === 0) {
-    dupLines.push(`- Duplikaty: ✅ brak`);
-  } else {
-    if (duplicatesFound > 0) {
-      dupLines.push(`- Duplikaty: ⚠️ ${duplicatesFound} znalezionych`);
-      duplicatePairs.slice(0, 3).forEach((p: any) => {
-        dupLines.push(`  · ${p.tc_a} ↔ ${p.tc_b} (similarity: ${p.similarity})`);
-      });
-    }
-    if (similarPairsFound > 0) {
-      dupLines.push(`- Podobne TC: ℹ️ ${similarPairsFound} par do przeglądu`);
-    }
-  }
-
-  const lines = [
-    `**Audit complete ✅**`,
-    ``,
-    `📊 **Summary**`,
-    ...dupLines,
-    `- Untagged cases:   ${summary.untagged_cases}`,
-    covLine,
-    ``,
-    `💡 **Recommendations**`,
-    ...(recommendations ?? []).map((r: string, i: number) => `${i + 1}. ${r}`),
-  ];
-
-  if (uncovered.length > 0) {
-    lines.push(``, `⚠️ **Brak pokrycia (${uncovered.length} wymagań)**`);
-    uncovered.forEach((r) => lines.push(`- ${r}`));
-  }
-
-  lines.push(``, `➡️  Suggested next tier: **${next_tier?.toUpperCase()}**`);
-
-  // Append diff summary if snapshot was saved
+  // Fetch diff from the latest snapshot (best-effort)
+  let diff: AuditData["diff"] = undefined;
   if (data?.snapshot_id) {
     try {
-      const res = await fetch(
-        `${apiBase}/api/snapshots/${projectId}/latest`
-      );
+      const res = await fetch(`${apiBase}/api/snapshots/${projectId}/latest`);
       if (res.ok) {
         const snap = await res.json();
-        const diff = snap?.diff;
-        const currPct: number = snap?.summary?.coverage_pct ?? 0;
-        if (!diff) {
-          lines.push(``, `📌 _Pierwszy audyt — punkt odniesienia zapisany._`);
-        } else {
-          const delta: number = diff.coverage_delta;
-          const prevPct = +(currPct - delta).toFixed(1);
-          if (delta > 0) {
-            lines.push(``, `📈 **Poprawa vs poprzedni audyt**`);
-            lines.push(`- Coverage: ${prevPct}% → ${currPct}% (▲ +${delta.toFixed(1)}%)`);
-            if (diff.new_covered?.length)
-              lines.push(`- Nowo pokryte: ${diff.new_covered.join(", ")}`);
-            if (diff.newly_uncovered?.length)
-              lines.push(`- ⚠️ Utracone: ${diff.newly_uncovered.join(", ")}`);
-          } else if (delta < 0) {
-            lines.push(``, `📉 **Regresja vs poprzedni audyt**`);
-            lines.push(`- Coverage: ${prevPct}% → ${currPct}% (▼ ${delta.toFixed(1)}%)`);
-            if (diff.new_covered?.length)
-              lines.push(`- Nowo pokryte: ${diff.new_covered.join(", ")}`);
-            if (diff.newly_uncovered?.length)
-              lines.push(`- ⚠️ Utracone: ${diff.newly_uncovered.join(", ")}`);
-          } else {
-            lines.push(``, `📊 _Coverage bez zmian vs poprzedni audyt._`);
-          }
-        }
+        diff = snap?.diff ?? null;   // null = first audit
       }
     } catch {
-      // diff summary is best-effort; skip on error
+      // skip on error
     }
   }
 
+  const auditData: AuditData = {
+    summary: {
+      coverage_pct: summary.coverage_pct ?? 0,
+      duplicates_found: summary.duplicates_found ?? 0,
+      similar_pairs_found: summary.similar_pairs_found,
+      untagged_cases: summary.untagged_cases ?? 0,
+      requirements_total: summary.requirements_total ?? 0,
+      requirements_covered: summary.requirements_covered ?? 0,
+    },
+    uncovered,
+    recommendations: recommendations ?? [],
+    duplicates: data.duplicates ?? [],
+    next_tier,
+    diff,
+  };
+
   return {
-    content: lines.join("\n"),
+    content,
     sources: Array.isArray(rag_sources) && rag_sources.length > 0
       ? rag_sources as ChatSource[]
       : undefined,
+    auditData,
   };
 }

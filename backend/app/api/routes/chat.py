@@ -8,6 +8,7 @@ LlamaIndex Workflow, streaming intermediate events back to the frontend.
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -179,18 +180,36 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
             logger.info("is_indexed(%s) = %s", req.project_id, is_indexed)
 
             # Detect term explanation queries
+            term_name = None
+            req_id_match = None
             if req.message.lower().startswith("wyjaśnij termin:"):
                 term_name = req.message.split(":", 1)[1].strip().strip('"')
                 rag_query = f"{term_name} definition description context usage"
             else:
-                term_name = None
-                rag_query = req.message
+                # If the message references a requirement ID (FR-001, REQ-02, UC-3, …),
+                # rewrite the RAG query to search for that ID directly.  The raw user
+                # message ("Zaproponuj TC dla wymagania FR-001") has low cosine similarity
+                # to SRS chunks because it mixes action words with the ID.
+                req_id_match = re.search(
+                    r'\b(FR|REQ|UC|NFR|AR|BR|SR|AC)-\d+\b', req.message, re.IGNORECASE
+                )
+                if req_id_match:
+                    req_id = req_id_match.group(0).upper()
+                    rag_query = f"{req_id} requirement description acceptance criteria details"
+                else:
+                    rag_query = req.message
 
             sources: list[dict] = []
             if is_indexed:
-                logger.info("RAG retrieval for project %s, query=%r", req.project_id, rag_query)
+                # Use a higher top_k for requirement/term queries so we capture
+                # all chunks that describe a single requirement or term.
+                retrieval_top_k = 8 if (term_name or req_id_match) else 5
+                logger.info(
+                    "RAG retrieval for project %s, query=%r, top_k=%d",
+                    req.project_id, rag_query, retrieval_top_k,
+                )
                 rag_context, sources = await _context_builder.build_with_sources(
-                    req.project_id, query=rag_query
+                    req.project_id, query=rag_query, top_k=retrieval_top_k
                 )
                 if term_name is not None:
                     prompt = (

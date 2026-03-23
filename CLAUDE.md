@@ -107,12 +107,19 @@ After `/build` completes, artefacts are written to the `Project` DB row:
 
 `_context_store` dict is a write-through in-memory cache; GET endpoints check it first, then fall back to DB (and warm the cache on miss). This survives server restarts.
 
-### Context page RAG chat
-- The M1 Context Builder page (`/context/[projectId]`) includes a right-panel RAG chat.
+### Context mode RAG chat
+- In the unified v3 page, switching to **Context** mode gives access to a RAG chat backed by M1.
 - Glossary terms are clickable — clicking fires `"wyjaśnij termin: {term}"` into the chat.
 - Backend detects the `wyjaśnij termin:` prefix, uses `"{term} definition description context usage"` as the RAG query, and returns a structured 3-section response (Opis / Kontekst / Powiązane terminy).
 - **Powiązane terminy** chips in the response are rendered as clickable links if the term exists in the glossary; clicking chains to the next "wyjaśnij termin" query.
-- Context page sends `tier: "rag_chat"` to `/api/chat/stream`; this tier bypasses M2 file auto-loading.
+- Context mode sends `tier: "rag_chat"` to `/api/chat/stream`; this tier bypasses M2 file auto-loading.
+
+### rag_ready isolation
+`rag_ready` is `True` **only** when BOTH conditions hold:
+1. `project.context_built_at IS NOT NULL` — M1 pipeline completed at least once
+2. `is_indexed()` — Chroma collection still has vectors (guards against manual deletion)
+
+Both M1 and M2 write to the same Chroma collection per `project_id`. Without the `context_built_at` gate, uploading M2 audit files (CSV/XLSX) would set `rag_ready=True` before any M1 build. The status endpoint checks `context_built_at` first; if NULL, returns `rag_ready=False` immediately without querying Chroma.
 
 ### Known gaps (M1)
 - Embeddings use `BAAI/bge-m3` (multilingual, 100+ languages including Polish) when `LLM_PROVIDER=anthropic`; Bedrock Titan when `LLM_PROVIDER=bedrock`. Override with `EMBED_MODEL_NAME` env var.
@@ -284,22 +291,65 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 - `project_files` — id, project_id, filename, file_path, size_bytes, indexed, uploaded_at, last_used_in_audit_id, **source_type** (v4)
 - `audit_snapshots` — id, project_id, created_at, files_used (JSON), summary (JSON), requirements_uncovered (JSON), recommendations (JSON), diff (JSON)
 
-### Frontend
+### Frontend — Routing
+
+All project work happens in a single unified page (v3):
+
+```
+/                        — project list + create (app/page.tsx)
+/project/[projectId]     — unified v3 page (app/project/[projectId]/page.tsx)
+  ?mode=audit            — M2 Suite Analyzer (default)
+  ?mode=context          — M1 Context Builder chat
+  ?mode=requirements     — Faza 2 Requirements Registry
+
+Permanent redirects (next.config.mjs):
+  /chat/:id         → /project/:id?mode=audit
+  /context/:id      → /project/:id?mode=context
+  /requirements/:id → /project/:id?mode=requirements
+```
+
+### Frontend — Key Files
+
+- `frontend/app/page.tsx` — Project list + create form; routes to `/project/[id]`; shows amber pulsing dot on rows with active operations (reads `runningProjects` from `ProjectOperationsContext`)
+- `frontend/app/project/[projectId]/page.tsx` — Unified v3 page; reads `?mode` from `useSearchParams()`; wires all hooks; hosts TopBar + chat column + ArtifactPanel + UtilityPanel
+- `frontend/app/layout.tsx` — Root layout; wraps `<ErrorBoundary>` with `<ProjectOperationsProvider>` (keeps operation state alive across navigation)
+- `frontend/lib/ProjectOperationsContext.tsx` — Global in-flight operation registry; `useRef<Map<projectId, Map<OpType, OpState>>>` holds data (no re-render on write); version counter triggers re-renders; exports `ProjectOperationsProvider`, `OpState`, `OpType`, `useProjectOps`; derived `runningProjects: Set<string>`
 - `frontend/lib/useAIBuddyChat.ts` — SSE hook; async `formatResult` fetches `/api/snapshots/{projectId}/latest` after audit to append diff summary (📌/📈/📉/📊); exposes `latestSnapshotId`
-- `frontend/lib/useContextBuilder.ts` — SSE hook for M1 build + status polling
+- `frontend/lib/useContextBuilder.ts` — SSE hook for M1 build + status polling; dual-writes to `ProjectOperationsContext` (opType `"contextBuild"`) so progress survives navigation
+- `frontend/lib/useRequirements.ts` — Faza 2 hook: `requirements`, `stats`, `extractRequirements()` (SSE), `patchRequirement()`, `refresh`; dual-writes to `ProjectOperationsContext` (opType `"requirements"`); `useEffect` auto-calls `fetchAll()` when `isExtracting` transitions `true→false` (catches re-mount after navigation)
+- `frontend/lib/useMapping.ts` — Faza 5+6 mapping hook; dual-writes to `ProjectOperationsContext` (opType `"mapping"`)
+- `frontend/lib/useHeatmap.ts` — Coverage heatmap data hook; `retry` triggers refetch after mapping run
 - `frontend/lib/useProjects.ts` — Project CRUD hook
 - `frontend/lib/useProjectFiles.ts` — File upload + list hook
 - `frontend/lib/parseRelatedTerms.ts` — splits "Powiązane terminy" section into `TermChunk[]` (isGlossaryTerm + glossaryItem) for chip rendering
-- `frontend/app/context/[projectId]/page.tsx` — M1 Context Builder page: two-panel layout; `RagChat` with `prefillQuery` (seq-based trigger), `onTermClick`, `glossary` props; glossary term click fires "wyjaśnij termin:" query
-- `frontend/app/chat/[projectId]/page.tsx` — M2 chat page; `AuditFileSelector`, `AuditHistory`, `latestSnapshotId` wired from hook; `handleSend` merges selected files with any newly-attached paths
-- `frontend/components/Sidebar.tsx` — Module switcher (🧠 Context Builder / 🔍 Suite Analyzer with 🔒 lock when no context); project list with context-ready dot; `activeModule` prop highlights active module
-- `frontend/components/MindMap.tsx` — SVG mind map; dagre TB layout (`computeLayout()`); rounded rect nodes (120×40, rx=8); cubic bezier edges (exit bottom-center, enter top-center) with arrow markers; pan (mouse drag), zoom (scroll wheel 0.5–2.0), reset button; TYPE_COLORS: `data=#c8902a, actor=#4a9e6b, process=#5b7fba, system=#9b6bbf, concept=#ba7a5b`; hover shows type label
-- `frontend/components/Glossary.tsx` — Searchable glossary; wireframe card style; `onTermClick` prop — hover shows amber border (`#c8902a`, 0.15s transition), cursor pointer
+
+### Global in-flight state (ProjectOperationsContext)
+
+Long-running SSE operations (M1 context build, requirements extraction, mapping) survive React navigation. When a user navigates away mid-operation and back, the progress bar reappears correctly.
+
+**Pattern used in all three hooks:**
+- Local `useState` for fast same-page re-renders
+- `ops?.updateOp(projectId, OP_TYPE, patch)` mirrors every state transition to context
+- Derived values: `isRunning = ctxOp?.isRunning ?? localIsRunning` (context wins)
+- Re-entry guard (`if (isRunning) return`) uses derived value — correctly blocks re-entry even after navigation
+- On mount, context values are read automatically via derived state — no explicit "restore" needed
+
+### Frontend — Components
+
+- `frontend/components/TopBar.tsx` — Fixed 48px header; project name + RAG-ready indicator; panel toggle button; links back to `/`
+- `frontend/components/ModeInputBox.tsx` — Unified chat input; mode pills (context / requirements / audit) with `data-testid="mode-pill-{mode}"`, `aria-pressed`; artifact chips (mindmap / glossary); auto-resize textarea (capped 140px); file chips; send/stop; Enter sends, Shift+Enter newline
+- `frontend/components/UtilityPanel.tsx` — 300px collapsible right panel; mode-specific card stacks:
+  - **Context mode**: Sources (Files/Links tabs) → MindMap thumbnail + "Pełny ekran" → Glossary search → Context status → Build mode selector
+  - **Requirements mode**: Sources → Coverage heatmap table → Run mapping button
+  - **Audit mode**: Sources → Audit history (snapshots) → Tier selector (Audit/Optimize/Regenerate)
+  - Types exported: `PanelFile`, `AuditSnapshot`
+- `frontend/components/MindMapModal.tsx` — Fullscreen mind map modal; dagre layout + BFS depth (`layoutModalNodes()` exported); pan+zoom (non-passive wheel); cluster collapse (depth≥3 hidden at zoom<0.55, depth≥2 at zoom<0.30); node click tooltip; search dimming; +N badges; Escape to close; `data-testid="mm-node-{id}"`, `data-dimmed`; `getCluster()` has cycle detection (visited Set) — safe for cyclic LLM-generated edges
+- `frontend/components/RequirementsView.tsx` — Requirements registry view (replaces MessageList when mode=requirements); module-grouped collapsible cards; sticky header with stats badges + search; loading skeletons; empty state with extract button; `RequirementCard` (level/source badges, mark-reviewed); `ModuleGroup` (collapsible, `data-testid="req-module-group"`)
+- `frontend/components/MindMap.tsx` — SVG mind map (inline panel); dagre TB layout; rounded rect nodes (120×40, rx=8); cubic bezier edges; pan+zoom; TYPE_COLORS: `data=#c8902a, actor=#4a9e6b, process=#5b7fba, system=#9b6bbf, concept=#ba7a5b`
+- `frontend/components/Glossary.tsx` — Searchable glossary; wireframe card style; `onTermClick` prop — hover shows amber border (`#c8902a`, 0.15s transition)
 - `frontend/components/MessageList.tsx` — Chat bubbles + collapsible `SourcesPanel`; `renderAssistantContent` detects `**Powiązane terminy**` marker and renders known glossary terms as amber dashed clickable chips
-- `frontend/components/ChatInputArea.tsx` — Textarea, file chips, send/stop
-- `frontend/components/PipelineSteps.tsx` — Audit → Optimize → Regenerate tier selector
-- `frontend/components/AuditFileSelector.tsx` — Fetches `/api/files/{projectId}/audit-selection`; groups files into "Nowe źródła" / "Poprzednio użyte"; URL sources always-checked/disabled; `refreshKey` prop triggers refetch after audit; calls `onSelectionChange(paths[])` on toggle
-- `frontend/components/AuditHistory.tsx` — Collapsible "📋 Historia audytów" panel; snapshot rows with date, coverage badge (green ≥80% / amber ≥50% / red <50%), diff badge (▲/▼/→), expandable details (uncovered chips, recommendations, diff lists); 🗑 delete on hover; recharts dual-axis trend chart (coverage + duplicates) when ≥ 2 snapshots; refetches on `latestSnapshotId` change
+- `frontend/components/AuditFileSelector.tsx` — Fetches `/api/files/{projectId}/audit-selection`; groups files into "Nowe źródła" / "Poprzednio użyte"; URL sources always-checked/disabled; `refreshKey` prop triggers refetch; calls `onSelectionChange(paths[])` on toggle
+- `frontend/components/AuditHistory.tsx` — Collapsible "📋 Historia audytów" panel; snapshot rows with coverage badge (green ≥80% / amber ≥50% / red <50%), diff badge (▲/▼/→); recharts dual-axis trend chart when ≥2 snapshots
 
 ### Tests
 - `backend/tests/fixtures/sample_domain.docx` — minimal QA domain doc for M1 unit tests
@@ -315,18 +365,27 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 - `backend/tests/test_m1_manual.py` — M1 pipeline end-to-end test (SSE + status/mindmap/glossary)
 - `backend/tests/test_m1_m2_integration.py` — full M1→M2 integration: audit trigger, RAG chat, term explanation, requirement coverage, snapshot persistence (saved, diff, max-5)
 - `backend/tests/test_snapshots.py` — 11 tests: snapshots list/trend/latest/delete endpoints + 4 audit-selection tests (new files, used files, URL sources, chat auto-select)
+- `backend/tests/test_rag_ready_isolation.py` — 4 regression tests: `rag_ready` must be False when only M2 files indexed (no M1 build); mindmap/glossary 404 before M1; `rag_ready` becomes True after M1 runs on top of M2 files; fresh project baseline
 
 ### Frontend tests (Vitest)
 ```bash
 cd frontend && npm test
 ```
+185 tests across 14 files:
+- `frontend/tests/TopBar.test.tsx` — 9 tests: renders, project id, RAG indicator, panel toggle, back navigation
+- `frontend/tests/ModeInputBox.test.tsx` — 17 tests: mode pills, locked pills, file chips, placeholder, send/stop, artifact chips, attach button
+- `frontend/tests/MindMapModal.test.tsx` — 26 tests: visibility, toolbar, close/Escape, node rendering, search dimming, match count, tooltip show/hide, cluster collapse, `layoutModalNodes` unit tests; **cycle-safety tests** (direct cycle e1↔e2, longer cycle e1→e2→e3→e1, LLM-style numeric IDs)
+- `frontend/tests/UtilityPanel.test.tsx` — 28 tests: panel open/close, mode-specific card content, source tabs, heatmap, tier selector, snapshot rows
+- `frontend/tests/RequirementsView.test.tsx` — 36 tests: header stats, empty state, error, loading skeletons, module groups, search/filter, card badges, mark-reviewed, group collapse
+- `frontend/tests/ProjectPage.test.tsx` — 13 tests: page renders for each mode, hook wiring
 - `frontend/tests/MindMap.test.tsx` — 9 tests: renders, nodes (rect), edges (bezier path), labels, empty state, arrow marker, reset button
 - `frontend/tests/Glossary.test.tsx` — 10 tests: renders, filter, empty state, term click callback, hover border
-- `frontend/tests/Sidebar.test.tsx` — 7 tests: module switcher, 🔒 lock, navigation, active highlight
 - `frontend/tests/MessageList.test.tsx` — 3 tests: renders, Powiązane terminy chips, term click fires callback
 - `frontend/tests/parseRelatedTerms.test.ts` — 3 tests: known terms matched, unknown terms plain, comma splitting
 - `frontend/tests/AuditFileSelector.test.tsx` — 4 tests: new files checked, used files unchecked+muted, URL source always-checked/disabled, onSelectionChange called correctly
 - `frontend/tests/AuditHistory.test.tsx` — 5 tests: empty state, snapshot rows rendered, latest highlight, coverage badge colors, trend chart requires ≥2 snapshots
+- `frontend/tests/useRequirements.test.ts` — 8 tests: fetch, extract SSE, patch optimistic update; **re-mount after navigation** (isExtracting context true→false triggers fetchAll)
+- `frontend/tests/useAuditPipeline.test.ts` — 12 tests: fresh project (extract+map+send), sequential order, status messages, skip-when-done, guards (isExtracting/isMappingRunning), fetch failure resilience, send arguments
 - `frontend/tests/setup.ts` — `@testing-library/jest-dom` setup
 - `frontend/vitest.config.ts` — jsdom environment, `@vitejs/plugin-react`, `@` alias
 
@@ -375,7 +434,6 @@ cd frontend && npm test
 ## Known Gaps
 
 - Regenerate workflow (Tier 3) not implemented
-- `useChatAdapter.ts` exists but is unused
 - `build_with_sources()` deduplicates sources by filename only — multiple chunks from the same file are collapsed to one excerpt
 - `init_db()` idempotent migrations only add columns; column renames or type changes require manual migration or deleting `./data/ai_buddy.db`
 - `_extract_requirements` uses LLM to parse FR IDs from RAG context — accuracy depends on M1 context quality; returns `[]` (coverage 0%) when no context is indexed

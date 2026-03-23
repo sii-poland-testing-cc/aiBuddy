@@ -1,31 +1,43 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
-import type { ChatMessage, ChatSource } from "@/lib/useAIBuddyChat";
+import { useRef, useEffect } from "react";
+import type { ChatMessage } from "@/lib/useAIBuddyChat";
 import type { GlossaryTerm } from "@/components/Glossary";
 import { parseRelatedTerms } from "@/lib/parseRelatedTerms";
+import { AuditResultCard } from "@/components/AuditResultCard";
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
+// ── Avatars ───────────────────────────────────────────────────────────────────
 
 function BotAvatar() {
   return (
-    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-buddy-gold to-buddy-gold-light flex items-center justify-center text-sm font-bold text-buddy-surface shrink-0 mt-0.5">
-      Q
+    <div
+      className="rounded-full bg-buddy-gold flex items-center justify-center font-bold text-buddy-surface shrink-0"
+      style={{ width: 28, height: 28, fontSize: 10, marginTop: 2 }}
+    >
+      A
     </div>
   );
 }
 
+// ── Typing indicator ──────────────────────────────────────────────────────────
+
 function TypingIndicator() {
   return (
-    <div className="flex items-center gap-2.5 mb-4">
+    <div className="flex items-start gap-2.5 mb-4">
       <BotAvatar />
-      <div className="bg-buddy-elevated rounded-[4px_18px_18px_18px] border border-buddy-border-dark px-4 py-2">
+      <div
+        className="bg-buddy-surface border border-buddy-border"
+        style={{ borderRadius: "2px 10px 10px 10px", padding: "10px 14px" }}
+      >
         <div className="flex gap-1.5">
           {[0, 1, 2].map((i) => (
             <div
               key={i}
-              className="w-1.5 h-1.5 rounded-full bg-buddy-gold"
-              style={{ animation: `bounce 1.2s ${i * 0.2}s infinite` }}
+              className="rounded-full bg-buddy-gold"
+              style={{
+                width: 6, height: 6,
+                animation: `think 1.2s ${i * 0.2}s infinite`,
+              }}
             />
           ))}
         </div>
@@ -34,27 +46,18 @@ function TypingIndicator() {
   );
 }
 
-/** Renders text with **bold** and `code` inline markers. */
+// ── Text rendering ────────────────────────────────────────────────────────────
+
 function renderContent(text: string) {
   return text.split("\n").map((line, i) => {
     const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
     return (
       <div key={i} className={/^(\d+\.|-)/.test(line.trimStart()) ? "pl-3" : ""}>
         {parts.map((part, j) => {
-          if (part.startsWith("**") && part.endsWith("**")) {
-            return (
-              <strong key={j} className="font-semibold text-buddy-gold-light">
-                {part.slice(2, -2)}
-              </strong>
-            );
-          }
-          if (part.startsWith("`") && part.endsWith("`")) {
-            return (
-              <code key={j} className="font-mono text-xs bg-buddy-border px-1 rounded text-buddy-gold">
-                {part.slice(1, -1)}
-              </code>
-            );
-          }
+          if (part.startsWith("**") && part.endsWith("**"))
+            return <strong key={j} className="font-semibold text-buddy-gold-light">{part.slice(2, -2)}</strong>;
+          if (part.startsWith("`") && part.endsWith("`"))
+            return <code key={j} className="font-mono bg-buddy-border px-1 rounded text-buddy-gold" style={{ fontSize: 11 }}>{part.slice(1, -1)}</code>;
           return <span key={j}>{part || "\u00A0"}</span>;
         })}
       </div>
@@ -64,7 +67,6 @@ function renderContent(text: string) {
 
 const RELATED_MARKER = "**Powiązane terminy**";
 
-/** Renders assistant content, replacing the Powiązane terminy line with clickable chips. */
 function renderAssistantContent(
   text: string,
   glossary: GlossaryTerm[],
@@ -75,13 +77,10 @@ function renderAssistantContent(
 
   const before = text.slice(0, markerIdx);
   const afterMarker = text.slice(markerIdx + RELATED_MARKER.length);
-  // terms come after optional " — " or ": " on the same line
   const firstNewline = afterMarker.indexOf("\n");
   const termsLine = (firstNewline === -1 ? afterMarker : afterMarker.slice(0, firstNewline))
-    .replace(/^\s*[—–-]\s*/, "")
-    .trim();
+    .replace(/^\s*[—–-]\s*/, "").trim();
   const remaining = firstNewline === -1 ? "" : afterMarker.slice(firstNewline + 1).trim();
-
   const chunks = parseRelatedTerms(termsLine, glossary);
 
   return (
@@ -94,20 +93,17 @@ function renderAssistantContent(
           chunk.isGlossaryTerm && onTermClick ? (
             <span
               key={i}
+              role="button"
+              tabIndex={0}
               onClick={() => onTermClick(chunk.glossaryItem!)}
-              style={{
-                cursor: "pointer",
-                color: "#f0c060",
-                borderBottom: "1px dashed #c8902a",
-                fontWeight: 600,
-                marginRight: 6,
-              }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onTermClick(chunk.glossaryItem!); } }}
+              style={{ cursor: "pointer", color: "#f0c060", borderBottom: "1px dashed #c8902a", fontWeight: 600, marginRight: 6 }}
             >
               {chunk.text}
             </span>
           ) : (
             <span key={i} style={{ marginRight: 6 }}>{chunk.text}</span>
-          ),
+          )
         )}
       </div>
       {remaining && renderContent(remaining)}
@@ -115,40 +111,7 @@ function renderAssistantContent(
   );
 }
 
-// ── Sources panel ──────────────────────────────────────────────────────────────
-
-function SourcesPanel({ sources }: { sources: ChatSource[] }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="mt-2 border-t border-buddy-border pt-2">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 text-[11px] text-buddy-text-dim hover:text-buddy-text-muted transition-colors"
-      >
-        <span className={`transition-transform duration-150 ${open ? "rotate-90" : ""}`}>▶</span>
-        Źródła ({sources.length})
-      </button>
-      {open && (
-        <div className="mt-2 space-y-2">
-          {sources.map((s, i) => {
-            const ext = s.filename.split(".").pop()?.toUpperCase() ?? "FILE";
-            return (
-              <div key={i} className="bg-buddy-base rounded-md border border-buddy-border px-3 py-2 text-[11px] space-y-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-buddy-gold opacity-60">{ext}</span>
-                  <span className="text-buddy-text-muted font-medium truncate">{s.filename}</span>
-                </div>
-                <p className="text-buddy-text-dim leading-relaxed line-clamp-2">{s.excerpt}</p>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── MessageList ────────────────────────────────────────────────────────────────
+// ── MessageList ───────────────────────────────────────────────────────────────
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -172,33 +135,53 @@ export default function MessageList({
   }, [messages, isLoading]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-[60px] py-6">
+    <div style={{ flex: 1, overflowY: "auto", padding: "24px 48px 16px", display: "flex", flexDirection: "column", gap: 16 }}>
+      <style>{`
+        @keyframes think { 0%,60%,100% { opacity: 0.2; transform: scale(0.8); } 30% { opacity: 1; transform: scale(1); } }
+      `}</style>
+
       {messages.map((msg) => {
         const isUser = msg.role === "user";
-        const isNew = msg.id === lastMessageId;
         return (
-          <div
-            key={msg.id}
-            className={`flex mb-4 ${isUser ? "justify-end" : "justify-start"} ${isNew ? "animate-fade-up" : ""}`}
-          >
+          <div key={msg.id} className={`flex ${isUser ? "flex-row-reverse" : "flex-row"} gap-2.5`}>
             {!isUser && <BotAvatar />}
-            <div
-              className={`max-w-[72%] text-sm leading-relaxed whitespace-pre-wrap ${
-                isUser
-                  ? "ml-4 bg-gradient-to-br from-buddy-gold to-buddy-gold-light text-buddy-surface rounded-[18px_18px_4px_18px] px-4 py-2.5"
-                  : "ml-2.5 bg-buddy-elevated text-buddy-text rounded-[4px_18px_18px_18px] px-4 py-2.5 border border-buddy-border"
-              }`}
-            >
-              {isUser
-                ? renderContent(msg.content)
-                : renderAssistantContent(msg.content, glossary, onTermClick)}
-              {!isUser && msg.sources && msg.sources.length > 0 && (
-                <SourcesPanel sources={msg.sources} />
-              )}
-            </div>
+
+            {isUser ? (
+              <div
+                className="text-buddy-surface"
+                style={{
+                  maxWidth: "68%", padding: "10px 14px",
+                  borderRadius: "10px 2px 10px 10px",
+                  background: "#2a2520", border: "1px solid #3a342c",
+                  fontSize: 13, lineHeight: 1.6, color: "#e8dcc8",
+                }}
+              >
+                {renderContent(msg.content)}
+              </div>
+            ) : (
+              <div style={{ maxWidth: "80%", display: "flex", flexDirection: "column" }}>
+                {/* Bubble */}
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: "2px 10px 10px 10px",
+                    background: "#1a1612", border: "1px solid #2a2520",
+                    fontSize: 13, lineHeight: 1.6, color: "#e8dcc8",
+                  }}
+                >
+                  {renderAssistantContent(msg.content, glossary, onTermClick)}
+                </div>
+
+                {/* Audit result card (rendered outside bubble for visual separation) */}
+                {msg.auditData && (
+                  <AuditResultCard data={msg.auditData} sources={msg.sources} />
+                )}
+              </div>
+            )}
           </div>
         );
       })}
+
       {isLoading && <TypingIndicator />}
       <div ref={endRef} />
     </div>

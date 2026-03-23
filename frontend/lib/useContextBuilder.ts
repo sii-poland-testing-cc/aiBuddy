@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useContext } from "react";
+import { ProjectOperationsContext } from "./ProjectOperationsContext";
+
+const OP_TYPE = "contextBuild" as const;
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -47,13 +50,22 @@ export interface ContextResult {
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
 export function useContextBuilder(projectId: string) {
-  const [isBuilding, setIsBuilding] = useState(false);
-  const [stage, setStage]     = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
+  const ops = useContext(ProjectOperationsContext);
+
+  const [localIsBuilding, setIsBuilding] = useState(false);
+  const [localStage, setStage]     = useState<string | null>(null);
+  const [localProgress, setProgress] = useState(0);
   const [log, setLog]         = useState<string[]>([]);
   const [result, setResult]   = useState<ContextResult | null>(null);
   const [status, setStatus]   = useState<ContextStatus | null>(null);
-  const [error, setError]     = useState<string | null>(null);
+  const [localError, setError]     = useState<string | null>(null);
+
+  // Context wins (survives navigation), local is fallback
+  const ctxOp = ops?.getOp(projectId, OP_TYPE);
+  const isBuilding = ctxOp?.isRunning ?? localIsBuilding;
+  const stage      = ctxOp?.stage     ?? localStage;
+  const progress   = ctxOp?.progress  ?? localProgress;
+  const error      = ctxOp?.error     ?? localError;
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -91,21 +103,29 @@ export function useContextBuilder(projectId: string) {
   }, [projectId]);
 
   const buildContext = useCallback(async (files: File[], mode: "append" | "rebuild" = "append") => {
-    if (!files.length) return;
     setIsBuilding(true);
     setLog([]);
     setStage("parse");
     setProgress(0);
     setError(null);
-
-    const formData = new FormData();
-    for (const f of files) formData.append("files", f);
+    ops?.updateOp(projectId, OP_TYPE, { isRunning: true, progress: 0, stage: "parse", message: null, error: null });
 
     try {
-      const res = await fetch(
-        `${API_BASE}/api/context/${encodeURIComponent(projectId)}/build?mode=${mode}`,
-        { method: "POST", body: formData }
-      );
+      let res: Response;
+      if (files.length === 0) {
+        // No new files supplied — rebuild from documents already on disk
+        res = await fetch(
+          `${API_BASE}/api/context/${encodeURIComponent(projectId)}/rebuild-existing?mode=${mode}`,
+          { method: "POST" }
+        );
+      } else {
+        const formData = new FormData();
+        for (const f of files) formData.append("files", f);
+        res = await fetch(
+          `${API_BASE}/api/context/${encodeURIComponent(projectId)}/build?mode=${mode}`,
+          { method: "POST", body: formData }
+        );
+      }
       if (!res.ok) throw new Error(`Server error ${res.status}: ${await res.text()}`);
       if (!res.body) throw new Error("No response body");
 
@@ -126,6 +146,7 @@ export function useContextBuilder(projectId: string) {
               setStage(ev.data.stage);
               setProgress(ev.data.progress);
               setLog((prev) => [...prev, ev.data.message]);
+              ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
             } else if (ev.type === "result") {
               setResult(ev.data as ContextResult);
               setStatus({
@@ -137,6 +158,7 @@ export function useContextBuilder(projectId: string) {
               });
             } else if (ev.type === "error") {
               setError(ev.data.message);
+              ops?.updateOp(projectId, OP_TYPE, { error: ev.data.message });
             }
           } catch { /* malformed line */ }
         }
@@ -145,14 +167,17 @@ export function useContextBuilder(projectId: string) {
       await fetchStatus();
     } catch (err: any) {
       if (err.name !== "AbortError") {
-        setError("Nie udało się zbudować kontekstu. Sprawdź czy pliki są w formacie .docx lub .pdf.");
+        const msg = err.message || "Nie udało się zbudować kontekstu. Sprawdź czy pliki są w formacie .docx lub .pdf.";
+        setError(msg);
+        ops?.updateOp(projectId, OP_TYPE, { error: msg });
       }
     } finally {
       setIsBuilding(false);
+      ops?.updateOp(projectId, OP_TYPE, { isRunning: false });
     }
-  // fetchStatus is stable (useCallback with [projectId])
+  // fetchStatus is stable (useCallback with [projectId]); ops is stable (context)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, ops]);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
@@ -162,5 +187,5 @@ export function useContextBuilder(projectId: string) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.artefacts_ready]);
 
-  return { isBuilding, stage, progress, log, result, status, error, buildContext, fetchStatus, retry: fetchStatus, clearError: () => setError(null) };
+  return { isBuilding, stage, progress, log, result, status, error, buildContext, fetchStatus, retry: fetchStatus, clearError: () => { setError(null); ops?.updateOp(projectId, OP_TYPE, { error: null }); } };
 }

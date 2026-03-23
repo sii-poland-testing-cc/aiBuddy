@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # PostgreSQL (for projects & file metadata)
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/ai_buddy.db"
 
+    # M1 workflow timeout (seconds); large corpora with many batches need more time
+    M1_WORKFLOW_TIMEOUT_SECONDS: int = 1800
+
     # File uploads
     UPLOAD_DIR: str = "./data/uploads"
     MAX_UPLOAD_MB: int = 50

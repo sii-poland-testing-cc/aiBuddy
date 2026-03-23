@@ -24,11 +24,22 @@ const config: Config = {
           "text-ghost": "#3a3028",
           gold: "#c8902a",
           "gold-light": "#f0c060",
+          success: "#4a9e6b",
+          error: "#c85a3a",
         },
       },
       fontFamily: {
         sans: ["var(--font-dm-sans)", "sans-serif"],
         mono: ["var(--font-dm-mono)", "monospace"],
+      },
+      keyframes: {
+        "slide-in": {
+          from: { transform: "translateX(-100%)" },
+          to: { transform: "translateX(0)" },
+        },
+      },
+      animation: {
+        "slide-in": "slide-in 0.2s ease-out",
       },
     },
   },

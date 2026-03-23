@@ -84,6 +84,9 @@ class ContextBuilderWorkflow(Workflow):
     }
     """
 
+    BATCH_CHARS = 55_000
+    BATCH_OVERLAP = 2_000
+
     def __init__(self, llm=None, **kwargs):
         super().__init__(**kwargs)
         self.llm = llm
@@ -149,21 +152,46 @@ class ContextBuilderWorkflow(Workflow):
     @step
     async def extract(self, ctx: Context, ev: EmbeddedEvent) -> ExtractedEvent:
         docs: List[Dict] = await ctx.store.get("docs")
-        combined = self._combine_text(docs, max_chars=80_000)
+        combined = self._combine_text(docs)
+        batches = self._split_batches(combined)
+        total_batches = len(batches)
 
         ctx.write_event_to_stream(ProgressEvent(
-            message="Extracting domain entities and relationships…",
+            message=f"Extracting entities from {total_batches} batch(es)…",
             progress=0.50, stage="extract"
         ))
 
-        entities, relations = await self._extract_entities(combined)
+        entity_batches: List[List[Dict]] = []
+        relation_batches: List[List[Dict]] = []
+        for i, batch_text in enumerate(batches):
+            e, r = await self._extract_entities_batch(batch_text)
+            entity_batches.append(e)
+            relation_batches.append(r)
+            ctx.write_event_to_stream(ProgressEvent(
+                message=f"Entities batch {i + 1}/{total_batches} done…",
+                progress=0.50 + 0.20 * (i + 1) / total_batches,
+                stage="extract"
+            ))
+
+        entities = self._merge_entities(entity_batches)
+        relations = self._merge_relations(list(zip(entity_batches, relation_batches)), entities)
 
         ctx.write_event_to_stream(ProgressEvent(
-            message=f"✓ Found {len(entities)} domain concepts, {len(relations)} relationships",
+            message=f"✓ Found {len(entities)} domain concepts, {len(relations)} relationships — extracting glossary…",
             progress=0.70, stage="extract"
         ))
 
-        terms = await self._extract_glossary(combined)
+        term_batches: List[List[Dict]] = []
+        for i, batch_text in enumerate(batches):
+            t = await self._extract_glossary_batch(batch_text)
+            term_batches.append(t)
+            ctx.write_event_to_stream(ProgressEvent(
+                message=f"Glossary batch {i + 1}/{total_batches} done…",
+                progress=0.70 + 0.10 * (i + 1) / total_batches,
+                stage="extract"
+            ))
+
+        terms = self._merge_terms(term_batches)
 
         ctx.write_event_to_stream(ProgressEvent(
             message=f"✓ Built glossary with {len(terms)} terms",
@@ -205,18 +233,17 @@ class ContextBuilderWorkflow(Workflow):
 
     # ── LLM calls ─────────────────────────────────────────────────────────────
 
-    async def _extract_entities(self, text: str):
-        logger.info("[DEBUG] _extract_entities: combined text length = %d", len(text))
-        logger.info("[DEBUG] _extract_entities: first 500 chars = %r", text[:500])
+    async def _extract_entities_batch(self, text: str):
+        logger.info("[DEBUG] _extract_entities_batch: text length = %d", len(text))
 
         if not self.llm:
-            logger.info("[DEBUG] _extract_entities: llm is None → MOCK FALLBACK")
+            logger.info("[DEBUG] _extract_entities_batch: llm is None → MOCK FALLBACK")
             return self._mock_entities(), self._mock_relations()
 
-        logger.info("[DEBUG] _extract_entities: llm present (%s) → LLM BRANCH", type(self.llm).__name__)
+        logger.info("[DEBUG] _extract_entities_batch: llm present (%s) → LLM BRANCH", type(self.llm).__name__)
 
         prompt = f"""You are a domain analyst reviewing software QA documentation.
-Extract the 40 most important domain entities and their relationships.
+Extract all significant domain entities and their relationships from the text below.
 Keep each description under 15 words. Prefer specificity over completeness.
 
 Return ONLY valid JSON — no preamble, no markdown fences, no commentary:
@@ -230,20 +257,20 @@ Return ONLY valid JSON — no preamble, no markdown fences, no commentary:
 }}
 
 Documentation:
-{text[:60000]}
+{text}
 """
         try:
             response = await self.llm.acomplete(prompt)
             raw_str = str(response).strip()
-            logger.info("[DEBUG] _extract_entities: raw LLM response (first 500 chars) = %r", raw_str[:500])
+            logger.info("[DEBUG] _extract_entities_batch: raw LLM response (first 500 chars) = %r", raw_str[:500])
             raw = _strip_fences(raw_str)
             data = json.loads(raw)
             return data.get("entities", []), data.get("relations", [])
         except Exception as e:
-            logger.warning("[DEBUG] _extract_entities: EXCEPTION → mock fallback. Exception: %s: %s", type(e).__name__, e)
+            logger.warning("[DEBUG] _extract_entities_batch: EXCEPTION → mock fallback. Exception: %s: %s", type(e).__name__, e)
             return self._mock_entities(), self._mock_relations()
 
-    async def _extract_glossary(self, text: str) -> List[Dict]:
+    async def _extract_glossary_batch(self, text: str) -> List[Dict]:
         if not self.llm:
             return self._mock_glossary()
 
@@ -257,10 +284,10 @@ Return ONLY valid JSON — a list, no preamble, no markdown fences:
     "source": "uploaded documentation"
   }}
 ]
-Include 10–30 most important domain-specific terms.
+Include all important domain-specific terms present in the text.
 
 Documentation:
-{text[:50000]}
+{text}
 """
         try:
             response = await self.llm.acomplete(prompt)
@@ -298,17 +325,72 @@ Documentation:
             term.setdefault("source", "uploaded documentation")
         return terms
 
-    def _combine_text(self, docs: List[Dict], max_chars: int) -> str:
-        parts, total = [], 0
+    def _combine_text(self, docs: List[Dict]) -> str:
+        parts = []
         for doc in docs:
             text = doc.get("text", "")
-            remaining = max_chars - total
-            if remaining <= 0:
-                break
-            chunk = text[:remaining]
-            parts.append(f"=== {doc.get('filename', 'document')} ===\n{chunk}")
-            total += len(chunk)
+            parts.append(f"=== {doc.get('filename', 'document')} ===\n{text}")
         return "\n\n".join(parts)
+
+    def _split_batches(self, text: str) -> List[str]:
+        if len(text) <= self.BATCH_CHARS:
+            return [text]
+        batches, start = [], 0
+        while start < len(text):
+            end = min(start + self.BATCH_CHARS, len(text))
+            batches.append(text[start:end])
+            start += self.BATCH_CHARS - self.BATCH_OVERLAP
+        return batches
+
+    def _merge_entities(self, batches: List[List[Dict]]) -> List[Dict]:
+        seen: dict = {}
+        result: List[Dict] = []
+        counter = 1
+        for batch in batches:
+            for e in batch:
+                key = e.get("name", "").strip().lower()
+                if key and key not in seen:
+                    seen[key] = f"e{counter}"
+                    counter += 1
+                    result.append({**e, "id": seen[key]})
+        return result
+
+    def _merge_relations(
+        self,
+        batch_pairs: List[tuple],
+        entities: List[Dict],
+    ) -> List[Dict]:
+        """Resolve entity IDs from each batch into master IDs, then dedup relations."""
+        master_name_to_id = {e["name"].strip().lower(): e["id"] for e in entities}
+        seen: set = set()
+        result: List[Dict] = []
+        for batch_entities, batch_relations in batch_pairs:
+            # Map this batch's local IDs → entity names
+            local_id_to_name: dict = {
+                e.get("id", ""): e.get("name", "").strip().lower()
+                for e in batch_entities
+            }
+            for r in batch_relations:
+                src_name = local_id_to_name.get(r.get("source", ""), "")
+                tgt_name = local_id_to_name.get(r.get("target", ""), "")
+                master_src = master_name_to_id.get(src_name, r.get("source", ""))
+                master_tgt = master_name_to_id.get(tgt_name, r.get("target", ""))
+                key = (master_src, master_tgt)
+                if key not in seen:
+                    seen.add(key)
+                    result.append({**r, "source": master_src, "target": master_tgt})
+        return result
+
+    def _merge_terms(self, batches: List[List[Dict]]) -> List[Dict]:
+        seen: dict = {}
+        result: List[Dict] = []
+        for batch in batches:
+            for t in batch:
+                key = t.get("term", "").strip().lower()
+                if key and key not in seen:
+                    seen[key] = True
+                    result.append(t)
+        return result
 
     # ── Mock data (dev without LLM) ───────────────────────────────────────────
 

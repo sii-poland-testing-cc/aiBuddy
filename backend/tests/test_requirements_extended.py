@@ -31,7 +31,7 @@ def _mock_llm(extraction_json: str, validation_json: str | None = None):
             },
         })
     call_count = 0
-    async def _side(prompt):
+    async def _side(prompt, **kwargs):
         nonlocal call_count
         call_count += 1
         return extraction_json if call_count == 1 else validation_json

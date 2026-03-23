@@ -115,7 +115,20 @@ class ContextBuilder:
                     seen.add(fname)
                     sources.append({"filename": fname, "excerpt": excerpt})
             return text, sources
-        except Exception:
+        except Exception as exc:
+            msg = str(exc)
+            if "dimension" in msg.lower() or "InvalidArgumentError" in type(exc).__name__:
+                logger.warning(
+                    "Embedding dimension mismatch for project %s — index was built with a "
+                    "different model. Rebuild context to fix. Error: %s",
+                    project_id, msg,
+                )
+                return (
+                    "(Context index is stale: it was built with a different embedding model. "
+                    "Please rebuild the context via the Context Builder page.)",
+                    [],
+                )
+            logger.warning("RAG retrieval failed for project %s: %s", project_id, msg)
             return "(No indexed context found for this project.)", []
 
 
