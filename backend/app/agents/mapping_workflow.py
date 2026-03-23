@@ -500,7 +500,7 @@ class MappingWorkflow(Workflow):
         cases: List[Dict],
         tc_embeddings: List[List[float]],
         threshold_confident: float = 0.78,
-        threshold_ambiguous: float = 0.58,
+        threshold_ambiguous: float = 0.65,
     ) -> Tuple[List[Dict], List[Dict]]:
         """
         Level 1: Cosine similarity between requirement and TC embeddings.
