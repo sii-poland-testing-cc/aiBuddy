@@ -88,6 +88,16 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in credentials
 ```
 
+or you can use PDM to do so
+
+```bash
+pip install pdm
+pdm init -n
+pdm config python.use_venv true  # if you want to use venv
+pdm install
+cp .env.example .env   # fill in credentials
+```
+
 ### Frontend
 
 ```bash
