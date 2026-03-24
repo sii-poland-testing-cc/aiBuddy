@@ -359,14 +359,8 @@ class RequirementsWorkflow(Workflow):
                     stage="review",
                 ))
 
-                # Cap issues per category to keep the refine prompt manageable
-                MAX_ISSUES_PER_CATEGORY = 5
-                capped_issues = {
-                    k: (v[:MAX_ISSUES_PER_CATEGORY] if isinstance(v, list) else v)
-                    for k, v in issues.items()
-                }
                 features, gaps = await self._refine_requirements(
-                    source_sample, features, gaps, capped_issues
+                    source_sample, features, gaps, issues
                 )
         else:
             ctx.write_event_to_stream(RequirementsProgressEvent(
@@ -554,6 +548,145 @@ Identified gaps:
             logger.warning("Requirements review LLM call failed (%s) — treating as APPROVED", e)
             return {"verdict": "APPROVED"}
 
+    # ── Req-by-req refinement helpers ────────────────────────────────────────
+
+    def _find_req(self, features: List[Dict], title_or_id: str):
+        """Return (feature_idx, req_idx) for the first requirement matching title_or_id."""
+        needle = (title_or_id or "").lower().strip()
+        if not needle:
+            return None, None
+        for fi, feature in enumerate(features):
+            for ri, req in enumerate(feature.get("requirements", [])):
+                eid = (req.get("external_id") or "").lower().strip()
+                title = (req.get("title") or "").lower().strip()
+                if eid == needle or title == needle or needle in eid or needle in title:
+                    return fi, ri
+        return None, None
+
+    def _remove_req_by_id(self, features: List[Dict], title_or_id: str) -> List[Dict]:
+        fi, ri = self._find_req(features, title_or_id)
+        if fi is None:
+            return features
+        updated = [dict(f) for f in features]
+        updated[fi] = {**updated[fi], "requirements": [
+            r for j, r in enumerate(updated[fi].get("requirements", [])) if j != ri
+        ]}
+        return updated
+
+    def _apply_req_fix(self, features: List[Dict], title_or_id: str, fix: Dict) -> List[Dict]:
+        fi, ri = self._find_req(features, title_or_id)
+        if fi is None or ri is None:
+            return features
+        updated = [dict(f) for f in features]
+        reqs = list(updated[fi].get("requirements", []))
+        reqs[ri] = {**reqs[ri], **fix}
+        updated[fi] = {**updated[fi], "requirements": reqs}
+        return updated
+
+    def _apply_acs(self, features: List[Dict], title_or_id: str, acs: List[Dict]) -> List[Dict]:
+        fi, ri = self._find_req(features, title_or_id)
+        if fi is None or ri is None:
+            return features
+        updated = [dict(f) for f in features]
+        reqs = list(updated[fi].get("requirements", []))
+        existing = reqs[ri].get("acceptance_criteria", [])
+        reqs[ri] = {**reqs[ri], "acceptance_criteria": existing + acs}
+        updated[fi] = {**updated[fi], "requirements": reqs}
+        return updated
+
+    def _insert_req(self, features: List[Dict], area: str, new_req: Dict) -> List[Dict]:
+        area_lower = (area or "").lower()
+        for fi, feature in enumerate(features):
+            if area_lower in (feature.get("title") or "").lower() or \
+               area_lower in (feature.get("module") or "").lower():
+                updated = [dict(f) for f in features]
+                updated[fi] = {**updated[fi], "requirements": updated[fi].get("requirements", []) + [new_req]}
+                return updated
+        return features + [{"title": area or "General", "module": (area or "general").lower(),
+                            "description": "", "requirements": [new_req]}]
+
+    async def _fix_req_llm(self, source_sample: str, req: Dict, item: Dict) -> Optional[Dict]:
+        prompt = f"""Fix this requirement to be specific and testable.
+
+Issue: {item.get("issue", "")}
+Suggested fix: {item.get("suggested_fix", "")}
+
+Current requirement:
+{json.dumps(req, ensure_ascii=False, indent=2)}
+
+Source documentation (excerpt):
+{source_sample[:3000]}
+
+Return ONLY the corrected requirement as JSON (same structure, all fields preserved). No markdown fences."""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=1024)
+            return json.loads(_strip_fences(str(response).strip()))
+        except Exception as e:
+            logger.warning("Fix req '%s' failed: %s", item.get("title_or_id"), e)
+            return None
+
+    async def _add_acs_llm(self, source_sample: str, req: Dict, item: Dict) -> Optional[List[Dict]]:
+        prompt = f"""Generate acceptance criteria for this requirement.
+
+Requirement: {json.dumps(req, ensure_ascii=False)}
+Suggestion: {item.get("suggested_ac", "")}
+
+Source documentation (excerpt):
+{source_sample[:3000]}
+
+Return ONLY a JSON array of acceptance criteria:
+[{{"title": "...", "description": "Given X when Y then Z", "testability": "high|medium|low", "confidence": 0.9}}]
+No markdown fences."""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=512)
+            result = json.loads(_strip_fences(str(response).strip()))
+            return result if isinstance(result, list) else None
+        except Exception as e:
+            logger.warning("Add ACs for '%s' failed: %s", item.get("title_or_id"), e)
+            return None
+
+    async def _create_req_llm(self, source_sample: str, missing: Dict) -> Optional[Dict]:
+        prompt = f"""Create a new functional requirement based on this description.
+
+Missing requirement:
+- Area: {missing.get("area", "")}
+- Description: {missing.get("description", "")}
+- Suggested title: {missing.get("suggested_title", "")}
+
+Source documentation (excerpt):
+{source_sample[:3000]}
+
+Return ONLY a JSON object:
+{{"external_id": null, "title": "...", "description": "...", "level": "functional_req",
+  "source_type": "implicit", "taxonomy": {{"module": "...", "risk_level": "medium", "business_domain": "..."}},
+  "testability": "high", "confidence": 0.75, "needs_review": true,
+  "review_reason": "Added by reviewer", "acceptance_criteria": []}}
+No markdown fences."""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=512)
+            result = json.loads(_strip_fences(str(response).strip()))
+            return result if isinstance(result, dict) else None
+        except Exception as e:
+            logger.warning("Create req '%s' failed: %s", missing.get("suggested_title"), e)
+            return None
+
+    async def _merge_dup_llm(self, source_sample: str, req_a: Dict, req_b: Dict, reason: str) -> Optional[Dict]:
+        prompt = f"""Merge these two duplicate requirements into one complete requirement.
+
+Requirement A: {json.dumps(req_a, ensure_ascii=False, indent=2)}
+Requirement B: {json.dumps(req_b, ensure_ascii=False, indent=2)}
+Reason they overlap: {reason}
+
+Return ONLY the merged requirement as JSON (same structure, keep the more complete version).
+No markdown fences."""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=1024)
+            result = json.loads(_strip_fences(str(response).strip()))
+            return result if isinstance(result, dict) else None
+        except Exception as e:
+            logger.warning("Merge duplicate failed: %s", e)
+            return None
+
     async def _refine_requirements(
         self,
         source_sample: str,
@@ -561,50 +694,82 @@ Identified gaps:
         gaps: List[Dict],
         issues: Dict,
     ) -> tuple:
-        """Producer second pass: fix issues identified by the critic."""
-        features_json = json.dumps(features, ensure_ascii=False)
-        gaps_json = json.dumps(gaps, ensure_ascii=False)
-        issues_json = json.dumps(issues, ensure_ascii=False, indent=2)
+        """Apply targeted per-issue fixes in parallel instead of regenerating the full set."""
+        import asyncio
+        import copy
 
-        prompt = f"""You are a senior QA requirements architect.
-You previously extracted requirements from project documentation.
-A reviewer identified the following issues:
-{issues_json}
+        features = copy.deepcopy(features)
+        gaps = copy.deepcopy(gaps)
 
-Produce a corrected version that addresses every issue:
-- Add missing_requirements into the correct feature (create a new feature if needed)
-- Fix incomplete_requirements descriptions to be specific and testable
-- Remove or merge duplicates (keep the more complete one, update references)
-- Remove hallucinated requirements that are not supported by the source
-- Add missing_acceptance_criteria to the relevant requirements
+        # ── 1. Remove hallucinations (no LLM needed) ──────────────────────────
+        for h in issues.get("hallucinations", []):
+            features = self._remove_req_by_id(features, h.get("title_or_id", ""))
+            logger.debug("Removed hallucination: %s", h.get("title_or_id"))
 
-Return ONLY valid JSON — no preamble, no markdown fences:
-{{
-  "features": [...],
-  "gaps": [...]
-}}
+        # ── 2. Merge duplicates (sequential to avoid conflicting mutations) ────
+        for dup in issues.get("duplicates", []):
+            fi_a, ri_a = self._find_req(features, dup.get("req_a", ""))
+            fi_b, ri_b = self._find_req(features, dup.get("req_b", ""))
+            if fi_a is not None and fi_b is not None and (fi_a, ri_a) != (fi_b, ri_b):
+                req_a = features[fi_a]["requirements"][ri_a]
+                req_b = features[fi_b]["requirements"][ri_b]
+                merged = await self._merge_dup_llm(source_sample, req_a, req_b, dup.get("reason", ""))
+                if merged:
+                    features = self._apply_req_fix(features, dup.get("req_a", ""), merged)
+                    features = self._remove_req_by_id(features, dup.get("req_b", ""))
 
-Keep the same JSON structure as the input. Preserve all fields.
+        # ── 3. Fix incomplete requirements (parallel) ──────────────────────────
+        incomplete = issues.get("incomplete_requirements", [])
+        if incomplete and self.llm:
+            reqs_for_fix = []
+            items_for_fix = []
+            for item in incomplete:
+                fi, ri = self._find_req(features, item.get("title_or_id", ""))
+                if fi is not None:
+                    reqs_for_fix.append(features[fi]["requirements"][ri])
+                    items_for_fix.append(item)
+            if reqs_for_fix:
+                fixes = await asyncio.gather(
+                    *[self._fix_req_llm(source_sample, req, item)
+                      for req, item in zip(reqs_for_fix, items_for_fix)],
+                    return_exceptions=True,
+                )
+                for item, fix in zip(items_for_fix, fixes):
+                    if isinstance(fix, dict):
+                        features = self._apply_req_fix(features, item.get("title_or_id", ""), fix)
 
-Source documentation (sample):
-{source_sample}
+        # ── 4. Add missing acceptance criteria (parallel) ─────────────────────
+        missing_acs = issues.get("missing_acceptance_criteria", [])
+        if missing_acs and self.llm:
+            reqs_for_ac = []
+            items_for_ac = []
+            for item in missing_acs:
+                fi, ri = self._find_req(features, item.get("title_or_id", ""))
+                if fi is not None:
+                    reqs_for_ac.append(features[fi]["requirements"][ri])
+                    items_for_ac.append(item)
+            if reqs_for_ac:
+                ac_results = await asyncio.gather(
+                    *[self._add_acs_llm(source_sample, req, item)
+                      for req, item in zip(reqs_for_ac, items_for_ac)],
+                    return_exceptions=True,
+                )
+                for item, acs in zip(items_for_ac, ac_results):
+                    if isinstance(acs, list):
+                        features = self._apply_acs(features, item.get("title_or_id", ""), acs)
 
-Current features:
-{features_json}
+        # ── 5. Create missing requirements (parallel) ─────────────────────────
+        missing_reqs = issues.get("missing_requirements", [])
+        if missing_reqs and self.llm:
+            new_reqs = await asyncio.gather(
+                *[self._create_req_llm(source_sample, item) for item in missing_reqs],
+                return_exceptions=True,
+            )
+            for item, new_req in zip(missing_reqs, new_reqs):
+                if isinstance(new_req, dict):
+                    features = self._insert_req(features, item.get("area", ""), new_req)
 
-Current gaps:
-{gaps_json}
-"""
-        try:
-            response = await self.llm.acomplete(prompt, max_tokens=4096)
-            raw = _strip_fences(str(response).strip())
-            data = json.loads(raw)
-            refined_features = data.get("features", features)
-            refined_gaps = data.get("gaps", gaps)
-            return refined_features, refined_gaps
-        except Exception as e:
-            logger.warning("Requirements refine LLM call failed (%s) — keeping previous extraction", e)
-            return features, gaps
+        return features, gaps
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
