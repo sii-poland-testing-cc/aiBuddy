@@ -243,20 +243,26 @@ async def test_m1_reflection_approved_first_pass():
 
 @pytest.mark.asyncio
 async def test_m1_reflection_refines_on_issues():
-    """Critic returns NEEDS_REVISION → refine runs → critic approves → result has refined data."""
+    """Critic returns NEEDS_REVISION → per-issue refine calls run → critic approves → result has refined data."""
     calls = []
+
+    _NEW_ENTITY = json.dumps({"name": "Payment Gateway", "type": "system", "description": "External payment processor"})
+    _NEW_TERM = json.dumps({"term": "idempotency key", "definition": "A unique key preventing duplicate ops.", "related_terms": [], "source": "uploaded documentation"})
 
     async def _side(prompt, **kwargs):
         calls.append("call")
         if len(calls) == 1:
-            return _ENTITIES_RESPONSE
+            return _ENTITIES_RESPONSE         # entity batch
         if len(calls) == 2:
-            return _GLOSSARY_RESPONSE
+            return _GLOSSARY_RESPONSE         # glossary batch
         if len(calls) == 3:
             return _NEEDS_REVISION_RESPONSE   # critic: needs revision
+        # calls 4+5: per-issue refine (missing_entity + missing_term, run in separate gather steps)
         if len(calls) == 4:
-            return _REFINED_ENTITIES_RESPONSE  # refine: adds Payment Gateway + idempotency key
-        return _APPROVED_RESPONSE              # critic pass 2: approved
+            return _NEW_ENTITY                # _create_entity_llm for "Payment Gateway"
+        if len(calls) == 5:
+            return _NEW_TERM                  # _create_term_llm for "idempotency key"
+        return _APPROVED_RESPONSE             # critic pass 2: approved
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side)
@@ -272,8 +278,8 @@ async def test_m1_reflection_refines_on_issues():
             pass
         result = await handler
 
-    # 5 calls: entities + glossary + critic1 + refine + critic2
-    assert len(calls) == 5
+    # 6 calls: entities + glossary + critic1 + create_entity + create_term + critic2
+    assert len(calls) == 6
     node_names = [n["label"] for n in result["mind_map"]["nodes"]]
     assert "Payment Gateway" in node_names, "Refined entity should be in mind map"
     term_names = [t["term"] for t in result["glossary"]]
@@ -282,7 +288,17 @@ async def test_m1_reflection_refines_on_issues():
 
 @pytest.mark.asyncio
 async def test_m1_reflection_max_iterations_respected():
-    """Critic always returns NEEDS_REVISION but loop stops at REFLECTION_MAX_ITERATIONS=2."""
+    """Critic always returns NEEDS_REVISION (empty issues) but loop stops at REFLECTION_MAX_ITERATIONS=2."""
+    # Use an empty-issues NEEDS_REVISION so refine makes zero per-issue LLM calls.
+    # This lets us count exactly: 2 extract + 2 critic = 4 calls, regardless of refine internals.
+    _needs_revision_empty = json.dumps({
+        "verdict": "NEEDS_REVISION",
+        "missing_entities": [],
+        "duplicate_entities": [],
+        "orphan_nodes": [],
+        "missing_terms": [],
+        "vague_definitions": [],
+    })
     calls = []
 
     async def _side(prompt, **kwargs):
@@ -291,9 +307,7 @@ async def test_m1_reflection_max_iterations_respected():
             return _ENTITIES_RESPONSE
         if len(calls) == 2:
             return _GLOSSARY_RESPONSE
-        if len(calls) % 2 == 1:
-            return _REFINED_ENTITIES_RESPONSE  # refine
-        return _NEEDS_REVISION_RESPONSE        # critic — always needs revision
+        return _needs_revision_empty  # critic always NEEDS_REVISION, no items to fix
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side)
@@ -309,8 +323,8 @@ async def test_m1_reflection_max_iterations_respected():
             pass
         result = await handler
 
-    # 2 extract calls + 2×(critic + refine) = 6 max
-    assert len(calls) <= 6
+    # 2 extract calls + 2 critic calls (no per-issue refine calls since issues are empty)
+    assert len(calls) == 4
     assert result["rag_ready"] is True
 
 

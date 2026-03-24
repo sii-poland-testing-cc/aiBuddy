@@ -915,9 +915,10 @@ No markdown fences."""
                         req["review_reason"] = v.get("review_notes", "Flagged during validation")
 
                 # Auto-flag low confidence
-                if req.get("confidence", 0) < 0.7 and not req.get("needs_review"):
+                conf = req.get("confidence", 0) or 0
+                if conf < 0.7 and not req.get("needs_review"):
                     req["needs_review"] = True
-                    req["review_reason"] = f"Low confidence ({req['confidence']:.2f})"
+                    req["review_reason"] = f"Low confidence ({conf:.2f})"
 
         return features
 
