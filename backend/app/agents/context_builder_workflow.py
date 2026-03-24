@@ -17,7 +17,7 @@ NOTE: Uses LlamaIndex Workflow Context API v0.14+
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from llama_index.core.workflow import (
     Context,
@@ -91,8 +91,8 @@ class ContextBuilderWorkflow(Workflow):
     }
     """
 
-    BATCH_CHARS = 55_000
-    BATCH_OVERLAP = 2_000
+    BATCH_CHARS = 12_000
+    BATCH_OVERLAP = 500
 
     def __init__(self, llm=None, **kwargs):
         super().__init__(**kwargs)
@@ -158,50 +158,49 @@ class ContextBuilderWorkflow(Workflow):
 
     @step
     async def extract(self, ctx: Context, ev: EmbeddedEvent) -> ExtractedEvent:
+        import asyncio
         docs: List[Dict] = await ctx.store.get("docs")
         combined = self._combine_text(docs)
         batches = self._split_batches(combined)
         total_batches = len(batches)
 
         ctx.write_event_to_stream(ProgressEvent(
-            message=f"Extracting entities from {total_batches} batch(es)…",
+            message=f"Extracting entities + glossary from {total_batches} batch(es) in parallel…",
             progress=0.50, stage="extract"
         ))
 
+        # Run all batches concurrently; each batch extracts entities + glossary in parallel
+        results = await asyncio.gather(
+            *[self._extract_batch(b) for b in batches],
+            return_exceptions=True,
+        )
+
         entity_batches: List[List[Dict]] = []
         relation_batches: List[List[Dict]] = []
-        for i, batch_text in enumerate(batches):
-            e, r = await self._extract_entities_batch(batch_text)
-            entity_batches.append(e)
-            relation_batches.append(r)
-            ctx.write_event_to_stream(ProgressEvent(
-                message=f"Entities batch {i + 1}/{total_batches} done…",
-                progress=0.50 + 0.20 * (i + 1) / total_batches,
-                stage="extract"
-            ))
+        term_batches: List[List[Dict]] = []
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.warning("Batch %d/%d failed: %s — using mock fallback", i + 1, total_batches, res)
+                entity_batches.append(self._mock_entities())
+                relation_batches.append(self._mock_relations())
+                term_batches.append(self._mock_glossary())
+            else:
+                e, r, t = res  # type: ignore[misc]
+                entity_batches.append(e)
+                relation_batches.append(r)
+                term_batches.append(t)
+
+        ctx.write_event_to_stream(ProgressEvent(
+            message=f"✓ All {total_batches} batch(es) complete — merging results…",
+            progress=0.72, stage="extract"
+        ))
 
         entities = self._merge_entities(entity_batches)
         relations = self._merge_relations(list(zip(entity_batches, relation_batches)), entities)
-
-        ctx.write_event_to_stream(ProgressEvent(
-            message=f"✓ Found {len(entities)} domain concepts, {len(relations)} relationships — extracting glossary…",
-            progress=0.70, stage="extract"
-        ))
-
-        term_batches: List[List[Dict]] = []
-        for i, batch_text in enumerate(batches):
-            t = await self._extract_glossary_batch(batch_text)
-            term_batches.append(t)
-            ctx.write_event_to_stream(ProgressEvent(
-                message=f"Glossary batch {i + 1}/{total_batches} done…",
-                progress=0.70 + 0.10 * (i + 1) / total_batches,
-                stage="extract"
-            ))
-
         terms = self._merge_terms(term_batches)
 
         ctx.write_event_to_stream(ProgressEvent(
-            message=f"✓ Built glossary with {len(terms)} terms",
+            message=f"✓ Found {len(entities)} concepts, {len(relations)} relationships, {len(terms)} glossary terms",
             progress=0.80, stage="extract"
         ))
 
@@ -296,6 +295,15 @@ class ContextBuilderWorkflow(Workflow):
 
     # ── LLM calls ─────────────────────────────────────────────────────────────
 
+    async def _extract_batch(self, text: str):
+        """Run entity and glossary extraction for one batch concurrently."""
+        import asyncio
+        (entities, relations), terms = await asyncio.gather(
+            self._extract_entities_batch(text),
+            self._extract_glossary_batch(text),
+        )
+        return entities, relations, terms
+
     async def _extract_entities_batch(self, text: str):
         logger.info("[DEBUG] _extract_entities_batch: text length = %d", len(text))
 
@@ -323,14 +331,14 @@ Documentation:
 {text}
 """
         try:
-            response = await self.llm.acomplete(prompt)
+            response = await self.llm.acomplete(prompt, max_tokens=4096)
             raw_str = str(response).strip()
-            logger.info("[DEBUG] _extract_entities_batch: raw LLM response (first 500 chars) = %r", raw_str[:500])
+            logger.debug("_extract_entities_batch: raw LLM response (first 300 chars) = %r", raw_str[:300])
             raw = _strip_fences(raw_str)
             data = json.loads(raw)
             return data.get("entities", []), data.get("relations", [])
         except Exception as e:
-            logger.warning("[DEBUG] _extract_entities_batch: EXCEPTION → mock fallback. Exception: %s: %s", type(e).__name__, e)
+            logger.warning("_extract_entities_batch failed (%s: %s) — mock fallback", type(e).__name__, e)
             return self._mock_entities(), self._mock_relations()
 
     async def _extract_glossary_batch(self, text: str) -> List[Dict]:
@@ -353,11 +361,11 @@ Documentation:
 {text}
 """
         try:
-            response = await self.llm.acomplete(prompt)
+            response = await self.llm.acomplete(prompt, max_tokens=4096)
             raw = _strip_fences(str(response).strip())
             return json.loads(raw)
         except Exception as e:
-            logger.warning(f"Glossary extraction failed: {e}, using mock data")
+            logger.warning("Glossary extraction failed (%s) — mock fallback", e)
             return self._mock_glossary()
 
     # ── Reflection helpers ────────────────────────────────────────────────────
@@ -425,53 +433,133 @@ Glossary terms ({len(terms)} total):
         terms: List[Dict],
         issues: Dict,
     ) -> tuple:
-        """Producer second pass: fix issues identified by the critic."""
-        issues_json = json.dumps(issues, ensure_ascii=False, indent=2)
-        entities_json = json.dumps(entities, ensure_ascii=False)
-        relations_json = json.dumps(relations, ensure_ascii=False)
-        terms_json = json.dumps(terms, ensure_ascii=False)
+        """Per-issue parallel refinement — avoids one huge monolithic LLM call."""
+        import asyncio
+        import copy
 
-        prompt = f"""You are a domain analyst. You previously extracted entities and a glossary.
-A reviewer identified the following issues:
-{issues_json}
+        entities = copy.deepcopy(entities)
+        relations = copy.deepcopy(relations)
+        terms = copy.deepcopy(terms)
 
-Produce a corrected version that addresses every issue:
-- Add any missing_entities (use the next available numeric ID, e.g. "e{len(entities)+1}")
-- Merge or remove duplicate_entities (keep the more descriptive name, update all relation references)
-- Add edges for any orphan_nodes where a relationship is inferable from the source
-- Add any missing_terms to the glossary with clear, non-circular definitions
-- Improve vague_definitions in the glossary
+        next_id = [len(entities) + 1]  # mutable counter for new entity IDs
 
-Return ONLY valid JSON — no preamble, no markdown fences:
-{{
-  "entities": [...],
-  "relations": [...],
-  "terms": [...]
-}}
+        # ── 1. Add missing entities (parallel) ────────────────────────────────
+        missing = issues.get("missing_entities", [])
+        if missing and self.llm:
+            new_entity_results = await asyncio.gather(
+                *[self._create_entity_llm(source_sample, name) for name in missing],
+                return_exceptions=True,
+            )
+            for name, result in zip(missing, new_entity_results):
+                if isinstance(result, dict):
+                    result["id"] = f"e{next_id[0]}"
+                    next_id[0] += 1
+                    entities.append(result)
+                else:
+                    # fallback: add a minimal entity so it at least appears in the map
+                    entities.append({"id": f"e{next_id[0]}", "name": name, "type": "concept", "description": ""})
+                    next_id[0] += 1
 
-Source documentation (sample):
-{source_sample}
+        # ── 2. Merge duplicate entities (sequential — order matters) ──────────
+        for pair in issues.get("duplicate_entities", []):
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            name_a, name_b = str(pair[0]), str(pair[1])
+            idx_a = next((i for i, e in enumerate(entities) if e.get("name", "").lower() == name_a.lower()), None)
+            idx_b = next((i for i, e in enumerate(entities) if e.get("name", "").lower() == name_b.lower()), None)
+            if idx_a is not None and idx_b is not None and idx_a != idx_b:
+                # Keep whichever has the longer description; remap relations
+                keep, drop = (idx_a, idx_b) if len(entities[idx_a].get("description", "")) >= len(entities[idx_b].get("description", "")) else (idx_b, idx_a)
+                drop_id = entities[drop]["id"]
+                keep_id = entities[keep]["id"]
+                for r in relations:
+                    if r.get("source") == drop_id:
+                        r["source"] = keep_id
+                    if r.get("target") == drop_id:
+                        r["target"] = keep_id
+                entities.pop(drop)
 
-Current entities:
-{entities_json}
+        # ── 3. Add missing glossary terms (parallel) ──────────────────────────
+        missing_terms = issues.get("missing_terms", [])
+        if missing_terms and self.llm:
+            new_term_results = await asyncio.gather(
+                *[self._create_term_llm(source_sample, t) for t in missing_terms],
+                return_exceptions=True,
+            )
+            existing_keys = {t.get("term", "").lower() for t in terms}
+            for result in new_term_results:
+                if isinstance(result, dict) and result.get("term", "").lower() not in existing_keys:
+                    terms.append(result)
+                    existing_keys.add(result.get("term", "").lower())
 
-Current relations:
-{relations_json}
+        # ── 4. Fix vague definitions (parallel) ───────────────────────────────
+        vague = issues.get("vague_definitions", [])
+        if vague and self.llm:
+            vague_dicts = [v if isinstance(v, dict) else {"term": str(v), "issue": ""} for v in vague]
+            fixed_results = await asyncio.gather(
+                *[self._fix_term_llm(source_sample, v) for v in vague_dicts],
+                return_exceptions=True,
+            )
+            term_map = {t.get("term", "").lower(): i for i, t in enumerate(terms)}
+            for vague_item, fixed in zip(vague_dicts, fixed_results):
+                if isinstance(fixed, dict):
+                    key = vague_item.get("term", "").lower()
+                    if key in term_map:
+                        terms[term_map[key]]["definition"] = fixed.get("definition", terms[term_map[key]].get("definition", ""))
 
-Current glossary terms:
-{terms_json}
-"""
+        return entities, relations, terms
+
+    async def _create_entity_llm(self, source_sample: str, name: str) -> Optional[Dict]:
+        prompt = f"""Create a domain entity entry for: "{name}"
+
+Source documentation (excerpt):
+{source_sample[:2000]}
+
+Return ONLY a JSON object:
+{{"name": "{name}", "type": "process|actor|system|data|rule|concept", "description": "max 15 words"}}
+No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt)
-            raw = _strip_fences(str(response).strip())
-            data = json.loads(raw)
-            refined_entities = data.get("entities", entities)
-            refined_relations = data.get("relations", relations)
-            refined_terms = data.get("terms", terms)
-            return refined_entities, refined_relations, refined_terms
+            response = await self.llm.acomplete(prompt, max_tokens=256)  # type: ignore[union-attr]
+            return json.loads(_strip_fences(str(response).strip()))
         except Exception as e:
-            logger.warning("Refine LLM call failed (%s) — keeping previous extraction", e)
-            return entities, relations, terms
+            logger.warning("Create entity '%s' failed: %s", name, e)
+            return None
+
+    async def _create_term_llm(self, source_sample: str, term: str) -> Optional[Dict]:
+        prompt = f"""Write a glossary entry for the term: "{term}"
+
+Source documentation (excerpt):
+{source_sample[:2000]}
+
+Return ONLY a JSON object:
+{{"term": "{term}", "definition": "...", "related_terms": [], "source": "uploaded documentation"}}
+No markdown fences."""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=256)  # type: ignore[union-attr]
+            return json.loads(_strip_fences(str(response).strip()))
+        except Exception as e:
+            logger.warning("Create term '%s' failed: %s", term, e)
+            return None
+
+    async def _fix_term_llm(self, source_sample: str, vague_item: Dict) -> Optional[Dict]:
+        term = vague_item.get("term", "")
+        issue = vague_item.get("issue", "")
+        prompt = f"""Improve this glossary definition.
+Term: "{term}"
+Problem: {issue}
+
+Source documentation (excerpt):
+{source_sample[:2000]}
+
+Return ONLY a JSON object:
+{{"term": "{term}", "definition": "improved, specific, non-circular definition"}}
+No markdown fences."""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=256)  # type: ignore[union-attr]
+            return json.loads(_strip_fences(str(response).strip()))
+        except Exception as e:
+            logger.warning("Fix term '%s' failed: %s", term, e)
+            return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
