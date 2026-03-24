@@ -638,7 +638,7 @@ Return ONLY a JSON array of acceptance criteria:
 [{{"title": "...", "description": "Given X when Y then Z", "testability": "high|medium|low", "confidence": 0.9}}]
 No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=512)
+            response = await self.llm.acomplete(prompt, max_tokens=1024)
             result = json.loads(_strip_fences(str(response).strip()))
             return result if isinstance(result, list) else None
         except Exception as e:
@@ -663,7 +663,7 @@ Return ONLY a JSON object:
   "review_reason": "Added by reviewer", "acceptance_criteria": []}}
 No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=512)
+            response = await self.llm.acomplete(prompt, max_tokens=1024)
             result = json.loads(_strip_fences(str(response).strip()))
             return result if isinstance(result, dict) else None
         except Exception as e:
