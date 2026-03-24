@@ -162,6 +162,7 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
 
     llm = get_llm()
     workflow = ContextBuilderWorkflow(llm=llm, timeout=settings.M1_WORKFLOW_TIMEOUT_SECONDS)
+    logger.info("M1 context build STARTED — project=%s mode=%s files=%s", project_id, mode, [Path(p).name for p in file_paths])
 
     # Track last known stage for keepalive messages
     last_progress = {"message": "Processing…", "progress": 0.05, "stage": "parse"}
@@ -246,9 +247,19 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
             "context_files": merged_files,
         }
 
+        stats = result.get("stats", {})
+        logger.info(
+            "M1 context build DONE — project=%s entities=%s relations=%s terms=%s files=%s",
+            project_id,
+            stats.get("entity_count", "?"),
+            stats.get("relation_count", "?"),
+            stats.get("term_count", "?"),
+            merged_files,
+        )
         yield _sse({"type": "result", "data": result})
 
     except Exception as exc:
+        logger.error("M1 context build FAILED — project=%s error=%s", project_id, exc)
         yield _sse({"type": "error", "data": {"message": str(exc)}})
     finally:
         yield "data: [DONE]\n\n"

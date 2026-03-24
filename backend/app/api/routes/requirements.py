@@ -120,6 +120,8 @@ async def _run_extraction(project_id: str, user_message: str):
     last_progress = {"message": "Processing…", "progress": 0.05, "stage": "extract"}
     result = None
 
+    logger.info("Faza2 requirements extraction STARTED — project=%s", project_id)
+
     try:
         handler = workflow.run(
             project_id=project_id,
@@ -154,9 +156,18 @@ async def _run_extraction(project_id: str, user_message: str):
         except Exception as exc:
             logger.warning("Failed to persist requirements: %s", exc)
 
+        meta = result.get("metadata", {})
+        logger.info(
+            "Faza2 requirements extraction DONE — project=%s features=%s requirements=%s gaps=%s",
+            project_id,
+            meta.get("total_features", "?"),
+            meta.get("total_requirements", "?"),
+            len(result.get("gaps", [])),
+        )
         yield _sse({"type": "result", "data": result})
 
     except Exception as exc:
+        logger.error("Faza2 requirements extraction FAILED — project=%s error=%s", project_id, exc)
         logger.exception("Requirements extraction failed")
         yield _sse({"type": "error", "data": {"message": str(exc)}})
     finally:
