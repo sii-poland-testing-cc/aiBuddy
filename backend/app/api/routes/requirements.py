@@ -24,6 +24,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.requirements_workflow import RequirementsWorkflow, RequirementsProgressEvent
+from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
 from app.db.requirements_models import CoverageScore, Requirement, RequirementTCMapping
@@ -70,9 +71,54 @@ async def extract_requirements(project_id: str, req: ExtractRequest = ExtractReq
     )
 
 
+async def _stream_with_keepalive(handler, keepalive_interval: float = 5.0):
+    """Yield (kind, item) tuples; emits ("keepalive", None) every keepalive_interval seconds
+    when the workflow is silent (e.g. waiting for an LLM response).
+    Kinds: "event", "result", "error", "keepalive"
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _collect():
+        try:
+            async for ev in handler.stream_events():
+                await queue.put(("event", ev))
+            result = await handler
+            await queue.put(("result", result))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        finally:
+            await queue.put(("done", None))
+
+    task = asyncio.create_task(_collect())
+    try:
+        getter = asyncio.ensure_future(queue.get())
+        while True:
+            done, _ = await asyncio.wait({getter}, timeout=keepalive_interval)
+            if not done:
+                yield ("keepalive", None)
+                continue
+            kind, item = getter.result()
+            if kind == "done":
+                getter.cancel()
+                break
+            getter = asyncio.ensure_future(queue.get())
+            yield (kind, item)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 async def _run_extraction(project_id: str, user_message: str):
     llm = get_llm()
-    workflow = RequirementsWorkflow(llm=llm, timeout=300)
+    workflow = RequirementsWorkflow(
+        llm=llm, timeout=settings.REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS
+    )
+
+    last_progress = {"message": "Processing…", "progress": 0.05, "stage": "extract"}
+    result = None
 
     try:
         handler = workflow.run(
@@ -80,19 +126,22 @@ async def _run_extraction(project_id: str, user_message: str):
             user_message=user_message,
         )
 
-        async for ev in handler.stream_events():
-            if isinstance(ev, RequirementsProgressEvent):
-                yield _sse({
-                    "type": "progress",
-                    "data": {
-                        "message": ev.message,
-                        "progress": ev.progress,
-                        "stage": ev.stage,
-                    },
-                })
+        async for kind, item in _stream_with_keepalive(handler):
+            if kind == "event":
+                if isinstance(item, RequirementsProgressEvent):
+                    last_progress = {"message": item.message, "progress": item.progress, "stage": item.stage}
+                    yield _sse({"type": "progress", "data": last_progress})
+                    await asyncio.sleep(0)
+            elif kind == "keepalive":
+                yield _sse({"type": "progress", "data": last_progress})
                 await asyncio.sleep(0)
+            elif kind == "result":
+                result = item
+            elif kind == "error":
+                raise item  # type: ignore[misc]
 
-        result = await handler
+        if result is None:
+            raise RuntimeError("Workflow completed without a result")
 
         # Persist to DB
         try:

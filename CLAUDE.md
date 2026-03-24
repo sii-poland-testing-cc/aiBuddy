@@ -443,6 +443,7 @@ cd frontend && npm test
 | `MAX_UPLOAD_MB` | `50` | |
 | `ALLOWED_EXTENSIONS` | `.xlsx .csv .json .pdf .feature .txt .md .docx` | |
 | `M1_WORKFLOW_TIMEOUT_SECONDS` | `1800` | M1 build timeout; increase for large corpora |
+| `REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS` | `1800` | Faza 2 extraction timeout; reflection adds multiple LLM calls |
 | `REFLECTION_MAX_ITERATIONS` | `2` | Producer-critic-refine cycles in M1 and Faza 2 workflows; `0` = disabled |
 
 ---
