@@ -5,8 +5,10 @@ import TopBar from "../components/TopBar";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
+const mockPush = vi.fn();
+
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: mockPush }),
 }));
 
 vi.mock("../lib/useProjects", () => ({
@@ -106,5 +108,23 @@ describe("TopBar", () => {
     renderTopBar({ panelOpen: true });
     const btn = screen.getByRole("button", { name: /toggle side panel/i });
     expect(btn.className).toMatch(/buddy-gold/);
+  });
+
+  it("dropdown shows a settings gear button for each project", async () => {
+    renderTopBar();
+    await userEvent.click(screen.getByTestId("project-switcher-btn"));
+    const gearButtons = screen.getAllByTitle("Ustawienia projektu");
+    expect(gearButtons).toHaveLength(2);
+  });
+
+  it("clicking a gear button in dropdown navigates to settings and closes dropdown", async () => {
+    renderTopBar({ projectId: "p1" });
+    await userEvent.click(screen.getByTestId("project-switcher-btn"));
+    const gearButtons = screen.getAllByTitle("Ustawienia projektu");
+    await userEvent.click(gearButtons[1]); // Auth Service v2
+    expect(mockPush).toHaveBeenCalledWith("/project/p2/settings");
+    await waitFor(() =>
+      expect(screen.queryByTestId("project-dropdown")).not.toBeInTheDocument()
+    );
   });
 });

@@ -118,26 +118,43 @@ export default function TopBar({ projectId, onTogglePanel, panelOpen, ragReady }
                 {projects.map((p) => {
                   const isActive = p.project_id === projectId;
                   return (
-                    <button
+                    <div
                       key={p.project_id}
-                      onClick={() => handleSelectProject(p.project_id)}
-                      className={`w-full text-left flex items-center gap-2 rounded-[5px] transition-colors
+                      className={`flex items-center group/row rounded-[5px] transition-colors
                                   ${isActive ? "bg-buddy-elevated" : "hover:bg-buddy-elevated"}`}
-                      style={{ padding: "7px 10px" }}
                     >
-                      <span
-                        className={`rounded-full shrink-0 ${
-                          statuses[p.project_id] ? "bg-buddy-success" : "bg-buddy-text-dim"
-                        }`}
-                        style={{ width: 7, height: 7 }}
-                      />
-                      <span className="text-buddy-text-muted truncate flex-1" style={{ fontSize: 12 }}>
-                        {p.name}
-                      </span>
-                      {isActive && (
-                        <span className="text-buddy-gold shrink-0" style={{ fontSize: 11 }}>✓</span>
-                      )}
-                    </button>
+                      <button
+                        onClick={() => handleSelectProject(p.project_id)}
+                        className="flex-1 text-left flex items-center gap-2 min-w-0"
+                        style={{ padding: "7px 10px" }}
+                      >
+                        <span
+                          className={`rounded-full shrink-0 ${
+                            statuses[p.project_id] ? "bg-buddy-success" : "bg-buddy-text-dim"
+                          }`}
+                          style={{ width: 7, height: 7 }}
+                        />
+                        <span className="text-buddy-text-muted truncate flex-1" style={{ fontSize: 12 }}>
+                          {p.name}
+                        </span>
+                        {isActive && (
+                          <span className="text-buddy-gold shrink-0" style={{ fontSize: 11 }}>✓</span>
+                        )}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDropdownOpen(false);
+                          router.push(`/project/${encodeURIComponent(p.project_id)}/settings`);
+                        }}
+                        title="Ustawienia projektu"
+                        className="shrink-0 px-2 text-buddy-text-dim opacity-0 group-hover/row:opacity-100
+                                   hover:text-buddy-gold-light transition-all"
+                        style={{ fontSize: 12, paddingTop: 7, paddingBottom: 7 }}
+                      >
+                        ⚙
+                      </button>
+                    </div>
                   );
                 })}
               </div>
