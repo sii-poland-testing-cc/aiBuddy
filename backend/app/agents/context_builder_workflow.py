@@ -47,6 +47,33 @@ def _strip_fences(text: str) -> str:
     return text
 
 
+def _recover_truncated_array(raw: str) -> List[Dict]:
+    """
+    Attempt to salvage a JSON array that was cut off mid-token (e.g. at max_tokens limit).
+    Finds the last complete object `}` inside the array and closes it.
+    Returns a list of successfully parsed items, or an empty list on failure.
+    """
+    # Find rightmost `}` — end of the last potentially complete entry
+    last_brace = raw.rfind("}")
+    if last_brace == -1:
+        return []
+    candidate = raw[: last_brace + 1] + "]"
+    # Strip any leading non-`[` characters so json.loads sees a valid array
+    for i, ch in enumerate(candidate):
+        if ch == "[":
+            candidate = candidate[i:]
+            break
+    else:
+        return []
+    try:
+        result = json.loads(candidate)
+        if isinstance(result, list):
+            return [item for item in result if isinstance(item, dict)]
+    except json.JSONDecodeError:
+        pass
+    return []
+
+
 # ─── Events ──────────────────────────────────────────────────────────────────
 
 class ParsedDocsEvent(Event):
@@ -92,7 +119,7 @@ class ContextBuilderWorkflow(Workflow):
     """
 
     BATCH_CHARS = 12_000
-    BATCH_OVERLAP = 500
+    BATCH_OVERLAP = 1_800
 
     def __init__(self, llm=None, **kwargs):
         super().__init__(**kwargs)
@@ -368,9 +395,20 @@ Documentation:
         last_exc: Exception = RuntimeError("no attempts made")
         for attempt in range(2):
             try:
-                response = await self.llm.acomplete(prompt, max_tokens=4096)
+                response = await self.llm.acomplete(prompt, max_tokens=8192)
                 raw = _strip_fences(str(response).strip())
-                return json.loads(raw)
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    # Response may be truncated at token limit — recover partial terms
+                    recovered = _recover_truncated_array(raw)
+                    if recovered:
+                        logger.warning(
+                            "_extract_glossary_batch attempt %d: recovered %d term(s) from truncated response",
+                            attempt + 1, len(recovered),
+                        )
+                        return recovered
+                    raise
             except Exception as e:
                 last_exc = e
                 logger.warning("_extract_glossary_batch attempt %d failed: %s: %s", attempt + 1, type(e).__name__, e)
