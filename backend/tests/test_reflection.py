@@ -198,6 +198,7 @@ async def test_m1_reflection_disabled_max_iter_zero():
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
          patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 0
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="refl-zero", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -231,6 +232,7 @@ async def test_m1_reflection_approved_first_pass():
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
          patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="refl-approved", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -273,6 +275,7 @@ async def test_m1_reflection_refines_on_issues():
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
          patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="refl-refine", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -318,6 +321,7 @@ async def test_m1_reflection_max_iterations_respected():
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
          patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="refl-max-iter", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -350,6 +354,7 @@ async def test_m1_reflection_critic_failure_graceful():
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
          patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="refl-critic-fail", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -383,6 +388,7 @@ async def test_m1_reflection_refine_failure_graceful():
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
          patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="refl-refine-fail", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -429,6 +435,7 @@ async def test_req_reflection_approved_first_pass():
 
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-approved", user_message="")
         async for _ in handler.stream_events():
             pass
@@ -463,6 +470,7 @@ async def test_req_reflection_adds_missing_requirements():
 
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-refine", user_message="")
         async for _ in handler.stream_events():
             pass
@@ -495,6 +503,7 @@ async def test_req_reflection_max_iterations_respected():
 
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-max-iter", user_message="")
         async for _ in handler.stream_events():
             pass
@@ -523,6 +532,7 @@ async def test_req_reflection_critic_failure_graceful():
 
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-critic-fail", user_message="")
         async for _ in handler.stream_events():
             pass
@@ -551,6 +561,7 @@ async def test_req_reflection_refine_failure_graceful():
 
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-refine-fail", user_message="")
         async for _ in handler.stream_events():
             pass
@@ -595,6 +606,7 @@ async def test_req_combined_context_passed_to_critic():
 
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 1
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-ctx-store", user_message="")
         async for _ in handler.stream_events():
             pass
@@ -641,6 +653,7 @@ async def test_req_reflection_rule_based_always_runs():
 
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 1
+        mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-rule-based", user_message="")
         async for _ in handler.stream_events():
             pass

@@ -93,7 +93,6 @@ class ContextBuilderWorkflow(Workflow):
 
     BATCH_CHARS = 12_000
     BATCH_OVERLAP = 500
-    MAX_CONCURRENT_BATCHES = 4   # each batch = 2 API calls → max 8 in-flight at once
 
     def __init__(self, llm=None, **kwargs):
         super().__init__(**kwargs)
@@ -171,7 +170,8 @@ class ContextBuilderWorkflow(Workflow):
         ))
 
         # Run batches concurrently (semaphore caps API calls to avoid rate limiting)
-        sem = asyncio.Semaphore(self.MAX_CONCURRENT_BATCHES)
+        from app.core.config import settings
+        sem = asyncio.Semaphore(settings.LLM_CONCURRENT_CALLS)
 
         async def _guarded(text: str):
             async with sem:

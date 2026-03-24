@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # M1/Faza2 reflection: max producer→critic→refine cycles (0 = disabled)
     REFLECTION_MAX_ITERATIONS: int = 2
 
+    # Max concurrent LLM calls across all workflows (prevents API rate limiting)
+    LLM_CONCURRENT_CALLS: int = 4
+
     # File uploads
     UPLOAD_DIR: str = "./data/uploads"
     MAX_UPLOAD_MB: int = 50

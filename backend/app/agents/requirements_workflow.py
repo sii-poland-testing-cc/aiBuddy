@@ -209,8 +209,6 @@ class RequirementsWorkflow(Workflow):
     }
     """
 
-    MAX_CONCURRENT_REFINE = 4  # max parallel LLM calls during per-issue refinement
-
     def __init__(self, llm=None, **kwargs):
         super().__init__(**kwargs)
         self.llm = llm
@@ -726,9 +724,10 @@ No markdown fences."""
         import asyncio
         import copy
 
+        from app.core.config import settings
         features = copy.deepcopy(features)
         gaps = copy.deepcopy(gaps)
-        sem = asyncio.Semaphore(self.MAX_CONCURRENT_REFINE)
+        sem = asyncio.Semaphore(settings.LLM_CONCURRENT_CALLS)
 
         def _as_dict(item, id_field: str = "title_or_id") -> Dict:
             """Normalise a bare string item to {id_field: item} so .get() is always safe."""
