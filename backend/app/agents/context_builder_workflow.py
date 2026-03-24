@@ -187,10 +187,10 @@ class ContextBuilderWorkflow(Workflow):
         term_batches: List[List[Dict]] = []
         for i, res in enumerate(results):
             if isinstance(res, Exception):
-                logger.warning("Batch %d/%d failed: %s — using mock fallback", i + 1, total_batches, res)
-                entity_batches.append(self._mock_entities())
-                relation_batches.append(self._mock_relations())
-                term_batches.append(self._mock_glossary())
+                raise RuntimeError(
+                    f"Context extraction failed on batch {i + 1}/{total_batches} "
+                    f"after 2 attempts: {res}"
+                ) from res
             else:
                 e, r, t = res  # type: ignore[misc]
                 entity_batches.append(e)
@@ -241,6 +241,8 @@ class ContextBuilderWorkflow(Workflow):
             ))
 
             issues = await self._review_extraction(source_sample, entities, relations, terms)
+            if not isinstance(issues, dict):
+                issues = {"verdict": "APPROVED"}
 
             if issues.get("verdict") == "APPROVED":
                 ctx.write_event_to_stream(ProgressEvent(
@@ -312,13 +314,8 @@ class ContextBuilderWorkflow(Workflow):
         return entities, relations, terms
 
     async def _extract_entities_batch(self, text: str):
-        logger.info("[DEBUG] _extract_entities_batch: text length = %d", len(text))
-
         if not self.llm:
-            logger.info("[DEBUG] _extract_entities_batch: llm is None → MOCK FALLBACK")
             return self._mock_entities(), self._mock_relations()
-
-        logger.info("[DEBUG] _extract_entities_batch: llm present (%s) → LLM BRANCH", type(self.llm).__name__)
 
         prompt = f"""You are a domain analyst reviewing software QA documentation.
 Extract all significant domain entities and their relationships from the text below.
@@ -337,16 +334,17 @@ Return ONLY valid JSON — no preamble, no markdown fences, no commentary:
 Documentation:
 {text}
 """
-        try:
-            response = await self.llm.acomplete(prompt, max_tokens=4096)
-            raw_str = str(response).strip()
-            logger.debug("_extract_entities_batch: raw LLM response (first 300 chars) = %r", raw_str[:300])
-            raw = _strip_fences(raw_str)
-            data = json.loads(raw)
-            return data.get("entities", []), data.get("relations", [])
-        except Exception as e:
-            logger.warning("_extract_entities_batch failed (%s: %s) — mock fallback", type(e).__name__, e)
-            return self._mock_entities(), self._mock_relations()
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(2):
+            try:
+                response = await self.llm.acomplete(prompt, max_tokens=4096)
+                raw = _strip_fences(str(response).strip())
+                data = json.loads(raw)
+                return data.get("entities", []), data.get("relations", [])
+            except Exception as e:
+                last_exc = e
+                logger.warning("_extract_entities_batch attempt %d failed: %s: %s", attempt + 1, type(e).__name__, e)
+        raise last_exc
 
     async def _extract_glossary_batch(self, text: str) -> List[Dict]:
         if not self.llm:
@@ -367,13 +365,16 @@ Include all important domain-specific terms present in the text.
 Documentation:
 {text}
 """
-        try:
-            response = await self.llm.acomplete(prompt, max_tokens=4096)
-            raw = _strip_fences(str(response).strip())
-            return json.loads(raw)
-        except Exception as e:
-            logger.warning("Glossary extraction failed (%s) — mock fallback", e)
-            return self._mock_glossary()
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(2):
+            try:
+                response = await self.llm.acomplete(prompt, max_tokens=4096)
+                raw = _strip_fences(str(response).strip())
+                return json.loads(raw)
+            except Exception as e:
+                last_exc = e
+                logger.warning("_extract_glossary_batch attempt %d failed: %s: %s", attempt + 1, type(e).__name__, e)
+        raise last_exc
 
     # ── Reflection helpers ────────────────────────────────────────────────────
 

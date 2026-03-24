@@ -209,8 +209,9 @@ def test_artefacts_persisted_to_db(app_client):
     assert proj_r.status_code in (200, 201)
     project_id = proj_r.json()["project_id"]
 
-    # 2. Run the full M1 build
-    with fixture.open("rb") as fh:
+    # 2. Run the full M1 build with a mocked LLM (no real API calls)
+    with patch("app.api.routes.context.get_llm", return_value=_make_context_mock_llm()), \
+         fixture.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (fixture.name, fh,
@@ -254,6 +255,36 @@ def test_artefacts_persisted_to_db(app_client):
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _SYNTHETIC = Path(__file__).parent / "fixtures" / "synthetic_docs"
 
+import json as _json
+
+_MOCK_ENTITIES = _json.dumps({
+    "entities": [
+        {"id": "e1", "name": "Test Case", "type": "data", "description": "A test scenario"},
+        {"id": "e2", "name": "Defect",    "type": "data", "description": "A software defect"},
+    ],
+    "relations": [{"source": "e1", "target": "e2", "label": "reveals"}],
+})
+_MOCK_GLOSSARY = _json.dumps([
+    {"term": "Test Case", "definition": "Conditions to verify behaviour.", "related_terms": [], "source": "docs"},
+    {"term": "Defect",    "definition": "Deviation from expected behaviour.", "related_terms": [], "source": "docs"},
+])
+_MOCK_APPROVED = _json.dumps({"verdict": "APPROVED"})
+
+
+def _make_context_mock_llm():
+    """Return a mock LLM that returns deterministic responses for M1 extraction calls."""
+    mock = MagicMock()
+
+    async def _side(prompt, **kwargs):
+        if "entities and their relationships" in prompt:
+            return _MOCK_ENTITIES
+        if "glossary" in prompt.lower() and "documentation" in prompt:
+            return _MOCK_GLOSSARY
+        return _MOCK_APPROVED  # review / refine
+
+    mock.acomplete = AsyncMock(side_effect=_side)
+    return mock
+
 
 def _build(client, project_id: str, filename: str, mode: str = "append") -> None:
     """POST a single .docx to /build and consume the SSE response."""
@@ -262,7 +293,8 @@ def _build(client, project_id: str, filename: str, mode: str = "append") -> None
     url = f"/api/context/{project_id}/build"
     if mode != "append":
         url += f"?mode={mode}"
-    with path.open("rb") as fh:
+    with patch("app.api.routes.context.get_llm", return_value=_make_context_mock_llm()), \
+         path.open("rb") as fh:
         r = client.post(url, files={"files": (filename, fh, _DOCX_MIME)})
     assert r.status_code == 200, f"Build failed ({mode}): {r.text[:300]}"
 

@@ -271,6 +271,40 @@ def test_chat_triggers_audit_when_project_has_files(app_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shared mock LLM for M1 context builds (avoids real API calls in tests)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from unittest.mock import AsyncMock, MagicMock, patch as _patch
+
+
+def _make_m1_mock_llm():
+    _entities = json.dumps({
+        "entities": [
+            {"id": "e1", "name": "PayFlow",     "type": "system", "description": "Payment processing system"},
+            {"id": "e2", "name": "Chargeback",  "type": "process","description": "Transaction reversal process"},
+            {"id": "e3", "name": "Test Case",   "type": "data",   "description": "A test scenario"},
+        ],
+        "relations": [{"source": "e3", "target": "e1", "label": "validates"}],
+    })
+    _glossary = json.dumps([
+        {"term": "Chargeback",  "definition": "Reversal of a payment transaction.", "related_terms": ["Dispute"], "source": "docs"},
+        {"term": "Test Case",   "definition": "Conditions to verify behaviour.",    "related_terms": [],          "source": "docs"},
+    ])
+    _approved = json.dumps({"verdict": "APPROVED"})
+    mock = MagicMock()
+
+    async def _side(prompt, **kwargs):
+        if "entities and their relationships" in prompt:
+            return _entities
+        if "glossary" in prompt.lower() and "documentation" in prompt:
+            return _glossary
+        return _approved
+
+    mock.acomplete = AsyncMock(side_effect=_side)
+    return mock
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pytest: RAG chat uses indexed context, not generic LLM knowledge
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -296,8 +330,9 @@ def test_context_chat_uses_rag(app_client):
     assert r.status_code in (200, 201)
     project_id = r.json()["project_id"]
 
-    # 2. Build M1 context (indexes document into Chroma)
-    with docx_path.open("rb") as fh:
+    # 2. Build M1 context (indexes document into Chroma) — mock LLM for extraction
+    with _patch("app.api.routes.context.get_llm", return_value=_make_m1_mock_llm()), \
+         docx_path.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (docx_path.name, fh, _DOCX_MIME)},
@@ -314,7 +349,7 @@ def test_context_chat_uses_rag(app_client):
         return_value="A Chargeback is a reversal of a transaction as defined in the documentation."
     )
 
-    with patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+    with _patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
             json={"project_id": project_id, "message": "What is a Chargeback?", "file_paths": []},
@@ -385,7 +420,8 @@ def test_term_explanation_uses_rag(app_client):
     assert r.status_code in (200, 201)
     project_id = r.json()["project_id"]
 
-    with docx_path.open("rb") as fh:
+    with _patch("app.api.routes.context.get_llm", return_value=_make_m1_mock_llm()), \
+         docx_path.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (docx_path.name, fh, _DOCX_MIME)},
@@ -492,7 +528,8 @@ def test_coverage_reflects_requirement_gaps(app_client):
     assert r.status_code in (200, 201)
     project_id = r.json()["project_id"]
 
-    with docx_path.open("rb") as fh:
+    with _patch("app.api.routes.context.get_llm", return_value=_make_m1_mock_llm()), \
+         docx_path.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (docx_path.name, fh, _DOCX_MIME)},

@@ -14,9 +14,33 @@ Expected behaviour after fix:
   - rag_ready reflects M1 context readiness, not M2 test-file indexing
 """
 
+import json as _json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch as _patch
 
 import pytest
+
+
+def _make_m1_mock_llm():
+    _entities = _json.dumps({
+        "entities": [{"id": "e1", "name": "Test Case", "type": "data", "description": "A test scenario"}],
+        "relations": [],
+    })
+    _glossary = _json.dumps([
+        {"term": "Test Case", "definition": "Conditions to verify behaviour.", "related_terms": [], "source": "docs"},
+    ])
+    _approved = _json.dumps({"verdict": "APPROVED"})
+    mock = MagicMock()
+
+    async def _side(prompt, **kwargs):
+        if "entities and their relationships" in prompt:
+            return _entities
+        if "glossary" in prompt.lower() and "documentation" in prompt:
+            return _glossary
+        return _approved
+
+    mock.acomplete = AsyncMock(side_effect=_side)
+    return mock
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _SAMPLE_CSV = _FIXTURES / "sample_tests.csv"
@@ -111,7 +135,8 @@ def test_rag_ready_true_after_m1_build_with_prior_m2_files(app_client):
     assert pre["rag_ready"] is False
 
     # Now run M1 build
-    with _DOCX.open("rb") as fh:
+    with _patch("app.api.routes.context.get_llm", return_value=_make_m1_mock_llm()), \
+         _DOCX.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{pid}/build",
             files={"files": (_DOCX.name, fh, _DOCX_MIME)},
