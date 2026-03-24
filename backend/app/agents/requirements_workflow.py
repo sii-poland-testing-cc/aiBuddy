@@ -701,13 +701,19 @@ No markdown fences."""
         features = copy.deepcopy(features)
         gaps = copy.deepcopy(gaps)
 
+        def _as_dict(item, id_field: str = "title_or_id") -> Dict:
+            """Normalise a bare string item to {id_field: item} so .get() is always safe."""
+            if isinstance(item, str):
+                return {id_field: item}
+            return item if isinstance(item, dict) else {}
+
         # ── 1. Remove hallucinations (no LLM needed) ──────────────────────────
-        for h in issues.get("hallucinations", []):
+        for h in [_as_dict(x) for x in issues.get("hallucinations", [])]:
             features = self._remove_req_by_id(features, h.get("title_or_id", ""))
             logger.debug("Removed hallucination: %s", h.get("title_or_id"))
 
         # ── 2. Merge duplicates (sequential to avoid conflicting mutations) ────
-        for dup in issues.get("duplicates", []):
+        for dup in [_as_dict(x) for x in issues.get("duplicates", [])]:
             fi_a, ri_a = self._find_req(features, dup.get("req_a", ""))
             fi_b, ri_b = self._find_req(features, dup.get("req_b", ""))
             if fi_a is not None and fi_b is not None and (fi_a, ri_a) != (fi_b, ri_b):
@@ -719,7 +725,7 @@ No markdown fences."""
                     features = self._remove_req_by_id(features, dup.get("req_b", ""))
 
         # ── 3. Fix incomplete requirements (parallel) ──────────────────────────
-        incomplete = issues.get("incomplete_requirements", [])
+        incomplete = [_as_dict(x) for x in issues.get("incomplete_requirements", [])]
         if incomplete and self.llm:
             reqs_for_fix = []
             items_for_fix = []
@@ -739,7 +745,7 @@ No markdown fences."""
                         features = self._apply_req_fix(features, item.get("title_or_id", ""), fix)
 
         # ── 4. Add missing acceptance criteria (parallel) ─────────────────────
-        missing_acs = issues.get("missing_acceptance_criteria", [])
+        missing_acs = [_as_dict(x) for x in issues.get("missing_acceptance_criteria", [])]
         if missing_acs and self.llm:
             reqs_for_ac = []
             items_for_ac = []
@@ -759,7 +765,7 @@ No markdown fences."""
                         features = self._apply_acs(features, item.get("title_or_id", ""), acs)
 
         # ── 5. Create missing requirements (parallel) ─────────────────────────
-        missing_reqs = issues.get("missing_requirements", [])
+        missing_reqs = [_as_dict(x) for x in issues.get("missing_requirements", [])]
         if missing_reqs and self.llm:
             new_reqs = await asyncio.gather(
                 *[self._create_req_llm(source_sample, item) for item in missing_reqs],
