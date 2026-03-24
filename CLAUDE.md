@@ -288,7 +288,7 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 - `backend/app/parsers/document_parser.py` — .docx and .pdf parser
 - `backend/app/api/routes/context.py` — M1 SSE + artefact GETs
 - `backend/app/api/routes/chat.py` — M2 SSE; `wyjaśnij termin:` detection; `save_snapshot()`; selection-aware file auto-load; conversational fallback when no files
-- `backend/app/api/routes/projects.py` — Project CRUD; `project_id` is a UUID auto-generated on creation
+- `backend/app/api/routes/projects.py` — Project CRUD + settings endpoints; `project_id` is a UUID auto-generated on creation
 - `backend/app/api/routes/files.py` — File upload (`source_type` param), Chroma indexing, DB metadata, `audit-selection` endpoint
 - `backend/app/api/routes/snapshots.py` — Audit history CRUD (list, trend, latest, delete)
 - `backend/app/db/models.py` — `Project`, `ProjectFile` (`source_type`, `last_used_in_audit_id`), `AuditSnapshot` ORM (SQLAlchemy 2.0 Mapped API)
@@ -308,7 +308,7 @@ alembic stamp head            # mark existing DB as current (first run on existi
 alembic check                 # verify models and DB are in sync
 ```
 
-- `projects` — id, name, description, created_at, mind_map, glossary, context_stats, context_built_at, context_files
+- `projects` — id, name, description, created_at, mind_map, glossary, context_stats, context_built_at, context_files, settings
 - `project_files` — id, project_id, filename, file_path, size_bytes, indexed, uploaded_at, last_used_in_audit_id, source_type
 - `audit_snapshots` — id, project_id, created_at, files_used (JSON), summary (JSON), requirements_uncovered (JSON), recommendations (JSON), diff (JSON)
 - `requirements`, `requirement_tc_mappings`, `coverage_scores` — Faza 2/5+6 tables (see requirements_models.py)

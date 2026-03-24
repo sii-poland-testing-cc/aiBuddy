@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useProjects } from "../lib/useProjects";
 import { useContextStatuses } from "../lib/useContextStatuses";
 import { ProjectOperationsContext } from "../lib/ProjectOperationsContext";
+import ProjectList from "../components/ProjectList";
 
 export default function Home() {
   const router = useRouter();
@@ -55,42 +56,12 @@ export default function Home() {
         </div>
 
         {/* Project list */}
-        <div className="flex flex-col gap-0.5 mb-6">
-          {projects.map((p) => (
-            <button
-              key={p.project_id}
-              onClick={() => router.push(`/chat/${encodeURIComponent(p.project_id)}`)}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-buddy-elevated transition-colors text-left group"
-            >
-              <div className={`w-2 h-2 rounded-full shrink-0 transition-colors ${
-                runningProjects.has(p.project_id)
-                  ? "bg-buddy-gold animate-pulse"
-                  : statuses[p.project_id]
-                    ? "bg-buddy-success"
-                    : "bg-buddy-border-dark"
-              }`} />
-              <div className="flex-1 min-w-0">
-                <span className="block text-sm font-medium text-buddy-text group-hover:text-buddy-gold-light transition-colors truncate">
-                  {p.name}
-                </span>
-                {p.created_at && (
-                  <span className="block text-xs text-buddy-text-dim mt-0.5">
-                    {formatDate(p.created_at)}
-                  </span>
-                )}
-              </div>
-              <span className="text-buddy-text-faint opacity-0 group-hover:opacity-100 transition-opacity">
-                →
-              </span>
-            </button>
-          ))}
-
-          {projects.length === 0 && (
-            <p className="text-center text-xs text-buddy-text-dim py-4">
-              Brak projektów — utwórz pierwszy poniżej.
-            </p>
-          )}
-        </div>
+        <ProjectList
+          projects={projects}
+          runningProjects={runningProjects}
+          statuses={statuses}
+          formatDate={formatDate}
+        />
 
         {/* Create form / dashed button */}
         {creating ? (

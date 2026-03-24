@@ -1,8 +1,9 @@
 """Projects CRUD API"""
 
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -103,3 +104,29 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
     if project:
         await db.delete(project)   # cascades to ProjectFile rows
         await db.commit()
+
+
+@router.get("/{project_id}/settings", response_model=Dict[str, Any])
+async def get_project_settings(project_id: str, db: AsyncSession = Depends(get_db)):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if project.settings:
+        return json.loads(project.settings)
+    return {}
+
+
+@router.put("/{project_id}/settings", response_model=Dict[str, Any])
+async def update_project_settings(
+    project_id: str,
+    body: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    project.name = body.get("name", project.name)
+    project.description = body.get("description", project.description)
+    project.settings = json.dumps(body)
+    await db.commit()
+    return body

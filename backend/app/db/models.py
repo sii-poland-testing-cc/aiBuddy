@@ -42,6 +42,9 @@ class Project(Base):
     )
     context_files: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    settings: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON: arbitrary project-level settings object
+
     files: Mapped[List["ProjectFile"]] = relationship(
         "ProjectFile",
         back_populates="project",
