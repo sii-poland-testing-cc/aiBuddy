@@ -125,10 +125,8 @@ async def update_project_settings(
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    if "name" in body and body["name"]:
-        project.name = body["name"]
-    if "description" in body:
-        project.description = body["description"]
+    project.name = body.get("name", project.name)
+    project.description = body.get("description", project.description)
     project.settings = json.dumps(body)
     await db.commit()
     return body
