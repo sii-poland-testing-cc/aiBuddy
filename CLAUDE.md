@@ -72,8 +72,8 @@ M1 builds a per-project RAG knowledge base from documentation (.docx/.pdf). M2 a
 
 ### Pipeline
 ```
-Parse → Embed → Extract → Assemble
-StartEvent → ParsedDocsEvent → EmbeddedEvent → ExtractedEvent → StopEvent
+Parse → Embed → Extract → Review → Assemble
+StartEvent → ParsedDocsEvent → EmbeddedEvent → ExtractedEvent → ReviewedEvent → StopEvent
 ```
 
 ### Outputs (all three built in one run)
@@ -101,7 +101,7 @@ GET  /api/context/{project_id}/glossary  — [{term, definition, ...}]
 
 ### SSE event format
 ```json
-{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "parse|embed|extract|assemble"}}
+{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "parse|embed|extract|review|assemble"}}
 {"type": "result",   "data": {"project_id": "...", "rag_ready": true, "mind_map": {...}, "glossary": [...], "stats": {...}}}
 {"type": "error",    "data": {"message": "string"}}
 ```
@@ -272,7 +272,7 @@ Controlled by `LLM_PROVIDER` env var. Logic in `backend/app/core/llm.py`.
 - **Write**: `await ctx.store.set("key", value)`
 - **Read**: `value = await ctx.store.get("key")`
 
-Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_builder_workflow.py`.
+Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_builder_workflow.py`, `requirements_workflow.py`.
 
 ---
 
@@ -282,7 +282,7 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 - `backend/app/main.py` — FastAPI app, CORS, route registration, `init_db()` in lifespan
 - `backend/app/core/config.py` — Pydantic settings (all env vars)
 - `backend/app/core/llm.py` — LLM provider factory (`get_llm()`)
-- `backend/app/agents/context_builder_workflow.py` — M1: parse → embed → extract → assemble
+- `backend/app/agents/context_builder_workflow.py` — M1: parse → embed → extract → review → assemble; reflection loop (producer-critic-refine) up to `REFLECTION_MAX_ITERATIONS`
 - `backend/app/agents/audit_workflow.py` — M2 Tier 1: parse → analyse (RAG + req extraction) → report
 - `backend/app/agents/optimize_workflow.py` — M2 Tier 2: prepare → deduplicate → tag
 - `backend/app/parsers/document_parser.py` — .docx and .pdf parser
@@ -388,6 +388,7 @@ Long-running SSE operations (M1 context build, requirements extraction, mapping)
 - `backend/tests/test_m1_m2_integration.py` — full M1→M2 integration: audit trigger, RAG chat, term explanation, requirement coverage, snapshot persistence (saved, diff, max-5)
 - `backend/tests/test_snapshots.py` — 11 tests: snapshots list/trend/latest/delete endpoints + 4 audit-selection tests (new files, used files, URL sources, chat auto-select)
 - `backend/tests/test_rag_ready_isolation.py` — 4 regression tests: `rag_ready` must be False when only M2 files indexed (no M1 build); mindmap/glossary 404 before M1; `rag_ready` becomes True after M1 runs on top of M2 files; fresh project baseline
+- `backend/tests/test_reflection.py` — 15 tests: M1 review step (no-llm passthrough, disabled via `REFLECTION_MAX_ITERATIONS=0`, approved first pass, refines on issues, max-iterations cap, critic/refine failure graceful fallback); Faza 2 review step (same 7 patterns + combined_context passed to critic + rule-based post-processing always runs)
 
 ### Frontend tests (Vitest)
 ```bash
@@ -441,6 +442,8 @@ cd frontend && npm test
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/ai_buddy.db` | |
 | `MAX_UPLOAD_MB` | `50` | |
 | `ALLOWED_EXTENSIONS` | `.xlsx .csv .json .pdf .feature .txt .md .docx` | |
+| `M1_WORKFLOW_TIMEOUT_SECONDS` | `1800` | M1 build timeout; increase for large corpora |
+| `REFLECTION_MAX_ITERATIONS` | `2` | Producer-critic-refine cycles in M1 and Faza 2 workflows; `0` = disabled |
 
 ---
 
@@ -485,7 +488,7 @@ M1: Context Builder  ──→  Faza 2: Requirements Extraction
 ```
 Faza 2: Requirements Reconstruction
   POST /api/requirements/{project_id}/extract  (SSE)
-  Workflow: Extract → Validate → Persist
+  Workflow: Extract → Review → Persist
   Input:  M1 RAG context (multiple queries)
   Output: Hierarchical requirements registry in DB
   Tables: requirements (hierarchical, with confidence + human_reviewed)
@@ -501,7 +504,7 @@ Faza 5+6: Semantic Mapping & Coverage Scoring
 ### Key Files (Faza 2/5/6)
 
 - `backend/app/db/requirements_models.py` — `Requirement`, `RequirementTCMapping`, `CoverageScore` ORM models (share `Base` with `models.py`)
-- `backend/app/agents/requirements_workflow.py` — Faza 2: LlamaIndex Workflow (Extract → Validate → Persist)
+- `backend/app/agents/requirements_workflow.py` — Faza 2: LlamaIndex Workflow (Extract → Review → Persist); reflection loop with critic checking missing/duplicate/hallucinated requirements; rule-based post-processing always runs after reflection
 - `backend/app/agents/mapping_workflow.py` — Faza 5+6: LlamaIndex Workflow (Load → CoarseMatch → FineMatch → Score → Persist)
 - `backend/app/agents/audit_workflow_integration.py` — Bridge: audit uses Faza 5+6 scores → Faza 2 registry → legacy extraction (3-tier priority)
 - `backend/app/api/routes/requirements.py` — Faza 2 API: SSE extract, CRUD, stats, gaps, human review
@@ -577,7 +580,7 @@ When `compute_registry_coverage()` runs during an M2 audit:
 
 Three levels, merged:
 - **Level 0 — Pattern**: TC text contains requirement ID literally (e.g. "FR-017"). Confidence: 0.95
-- **Level 1 — Embedding**: cosine similarity > 0.58 between requirement and TC embeddings. Confident > 0.78, ambiguous 0.58–0.78
+- **Level 1 — Embedding**: cosine similarity > 0.65 between requirement and TC embeddings. Confident > 0.78, ambiguous 0.65–0.78
 - **Level 2 — LLM**: evaluates ambiguous pairs. Returns COVERS/PARTIAL/NO + coverage_aspects
 
 ### Scoring Model (Faza 6)
@@ -615,7 +618,7 @@ DELETE /api/mapping/{project_id}                   — wipe mappings + scores
 ### SSE Event Format (same as M1/M2)
 
 ```json
-{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "extract|validate|persist|load|coarse|fine|score"}}
+{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "extract|review|persist|load|coarse|fine|score"}}
 {"type": "result",   "data": { ... }}
 {"type": "error",    "data": {"message": "string"}}
 ```
