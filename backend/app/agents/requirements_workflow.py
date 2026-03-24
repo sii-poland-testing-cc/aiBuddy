@@ -819,8 +819,10 @@ No markdown fences."""
             })
 
             for req in feature.get("requirements", []):
+                if not isinstance(req, dict):
+                    continue
                 req_id = str(uuid.uuid4())
-                confidence = req.get("confidence", 0.5)
+                confidence = float(req.get("confidence") or 0.5)
                 needs_review = req.get("needs_review", confidence < 0.7)
 
                 flat.append({
@@ -842,7 +844,9 @@ No markdown fences."""
                 })
 
                 for ac in req.get("acceptance_criteria", []):
-                    ac_confidence = ac.get("confidence", confidence * 0.9)
+                    if not isinstance(ac, dict):
+                        ac = {"title": str(ac), "description": "", "testability": "medium"}
+                    ac_confidence = float(ac.get("confidence") or confidence * 0.9)
                     flat.append({
                         "id": str(uuid.uuid4()),
                         "project_id": project_id,
