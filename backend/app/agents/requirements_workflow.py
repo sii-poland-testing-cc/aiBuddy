@@ -209,6 +209,8 @@ class RequirementsWorkflow(Workflow):
     }
     """
 
+    MAX_CONCURRENT_REFINE = 4  # max parallel LLM calls during per-issue refinement
+
     def __init__(self, llm=None, **kwargs):
         super().__init__(**kwargs)
         self.llm = llm
@@ -726,12 +728,17 @@ No markdown fences."""
 
         features = copy.deepcopy(features)
         gaps = copy.deepcopy(gaps)
+        sem = asyncio.Semaphore(self.MAX_CONCURRENT_REFINE)
 
         def _as_dict(item, id_field: str = "title_or_id") -> Dict:
             """Normalise a bare string item to {id_field: item} so .get() is always safe."""
             if isinstance(item, str):
                 return {id_field: item}
             return item if isinstance(item, dict) else {}
+
+        async def _guarded(coro):
+            async with sem:
+                return await coro
 
         # ── 1. Remove hallucinations (no LLM needed) ──────────────────────────
         for h in [_as_dict(x) for x in issues.get("hallucinations", [])]:
@@ -750,7 +757,7 @@ No markdown fences."""
                     features = self._apply_req_fix(features, dup.get("req_a", ""), merged)
                     features = self._remove_req_by_id(features, dup.get("req_b", ""))
 
-        # ── 3. Fix incomplete requirements (parallel) ──────────────────────────
+        # ── 3. Fix incomplete requirements (parallel, rate-limited) ───────────
         incomplete = [_as_dict(x) for x in issues.get("incomplete_requirements", [])]
         if incomplete and self.llm:
             reqs_for_fix = []
@@ -762,7 +769,7 @@ No markdown fences."""
                     items_for_fix.append(item)
             if reqs_for_fix:
                 fixes = await asyncio.gather(
-                    *[self._fix_req_llm(source_sample, req, item)
+                    *[_guarded(self._fix_req_llm(source_sample, req, item))
                       for req, item in zip(reqs_for_fix, items_for_fix)],
                     return_exceptions=True,
                 )
@@ -770,7 +777,7 @@ No markdown fences."""
                     if isinstance(fix, dict):
                         features = self._apply_req_fix(features, item.get("title_or_id", ""), fix)
 
-        # ── 4. Add missing acceptance criteria (parallel) ─────────────────────
+        # ── 4. Add missing acceptance criteria (parallel, rate-limited) ───────
         missing_acs = [_as_dict(x) for x in issues.get("missing_acceptance_criteria", [])]
         if missing_acs and self.llm:
             reqs_for_ac = []
@@ -782,7 +789,7 @@ No markdown fences."""
                     items_for_ac.append(item)
             if reqs_for_ac:
                 ac_results = await asyncio.gather(
-                    *[self._add_acs_llm(source_sample, req, item, project_id)
+                    *[_guarded(self._add_acs_llm(source_sample, req, item, project_id))
                       for req, item in zip(reqs_for_ac, items_for_ac)],
                     return_exceptions=True,
                 )
@@ -790,11 +797,11 @@ No markdown fences."""
                     if isinstance(acs, list):
                         features = self._apply_acs(features, item.get("title_or_id", ""), acs)
 
-        # ── 5. Create missing requirements (parallel) ─────────────────────────
+        # ── 5. Create missing requirements (parallel, rate-limited) ───────────
         missing_reqs = [_as_dict(x) for x in issues.get("missing_requirements", [])]
         if missing_reqs and self.llm:
             new_reqs = await asyncio.gather(
-                *[self._create_req_llm(source_sample, item, project_id) for item in missing_reqs],
+                *[_guarded(self._create_req_llm(source_sample, item, project_id)) for item in missing_reqs],
                 return_exceptions=True,
             )
             for item, new_req in zip(missing_reqs, new_reqs):
