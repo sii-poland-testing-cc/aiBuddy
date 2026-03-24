@@ -64,6 +64,13 @@ class ExtractedEvent(Event):
     terms: List[Dict]
 
 
+class ReviewedEvent(Event):
+    """Output of the Review step — replaces ExtractedEvent going into Assemble."""
+    entities: List[Dict]
+    relations: List[Dict]
+    terms: List[Dict]
+
+
 class ProgressEvent(Event):
     message: str
     progress: float              # 0.0–1.0
@@ -200,10 +207,66 @@ class ContextBuilderWorkflow(Workflow):
 
         return ExtractedEvent(entities=entities, relations=relations, terms=terms)
 
-    # ── Step 4: Assemble ──────────────────────────────────────────────────────
+    # ── Step 4: Review (Producer-Reviewer reflection) ─────────────────────────
 
     @step
-    async def assemble(self, ctx: Context, ev: ExtractedEvent) -> StopEvent:
+    async def review(self, ctx: Context, ev: ExtractedEvent) -> ReviewedEvent:
+        from app.core.config import settings
+
+        max_iter = settings.REFLECTION_MAX_ITERATIONS
+        if max_iter == 0 or not self.llm:
+            # Reflection disabled or no LLM — pass through
+            return ReviewedEvent(
+                entities=ev.entities,
+                relations=ev.relations,
+                terms=ev.terms,
+            )
+
+        docs: List[Dict] = await ctx.store.get("docs")
+        source_sample = self._combine_text(docs)[:6_000]
+
+        entities, relations, terms = ev.entities, ev.relations, ev.terms
+
+        for iteration in range(1, max_iter + 1):
+            ctx.write_event_to_stream(ProgressEvent(
+                message=f"Reviewing extracted knowledge (pass {iteration}/{max_iter})…",
+                progress=0.82 + 0.04 * (iteration - 1),
+                stage="review",
+            ))
+
+            issues = await self._review_extraction(source_sample, entities, relations, terms)
+
+            if issues.get("verdict") == "APPROVED":
+                ctx.write_event_to_stream(ProgressEvent(
+                    message=f"✓ Knowledge approved on pass {iteration}",
+                    progress=0.82 + 0.04 * iteration,
+                    stage="review",
+                ))
+                break
+
+            issue_count = (
+                len(issues.get("missing_entities", []))
+                + len(issues.get("duplicate_entities", []))
+                + len(issues.get("missing_terms", []))
+                + len(issues.get("vague_definitions", []))
+                + len(issues.get("orphan_nodes", []))
+            )
+            ctx.write_event_to_stream(ProgressEvent(
+                message=f"Reviewer found {issue_count} issue(s) — refining…",
+                progress=0.82 + 0.04 * iteration,
+                stage="review",
+            ))
+
+            entities, relations, terms = await self._refine_extraction(
+                source_sample, entities, relations, terms, issues
+            )
+
+        return ReviewedEvent(entities=entities, relations=relations, terms=terms)
+
+    # ── Step 5: Assemble ──────────────────────────────────────────────────────
+
+    @step
+    async def assemble(self, ctx: Context, ev: ReviewedEvent) -> StopEvent:
         project_id = await ctx.store.get("project_id")
 
         ctx.write_event_to_stream(ProgressEvent(
@@ -296,6 +359,119 @@ Documentation:
         except Exception as e:
             logger.warning(f"Glossary extraction failed: {e}, using mock data")
             return self._mock_glossary()
+
+    # ── Reflection helpers ────────────────────────────────────────────────────
+
+    async def _review_extraction(
+        self,
+        source_sample: str,
+        entities: List[Dict],
+        relations: List[Dict],
+        terms: List[Dict],
+    ) -> Dict:
+        """Critic call: evaluate quality of extracted entities + glossary."""
+        entities_json = json.dumps(entities[:60], ensure_ascii=False)
+        relations_json = json.dumps(relations[:80], ensure_ascii=False)
+        terms_json = json.dumps(terms[:60], ensure_ascii=False)
+
+        prompt = f"""You are a senior domain knowledge architect performing a critical quality review.
+You will be given:
+1. A sample of the source documentation
+2. Extracted domain entities and relationships (mind map)
+3. Extracted glossary terms
+
+Your task: find flaws. Be specific, not exhaustive. Focus on the most impactful issues only.
+
+Return ONLY valid JSON — no preamble, no markdown fences:
+{{
+  "verdict": "APPROVED" | "NEEDS_REVISION",
+  "missing_entities": ["name of entity clearly present in source but not extracted"],
+  "duplicate_entities": [["name1", "name2"]],
+  "orphan_nodes": ["entity id with no edges"],
+  "missing_terms": ["term clearly in source but absent from glossary"],
+  "vague_definitions": [{{"term": "...", "issue": "why the definition is insufficient"}}]
+}}
+
+Rules:
+- Return "APPROVED" when you find no meaningful issues.
+- List at most 5 items per category — prioritise the most impactful gaps.
+- Do NOT invent entities or terms not present in the source.
+
+Source documentation (sample):
+{source_sample}
+
+Extracted entities ({len(entities)} total):
+{entities_json}
+
+Extracted relations ({len(relations)} total):
+{relations_json}
+
+Glossary terms ({len(terms)} total):
+{terms_json}
+"""
+        try:
+            response = await self.llm.acomplete(prompt)
+            raw = _strip_fences(str(response).strip())
+            return json.loads(raw)
+        except Exception as e:
+            logger.warning("Review LLM call failed (%s) — treating as APPROVED", e)
+            return {"verdict": "APPROVED"}
+
+    async def _refine_extraction(
+        self,
+        source_sample: str,
+        entities: List[Dict],
+        relations: List[Dict],
+        terms: List[Dict],
+        issues: Dict,
+    ) -> tuple:
+        """Producer second pass: fix issues identified by the critic."""
+        issues_json = json.dumps(issues, ensure_ascii=False, indent=2)
+        entities_json = json.dumps(entities, ensure_ascii=False)
+        relations_json = json.dumps(relations, ensure_ascii=False)
+        terms_json = json.dumps(terms, ensure_ascii=False)
+
+        prompt = f"""You are a domain analyst. You previously extracted entities and a glossary.
+A reviewer identified the following issues:
+{issues_json}
+
+Produce a corrected version that addresses every issue:
+- Add any missing_entities (use the next available numeric ID, e.g. "e{len(entities)+1}")
+- Merge or remove duplicate_entities (keep the more descriptive name, update all relation references)
+- Add edges for any orphan_nodes where a relationship is inferable from the source
+- Add any missing_terms to the glossary with clear, non-circular definitions
+- Improve vague_definitions in the glossary
+
+Return ONLY valid JSON — no preamble, no markdown fences:
+{{
+  "entities": [...],
+  "relations": [...],
+  "terms": [...]
+}}
+
+Source documentation (sample):
+{source_sample}
+
+Current entities:
+{entities_json}
+
+Current relations:
+{relations_json}
+
+Current glossary terms:
+{terms_json}
+"""
+        try:
+            response = await self.llm.acomplete(prompt)
+            raw = _strip_fences(str(response).strip())
+            data = json.loads(raw)
+            refined_entities = data.get("entities", entities)
+            refined_relations = data.get("relations", relations)
+            refined_terms = data.get("terms", terms)
+            return refined_entities, refined_relations, refined_terms
+        except Exception as e:
+            logger.warning("Refine LLM call failed (%s) — keeping previous extraction", e)
+            return entities, relations, terms
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

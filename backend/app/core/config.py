@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # M1 workflow timeout (seconds); large corpora with many batches need more time
     M1_WORKFLOW_TIMEOUT_SECONDS: int = 1800
 
+    # M1 reflection: max producer→critic→refine cycles (0 = disabled)
+    REFLECTION_MAX_ITERATIONS: int = 2
+
     # File uploads
     UPLOAD_DIR: str = "./data/uploads"
     MAX_UPLOAD_MB: int = 50
