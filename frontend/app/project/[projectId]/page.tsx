@@ -101,6 +101,9 @@ export default function ProjectPage() {
   const projectId = decodeURIComponent(params.projectId);
   const searchParams = useSearchParams();
 
+  // ── Project settings (for Jira config) ─────────────────────────────────────
+  const [projectSettings, setProjectSettings] = useState<{ jira_url?: string; jira_api_key?: string }>({});
+
   // ── Core state ──────────────────────────────────────────────────────────────
   const initialMode = (() => {
     const m = searchParams.get("mode");
@@ -171,6 +174,14 @@ export default function ProjectPage() {
 
   // Refresh context status on mount
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  // Load project settings (for Jira config)
+  useEffect(() => {
+    fetch(`${API_BASE}/api/projects/${projectId}/settings`)
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((s) => setProjectSettings(s))
+      .catch(() => {});
+  }, [projectId]);
 
   // ── Derived data ────────────────────────────────────────────────────────────
   const mindMapNodes = ctxResult?.mind_map?.nodes ?? [];
@@ -278,6 +289,43 @@ export default function ProjectPage() {
     setActiveMode(mode);
     setTier(mode === "context" ? "rag_chat" : "audit");
   }, []);
+
+  const handleAddJiraIssue = useCallback(async (issueKey: string) => {
+    try {
+      if (activeMode === "context") {
+        const res = await fetch(`${API_BASE}/api/context/${projectId}/jira`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ issue_key: issueKey }),
+        });
+        if (res.ok) fetchStatus();
+      } else {
+        const res = await fetch(`${API_BASE}/api/files/${projectId}/jira`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ issue_key: issueKey }),
+        });
+        if (res.ok) setRefreshKey((k) => k + 1);
+      }
+    } catch { /* ignore */ }
+  }, [projectId, activeMode, fetchStatus]);
+
+  const handleDeleteJiraIssue = useCallback(async (fileId: string) => {
+    try {
+      if (fileId.startsWith("jira:")) {
+        const issueKey = fileId.slice(5);
+        const res = await fetch(`${API_BASE}/api/context/${projectId}/jira/${encodeURIComponent(issueKey)}`, {
+          method: "DELETE",
+        });
+        if (res.ok) fetchStatus();
+      } else {
+        const res = await fetch(`${API_BASE}/api/files/${projectId}/${encodeURIComponent(fileId)}`, {
+          method: "DELETE",
+        });
+        if (res.ok) setRefreshKey((k) => k + 1);
+      }
+    } catch { /* ignore */ }
+  }, [projectId, fetchStatus]);
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -439,6 +487,9 @@ export default function ProjectPage() {
           pendingContextFiles={pendingContextFiles.map((f) => f.name)}
           onAddFiles={activeMode === "context" ? handleContextAddFiles : handleAttachFiles}
           onFileToggle={handleFileToggle}
+          projectSettings={projectSettings}
+          onAddJiraIssue={handleAddJiraIssue}
+          onDeleteJiraIssue={handleDeleteJiraIssue}
           onOpenMindMap={() => setMmModalOpen(true)}
           glossary={ctxGlossary}
           onTermClick={handleUtilityTermClick}

@@ -7,9 +7,10 @@ import type { HeatmapRow } from "../lib/useHeatmap";
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const FILES: PanelFile[] = [
-  { id: "f1", filename: "new_suite.xlsx", file_path: "/f1", source_type: "file", selected: true,  isNew: true  },
-  { id: "f2", filename: "old_tests.csv",  file_path: "/f2", source_type: "file", selected: false, isNew: false },
-  { id: "f3", filename: "conf_page",      file_path: "/f3", source_type: "confluence", selected: true, isNew: false },
+  { id: "f1", filename: "new_suite.xlsx", file_path: "/f1", source_type: "file",      selected: true,  isNew: true  },
+  { id: "f2", filename: "old_tests.csv",  file_path: "/f2", source_type: "file",      selected: false, isNew: false },
+  { id: "f3", filename: "conf_page",      file_path: "/f3", source_type: "confluence",selected: true,  isNew: false },
+  { id: "f4", filename: "PROJ-42",        file_path: "jira:PROJ-42", source_type: "jira", selected: true, isNew: false },
 ];
 
 const GLOSSARY = [
@@ -128,10 +129,62 @@ describe("UtilityPanel", () => {
     expect(screen.getByText("NEW")).toBeInTheDocument();
   });
 
-  it("switching to Links tab shows link sources (audit mode)", async () => {
+  it("switching to Links tab shows confluence sources, not jira (audit mode)", async () => {
     renderPanel("audit", { auditFiles: FILES });
     await userEvent.click(screen.getByTestId("src-tab-links"));
     expect(screen.getByText("conf_page")).toBeInTheDocument();
+    expect(screen.queryByText("PROJ-42")).not.toBeInTheDocument();
+  });
+
+  it("Jira tab is visible in audit mode", () => {
+    renderPanel("audit", { auditFiles: FILES });
+    expect(screen.getByTestId("src-tab-jira")).toBeInTheDocument();
+  });
+
+  it("Jira tab shows overlay when projectSettings lacks jira_url/jira_api_key", async () => {
+    renderPanel("audit", { auditFiles: FILES });
+    await userEvent.click(screen.getByTestId("src-tab-jira"));
+    expect(screen.getByTestId("jira-config-overlay")).toBeInTheDocument();
+  });
+
+  it("Jira tab shows jira items when configured", async () => {
+    renderPanel("audit", {
+      auditFiles: FILES,
+      projectSettings: { jira_url: "https://acme.atlassian.net", jira_api_key: "key" },
+    });
+    await userEvent.click(screen.getByTestId("src-tab-jira"));
+    expect(screen.queryByTestId("jira-config-overlay")).not.toBeInTheDocument();
+    expect(screen.getByText("PROJ-42")).toBeInTheDocument();
+  });
+
+  it("Jira item shows delete button on hover, clicking calls onDeleteJiraIssue", async () => {
+    const onDeleteJiraIssue = vi.fn();
+    renderPanel("audit", {
+      auditFiles: FILES,
+      projectSettings: { jira_url: "https://acme.atlassian.net", jira_api_key: "key" },
+      onDeleteJiraIssue,
+    });
+    await userEvent.click(screen.getByTestId("src-tab-jira"));
+    await userEvent.click(screen.getByTestId("jira-delete-btn"));
+    expect(onDeleteJiraIssue).toHaveBeenCalledWith("f4");
+  });
+
+  it("Jira tab add button calls onAddJiraIssue", async () => {
+    const onAddJiraIssue = vi.fn();
+    renderPanel("audit", {
+      auditFiles: FILES,
+      projectSettings: { jira_url: "https://acme.atlassian.net", jira_api_key: "key" },
+      onAddJiraIssue,
+    });
+    await userEvent.click(screen.getByTestId("src-tab-jira"));
+    await userEvent.type(screen.getByTestId("jira-issue-input"), "PROJ-99");
+    await userEvent.click(screen.getByTestId("jira-add-btn"));
+    expect(onAddJiraIssue).toHaveBeenCalledWith("PROJ-99");
+  });
+
+  it("Jira tab is visible in context mode", () => {
+    renderPanel("context", { auditFiles: FILES });
+    expect(screen.getByTestId("src-tab-jira")).toBeInTheDocument();
   });
 
   it("context mode sources card shows contextStatus.context_files, not auditFiles", () => {

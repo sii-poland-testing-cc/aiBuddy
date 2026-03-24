@@ -15,7 +15,7 @@ vi.mock("next/navigation", () => ({
 // ── fetch helpers ─────────────────────────────────────────────────────────────
 
 const PROJECT = { project_id: "proj-1", name: "PayFlow QA", description: "Opis testowy" };
-const SETTINGS = { name: "PayFlow QA", description: "Opis testowy" };
+const SETTINGS = { name: "PayFlow QA", description: "Opis testowy", jira_url: "https://acme.atlassian.net", jira_user_email: "user@acme.com", jira_api_key: "secret-key" };
 
 function mockFetch(projectOk = true, settingsBody: object = SETTINGS, saveOk = true) {
   vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
@@ -132,5 +132,85 @@ describe("ProjectSettingsPage", () => {
     await waitFor(() =>
       expect(screen.getByText("Nie udało się zapisać ustawień.")).toBeInTheDocument()
     );
+  });
+
+  it("renders jira_url and jira_api_key fields", async () => {
+    mockFetch();
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByDisplayValue("PayFlow QA"));
+    expect(screen.getByPlaceholderText(/atlassian/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/API key/i)).toBeInTheDocument();
+  });
+
+  it("loads jira_url from settings", async () => {
+    mockFetch();
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByDisplayValue("https://acme.atlassian.net"));
+  });
+
+  it("test jira button is hidden when fields are empty", async () => {
+    mockFetch(true, { name: "PayFlow QA", description: "" });
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByDisplayValue("PayFlow QA"));
+    expect(screen.queryByText(/Testuj połączenie/)).not.toBeInTheDocument();
+  });
+
+  it("test jira button is visible when all three jira fields are filled", async () => {
+    mockFetch();
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByDisplayValue("https://acme.atlassian.net"));
+    expect(screen.getByText("Testuj połączenie Jira")).toBeInTheDocument();
+  });
+
+  it("loads jira_user_email from settings", async () => {
+    mockFetch();
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByDisplayValue("user@acme.com"));
+  });
+
+  it("shows success result after successful jira test", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if ((url as string).includes("test-jira")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, detail: "Połączono jako: John" }) });
+      }
+      if (init?.method === "PUT") return Promise.resolve({ ok: true, json: () => Promise.resolve(SETTINGS) });
+      if ((url as string).includes("/settings")) return Promise.resolve({ ok: true, json: () => Promise.resolve(SETTINGS) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(PROJECT) });
+    }));
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByText("Testuj połączenie Jira"));
+    await userEvent.click(screen.getByText("Testuj połączenie Jira"));
+    await waitFor(() => expect(screen.getByText(/Połączono jako/)).toBeInTheDocument());
+  });
+
+  it("shows error result after failed jira test", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if ((url as string).includes("test-jira")) {
+        return Promise.resolve({ ok: false, json: () => Promise.resolve({ ok: false, detail: "Nieautoryzowany. Sprawdź API key." }) });
+      }
+      if (init?.method === "PUT") return Promise.resolve({ ok: true, json: () => Promise.resolve(SETTINGS) });
+      if ((url as string).includes("/settings")) return Promise.resolve({ ok: true, json: () => Promise.resolve(SETTINGS) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(PROJECT) });
+    }));
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByText("Testuj połączenie Jira"));
+    await userEvent.click(screen.getByText("Testuj połączenie Jira"));
+    await waitFor(() => expect(screen.getByText(/Nieautoryzowany/)).toBeInTheDocument());
+  });
+
+  it("saves jira_url and jira_api_key in PUT payload", async () => {
+    mockFetch();
+    render(<ProjectSettingsPage />);
+    await waitFor(() => screen.getByDisplayValue("PayFlow QA"));
+    await userEvent.click(screen.getByRole("button", { name: /Zapisz/ }));
+    await waitFor(() => {
+      const calls = vi.mocked(fetch).mock.calls;
+      const putCall = calls.find(([, init]) => (init as RequestInit)?.method === "PUT");
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse((putCall![1] as RequestInit).body as string);
+      expect(body.jira_url).toBe("https://acme.atlassian.net");
+      expect(body.jira_user_email).toBe("user@acme.com");
+      expect(body.jira_api_key).toBe("secret-key");
+    });
   });
 });

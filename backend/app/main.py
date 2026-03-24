@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import chat, projects, files, context, snapshots
 from app.api.routes.mapping import router as mapping_router
+from app.api.routes.project_settings import router as project_settings_router
 from app.api.routes.requirements import router as requirements_router
 from app.core.config import settings
 from app.db.engine import init_db
@@ -55,7 +56,8 @@ app.add_middleware(
 app.include_router(context.router,      prefix="/api/context",      tags=["M1 – Context Builder"])
 app.include_router(snapshots.router,    prefix="/api/snapshots",    tags=["Audit Snapshots"])
 app.include_router(chat.router,         prefix="/api/chat",         tags=["Chat"])
-app.include_router(projects.router,     prefix="/api/projects",     tags=["Projects"])
+app.include_router(projects.router,          prefix="/api/projects",     tags=["Projects"])
+app.include_router(project_settings_router,  prefix="/api/projects/{project_id}", tags=["Projects"])
 app.include_router(files.router,        prefix="/api/files",        tags=["Files"])
 app.include_router(requirements_router, prefix="/api/requirements", tags=["requirements"])
 app.include_router(mapping_router,      prefix="/api/mapping",      tags=["mapping"])

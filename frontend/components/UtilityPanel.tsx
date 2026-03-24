@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { GlossaryTerm, ContextStatus } from "../lib/useContextBuilder";
 import { HeatmapRow } from "../lib/useHeatmap";
 import { MappingProgress } from "../lib/useMapping";
@@ -46,6 +47,9 @@ interface UtilityPanelProps {
   auditFiles?: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  projectSettings?: { jira_url?: string; jira_api_key?: string };
+  onAddJiraIssue?: (issueKey: string) => void;
+  onDeleteJiraIssue?: (fileId: string) => void;
   // Mind Map
   onOpenMindMap?: () => void;
   // Glossary
@@ -172,26 +176,52 @@ function PanelCard({
 
 function SourcesCard({
   cardId,
+  projectId,
   auditFiles = [],
   onAddFiles,
   onFileToggle,
+  showJiraTab = false,
+  projectSettings,
+  onAddJiraIssue,
+  onDeleteJiraIssue,
 }: {
   cardId: string;
+  projectId?: string;
   auditFiles: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  showJiraTab?: boolean;
+  projectSettings?: { jira_url?: string; jira_api_key?: string };
+  onAddJiraIssue?: (issueKey: string) => void;
+  onDeleteJiraIssue?: (fileId: string) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"files" | "links">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "links" | "jira">("files");
+  const [jiraInput, setJiraInput] = useState("");
 
   const newFiles  = auditFiles.filter((f) => f.source_type === "file" && f.isNew);
   const usedFiles = auditFiles.filter((f) => f.source_type === "file" && !f.isNew);
-  const links     = auditFiles.filter((f) => f.source_type !== "file");
+  const links     = auditFiles.filter((f) => f.source_type === "url" || f.source_type === "confluence");
+  const jiraItems = auditFiles.filter((f) => f.source_type === "jira");
+
+  const jiraConfigured = !!(projectSettings?.jira_url && projectSettings?.jira_api_key);
 
   const linkBadgeStyle = (type: string) => {
     if (type === "confluence") return { bg: "rgba(91,127,186,0.2)", color: "#5b7fba" };
-    if (type === "jira")       return { bg: "rgba(74,158,107,0.15)", color: "#6dc28a" };
     return { bg: "var(--surface3)", color: "var(--text-dim)" };
   };
+
+  const handleAddJira = () => {
+    const key = jiraInput.trim();
+    if (!key) return;
+    onAddJiraIssue?.(key);
+    setJiraInput("");
+  };
+
+  const tabs = showJiraTab
+    ? (["files", "links", "jira"] as const)
+    : (["files", "links"] as const);
+
+  const tabLabel: Record<string, string> = { files: "Pliki", links: "Linki", jira: "Jira" };
 
   return (
     <PanelCard id={cardId} icon="📎" title="Źródła" defaultOpen>
@@ -200,7 +230,7 @@ function SourcesCard({
         className="flex bg-buddy-base"
         style={{ gap: 2, marginBottom: 8, borderRadius: 4, padding: 2 }}
       >
-        {(["files", "links"] as const).map((tab) => (
+        {tabs.map((tab) => (
           <button
             key={tab}
             data-testid={`src-tab-${tab}`}
@@ -212,7 +242,7 @@ function SourcesCard({
             }`}
             style={{ padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer" }}
           >
-            {tab === "files" ? "Pliki" : "Linki"}
+            {tabLabel[tab]}
           </button>
         ))}
       </div>
@@ -248,8 +278,7 @@ function SourcesCard({
             <div className="flex flex-col">
               {links.map((f) => {
                 const style = linkBadgeStyle(f.source_type);
-                const label = f.source_type === "confluence" ? "CONF"
-                  : f.source_type === "jira" ? "JIRA" : "URL";
+                const label = f.source_type === "confluence" ? "CONF" : "URL";
                 return (
                   <div
                     key={f.id}
@@ -287,6 +316,108 @@ function SourcesCard({
             </p>
           )}
           <AddButton onClick={onAddFiles}>+ Dodaj link</AddButton>
+        </div>
+      )}
+
+      {/* Jira tab */}
+      {activeTab === "jira" && (
+        <div className="relative">
+          {/* Overlay when Jira not configured */}
+          {!jiraConfigured && (
+            <div
+              data-testid="jira-config-overlay"
+              className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded"
+              style={{ background: "rgba(15,13,10,0.82)", backdropFilter: "blur(2px)", zIndex: 10, padding: 16 }}
+            >
+              <span style={{ fontSize: 20 }}>🔑</span>
+              <p className="text-buddy-text-muted text-center" style={{ fontSize: 11, lineHeight: 1.5 }}>
+                Skonfiguruj adres serwera Jira i API Key w{" "}
+                {projectId ? (
+                  <Link
+                    href={`/project/${encodeURIComponent(projectId)}/settings`}
+                    className="text-buddy-gold-light hover:underline font-semibold"
+                  >
+                    Ustawieniach projektu
+                  </Link>
+                ) : (
+                  <strong className="text-buddy-gold-light">Ustawieniach projektu</strong>
+                )}
+                , aby dodawać zgłoszenia jako źródła.
+              </p>
+            </div>
+          )}
+
+          {/* Jira issues list */}
+          {jiraItems.length > 0 ? (
+            <div className="flex flex-col" style={{ marginBottom: 8 }}>
+              {jiraItems.map((f) => (
+                <div
+                  key={f.id}
+                  className="group flex items-center gap-2 border-b border-buddy-border"
+                  style={{ padding: "5px 0" }}
+                >
+                  <input
+                    type="checkbox"
+                    defaultChecked={f.selected}
+                    disabled
+                    style={{ accentColor: "#c8902a", cursor: "not-allowed" }}
+                  />
+                  <span
+                    className="font-mono font-bold shrink-0"
+                    style={{
+                      fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                      background: "rgba(74,158,107,0.15)", color: "#6dc28a",
+                    }}
+                  >
+                    JIRA
+                  </span>
+                  <span
+                    className="font-mono text-buddy-text-muted flex-1 overflow-hidden"
+                    style={{ fontSize: 10, textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {f.filename}
+                  </span>
+                  <button
+                    data-testid="jira-delete-btn"
+                    onClick={() => onDeleteJiraIssue?.(f.id)}
+                    title="Usuń"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-buddy-text-dim hover:text-red-400"
+                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-buddy-text-faint" style={{ fontSize: 11, textAlign: "center", padding: "8px 0" }}>
+              Brak zgłoszeń Jira
+            </p>
+          )}
+
+          {/* Input + add */}
+          <div className="flex gap-1.5" style={{ marginTop: 4 }}>
+            <input
+              data-testid="jira-issue-input"
+              type="text"
+              value={jiraInput}
+              onChange={(e) => setJiraInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAddJira()}
+              placeholder="np. PROJ-123"
+              className="flex-1 bg-buddy-elevated border border-buddy-border text-buddy-text placeholder:text-buddy-text-faint focus:outline-none focus:border-buddy-gold transition-colors font-mono"
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 11 }}
+            />
+            <button
+              data-testid="jira-add-btn"
+              onClick={handleAddJira}
+              disabled={!jiraInput.trim()}
+              className="flex items-center justify-center border border-buddy-border text-buddy-text-muted hover:border-buddy-gold hover:text-buddy-gold-light disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              style={{ width: 28, height: 28, borderRadius: 4, fontSize: 16, background: "none", cursor: "pointer", flexShrink: 0 }}
+              title="Dodaj zgłoszenie Jira"
+            >
+              +
+            </button>
+          </div>
         </div>
       )}
     </PanelCard>
@@ -468,9 +599,13 @@ function MindMapThumbnail() {
 export default function UtilityPanel({
   open,
   activeMode,
+  projectId,
   auditFiles = [],
   onAddFiles = () => console.log("onAddFiles"),
   onFileToggle,
+  projectSettings,
+  onAddJiraIssue,
+  onDeleteJiraIssue,
   onOpenMindMap = () => console.log("onOpenMindMap"),
   glossary = [],
   onTermClick,
@@ -538,17 +673,25 @@ export default function UtilityPanel({
                   })),
                   ...(contextStatus?.context_files ?? [])
                     .filter((f) => !pendingContextFiles.includes(f))
-                    .map((filename) => ({
-                      id: filename,
-                      filename,
-                      file_path: filename,
-                      source_type: "file" as const,
-                      selected: true,
-                      isNew: false,
-                    })),
+                    .map((entry) => {
+                      const isJira = entry.startsWith("jira:");
+                      return {
+                        id: entry,
+                        filename: isJira ? entry.slice(5) : entry,
+                        file_path: entry,
+                        source_type: (isJira ? "jira" : "file") as PanelFile["source_type"],
+                        selected: true,
+                        isNew: false,
+                      };
+                    }),
                 ]}
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
+                showJiraTab
+                projectId={projectId}
+                projectSettings={projectSettings}
+                onAddJiraIssue={onAddJiraIssue}
+                onDeleteJiraIssue={onDeleteJiraIssue}
               />
 
               {/* Mind Map */}
@@ -717,9 +860,14 @@ export default function UtilityPanel({
             <div data-testid="panel-mode-requirements" className="flex flex-col" style={{ gap: 6 }}>
               <SourcesCard
                 cardId="sources-requirements"
+                projectId={projectId}
                 auditFiles={auditFiles}
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
+                showJiraTab
+                projectSettings={projectSettings}
+                onAddJiraIssue={onAddJiraIssue}
+                onDeleteJiraIssue={onDeleteJiraIssue}
               />
 
               {/* Heatmap — read-only result of last mapping run */}
@@ -778,9 +926,14 @@ export default function UtilityPanel({
 
               <SourcesCard
                 cardId="sources-audit"
+                projectId={projectId}
                 auditFiles={auditFiles}
                 onAddFiles={onAddFiles}
                 onFileToggle={onFileToggle}
+                showJiraTab
+                projectSettings={projectSettings}
+                onAddJiraIssue={onAddJiraIssue}
+                onDeleteJiraIssue={onDeleteJiraIssue}
               />
 
               {/* Mapping */}

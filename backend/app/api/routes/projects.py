@@ -1,34 +1,18 @@
 """Projects CRUD API"""
 
-import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import ProjectCreate, ProjectOut
 from app.db.engine import get_db
 from app.db.models import Project, ProjectFile
 
 router = APIRouter()
-
-
-# ─── Pydantic schemas ─────────────────────────────────────────────────────────
-
-class ProjectCreate(BaseModel):
-    name: str
-    description: Optional[str] = ""
-
-
-class ProjectOut(BaseModel):
-    project_id: str
-    name: str
-    description: str
-    created_at: str
-    file_count: int = 0
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -106,27 +90,3 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
         await db.commit()
 
 
-@router.get("/{project_id}/settings", response_model=Dict[str, Any])
-async def get_project_settings(project_id: str, db: AsyncSession = Depends(get_db)):
-    project = await db.get(Project, project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    if project.settings:
-        return json.loads(project.settings)
-    return {}
-
-
-@router.put("/{project_id}/settings", response_model=Dict[str, Any])
-async def update_project_settings(
-    project_id: str,
-    body: Dict[str, Any],
-    db: AsyncSession = Depends(get_db),
-):
-    project = await db.get(Project, project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    project.name = body.get("name", project.name)
-    project.description = body.get("description", project.description)
-    project.settings = json.dumps(body)
-    await db.commit()
-    return body

@@ -21,6 +21,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
+from app.api.schemas import JiraIssueIn
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.context_builder_workflow import ContextBuilderWorkflow, ProgressEvent
@@ -335,6 +336,61 @@ async def get_glossary(project_id: str, db: AsyncSession = Depends(get_db)):
         ),
     }
     return _context_store[project_id]["glossary"]
+
+
+# ── Jira context sources ──────────────────────────────────────────────────────
+
+
+@router.post("/{project_id}/jira", status_code=201)
+async def add_context_jira(
+    project_id: str,
+    body: JiraIssueIn,
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    issue_key = body.issue_key.strip().upper()
+    if not issue_key:
+        raise HTTPException(400, "issue_key is required")
+
+    entry = f"jira:{issue_key}"
+    existing: list[str] = json.loads(project.context_files) if project.context_files else []
+    if entry not in existing:
+        existing.append(entry)
+        project.context_files = json.dumps(existing)
+        await db.commit()
+
+    cache = _context_store.get(project_id, {})
+    cache["context_files"] = existing
+    _context_store[project_id] = cache
+
+    return {"issue_key": issue_key, "context_files": existing}
+
+
+@router.delete("/{project_id}/jira/{issue_key}", status_code=204)
+async def delete_context_jira(
+    project_id: str,
+    issue_key: str,
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    entry = f"jira:{issue_key.upper()}"
+    existing: list[str] = json.loads(project.context_files) if project.context_files else []
+    if entry not in existing:
+        raise HTTPException(404, "Jira issue not found in context sources")
+
+    existing.remove(entry)
+    project.context_files = json.dumps(existing)
+    await db.commit()
+
+    cache = _context_store.get(project_id, {})
+    cache["context_files"] = existing
+    _context_store[project_id] = cache
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────

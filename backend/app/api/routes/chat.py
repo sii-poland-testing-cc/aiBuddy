@@ -10,14 +10,14 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, List
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import ChatRequest
 from app.agents.audit_workflow import AuditWorkflow, AnalysisProgressEvent
 from app.agents.optimize_workflow import OptimizeWorkflow, OptimizeProgressEvent
 from app.core.llm import get_llm
@@ -30,16 +30,6 @@ logger = logging.getLogger("ai_buddy.chat")
 router = APIRouter()
 
 _context_builder = ContextBuilder()
-
-
-# ─── Request / Response ───────────────────────────────────────────────────────
-
-class ChatRequest(BaseModel):
-    project_id: str
-    message: str
-    file_paths: list[str] = []
-    tier: str = "audit"                        # "audit" | "optimize" | "regenerate"
-    audit_report: Optional[Dict[str, Any]] = None  # required for tier="optimize"
 
 
 # ─── Route ────────────────────────────────────────────────────────────────────

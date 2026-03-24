@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
+import JiraSettings from "./JiraSettings";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -26,6 +27,9 @@ export default function ProjectSettingsPage() {
   const [settings, setSettings] = useState<ProjectSettings>({});
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [jiraUrl, setJiraUrl] = useState("");
+  const [jiraUserEmail, setJiraUserEmail] = useState("");
+  const [jiraApiKey, setJiraApiKey] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -45,6 +49,9 @@ export default function ProjectSettingsPage() {
       setProject(proj);
       setName((s.name as string) || proj.name);
       setDescription((s.description as string) ?? proj.description ?? "");
+      setJiraUrl((s.jira_url as string) ?? "");
+      setJiraUserEmail((s.jira_user_email as string) ?? "");
+      setJiraApiKey((s.jira_api_key as string) ?? "");
       setSettings(s);
     } catch {
       setError("Błąd połączenia z serwerem.");
@@ -62,7 +69,14 @@ export default function ProjectSettingsPage() {
     setSaved(false);
     setError(null);
     try {
-      const payload: ProjectSettings = { ...settings, name: name.trim(), description: description.trim() };
+      const payload: ProjectSettings = {
+        ...settings,
+        name: name.trim(),
+        description: description.trim(),
+        jira_url: jiraUrl.trim(),
+        jira_user_email: jiraUserEmail.trim(),
+        jira_api_key: jiraApiKey.trim(),
+      };
       const res = await fetch(
         `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/settings`,
         { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
@@ -143,6 +157,20 @@ export default function ProjectSettingsPage() {
               placeholder="Krótki opis projektu (opcjonalnie)"
             />
           </div>
+
+          {/* Divider */}
+          <div className="border-t border-buddy-border" />
+
+          {/* Jira */}
+          <JiraSettings
+            projectId={projectId}
+            jiraUrl={jiraUrl}
+            jiraUserEmail={jiraUserEmail}
+            jiraApiKey={jiraApiKey}
+            onJiraUrlChange={setJiraUrl}
+            onJiraUserEmailChange={setJiraUserEmail}
+            onJiraApiKeyChange={setJiraApiKey}
+          />
 
           {/* Divider */}
           <div className="border-t border-buddy-border" />

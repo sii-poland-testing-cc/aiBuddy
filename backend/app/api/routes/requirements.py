@@ -19,10 +19,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import ExtractRequest, RequirementUpdate
 from app.agents.requirements_workflow import RequirementsWorkflow, RequirementsProgressEvent
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
@@ -31,26 +31,6 @@ from app.db.requirements_models import CoverageScore, Requirement, RequirementTC
 logger = logging.getLogger("ai_buddy.requirements_api")
 
 router = APIRouter()
-
-
-# ─── Request / Response Models ────────────────────────────────────────────────
-
-class ExtractRequest(BaseModel):
-    message: str = ""  # optional user hint (e.g. "focus on payment module")
-
-
-class RequirementUpdate(BaseModel):
-    """Payload for human review / manual correction."""
-    title: Optional[str] = None
-    description: Optional[str] = None
-    external_id: Optional[str] = None
-    level: Optional[str] = None
-    source_type: Optional[str] = None
-    taxonomy: Optional[Dict[str, Any]] = None
-    confidence: Optional[float] = None
-    human_reviewed: Optional[bool] = None
-    needs_review: Optional[bool] = None
-    review_reason: Optional[str] = None
 
 
 # ─── Extract (SSE) ───────────────────────────────────────────────────────────

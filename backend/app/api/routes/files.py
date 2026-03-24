@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel
+from app.api.schemas import AuditSelectionItem, FileOut, JiraIssueIn, UploadedFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,36 +23,6 @@ logger = logging.getLogger("ai_buddy")
 
 _upload_root = Path(settings.UPLOAD_DIR)
 _upload_root.mkdir(parents=True, exist_ok=True)
-
-
-# ─── Pydantic schemas ─────────────────────────────────────────────────────────
-
-class UploadedFile(BaseModel):
-    filename: str
-    file_path: str
-    size_bytes: int
-    project_id: str
-    indexed: bool
-
-
-class FileOut(BaseModel):
-    filename: str
-    file_path: str
-    size_bytes: int
-    indexed: bool
-    uploaded_at: str
-
-
-class AuditSelectionItem(BaseModel):
-    id: str
-    filename: str
-    file_path: str
-    source_type: str
-    size_bytes: int
-    uploaded_at: str
-    last_used_in_audit_id: str | None
-    last_used_in_audit_at: str | None
-    selected: bool
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -155,6 +125,56 @@ async def list_files(project_id: str, db: AsyncSession = Depends(get_db)):
         )
         for r in rows
     ]
+
+
+@router.post("/{project_id}/jira", response_model=UploadedFile, status_code=201)
+async def add_jira_issue(
+    project_id: str,
+    body: JiraIssueIn,
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, f"Project '{project_id}' not found")
+
+    issue_key = body.issue_key.strip().upper()
+    if not issue_key:
+        raise HTTPException(400, "issue_key is required")
+
+    file_path = f"jira:{issue_key}"
+    record = ProjectFile(
+        id=str(uuid.uuid4()),
+        project_id=project_id,
+        filename=issue_key,
+        file_path=file_path,
+        size_bytes=0,
+        indexed=False,
+        uploaded_at=datetime.now(timezone.utc),
+        source_type="jira",
+    )
+    db.add(record)
+    await db.commit()
+
+    return UploadedFile(
+        filename=issue_key,
+        file_path=file_path,
+        size_bytes=0,
+        project_id=project_id,
+        indexed=False,
+    )
+
+
+@router.delete("/{project_id}/{file_id}", status_code=204)
+async def delete_file(
+    project_id: str,
+    file_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    record = await db.get(ProjectFile, file_id)
+    if not record or record.project_id != project_id:
+        raise HTTPException(404, "File not found")
+    await db.delete(record)
+    await db.commit()
 
 
 @router.get("/{project_id}/audit-selection", response_model=List[AuditSelectionItem])
