@@ -111,6 +111,49 @@ async def rebuild_from_existing(
     )
 
 
+async def _stream_with_keepalive(handler, keepalive_interval: float = 5.0):
+    """
+    Yield (kind, item) tuples from a LlamaIndex workflow handler, emitting a
+    ("keepalive", None) tuple every ``keepalive_interval`` seconds when the
+    workflow is silent (e.g. waiting for an LLM response).
+
+    Kinds: "event" (ProgressEvent), "result" (dict), "error" (Exception), "keepalive"
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _collect():
+        try:
+            async for ev in handler.stream_events():
+                await queue.put(("event", ev))
+            result = await handler
+            await queue.put(("result", result))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        finally:
+            await queue.put(("done", None))
+
+    task = asyncio.create_task(_collect())
+    try:
+        getter = asyncio.ensure_future(queue.get())
+        while True:
+            done, _ = await asyncio.wait({getter}, timeout=keepalive_interval)
+            if not done:
+                yield ("keepalive", None)
+                continue
+            kind, item = getter.result()
+            if kind == "done":
+                getter.cancel()
+                break
+            getter = asyncio.ensure_future(queue.get())
+            yield (kind, item)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
     # ── Rebuild: wipe existing Chroma collection + clear cache ────────────────
     if mode == "rebuild":
@@ -120,22 +163,29 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
     llm = get_llm()
     workflow = ContextBuilderWorkflow(llm=llm, timeout=settings.M1_WORKFLOW_TIMEOUT_SECONDS)
 
+    # Track last known stage for keepalive messages
+    last_progress = {"message": "Processing…", "progress": 0.05, "stage": "parse"}
+    result = None
+
     try:
         handler = workflow.run(project_id=project_id, file_paths=file_paths)
 
-        async for ev in handler.stream_events():
-            if isinstance(ev, ProgressEvent):
-                yield _sse({
-                    "type": "progress",
-                    "data": {
-                        "message": ev.message,
-                        "progress": ev.progress,
-                        "stage": ev.stage,
-                    },
-                })
+        async for kind, item in _stream_with_keepalive(handler):
+            if kind == "event":
+                if isinstance(item, ProgressEvent):
+                    last_progress = {"message": item.message, "progress": item.progress, "stage": item.stage}
+                    yield _sse({"type": "progress", "data": last_progress})
+                    await asyncio.sleep(0)
+            elif kind == "keepalive":
+                yield _sse({"type": "progress", "data": last_progress})
                 await asyncio.sleep(0)
+            elif kind == "result":
+                result = item
+            elif kind == "error":
+                raise item  # type: ignore[misc]
 
-        result = await handler
+        if result is None:
+            raise RuntimeError("Workflow completed without a result")
 
         # ── New filenames from this build ─────────────────────────────────────
         new_filenames = [Path(p).name for p in file_paths]
