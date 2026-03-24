@@ -85,26 +85,18 @@ def _mock_llm_for_requirements():
         },
     })
 
-    validation_response = json.dumps({
-        "validated_requirements": [],
-        "duplicates": [],
-        "additional_gaps": [],
-        "overall_assessment": {
-            "completeness_rating": "high",
-            "testability_rating": "high",
-            "recommendation": "Requirements look good.",
-        },
-    })
+    # Critic returns APPROVED so no refine call is triggered
+    approved_response = json.dumps({"verdict": "APPROVED"})
 
     call_count = 0
 
-    async def _side_effect(prompt):
+    async def _side_effect(prompt, **kwargs):
         nonlocal call_count
         call_count += 1
-        # First call = extraction, subsequent calls = validation
+        # First call = extraction, subsequent calls = reflection critic/refine
         if call_count == 1:
             return extraction_response
-        return validation_response
+        return approved_response
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side_effect)

@@ -20,21 +20,15 @@ def _create_project(app_client, name: str = "req-ext-test") -> str:
     return r.json()["project_id"]
 
 
-def _mock_llm(extraction_json: str, validation_json: str | None = None):
-    """Build mock LLM. First acomplete → extraction, second → validation."""
-    if validation_json is None:
-        validation_json = json.dumps({
-            "validated_requirements": [], "duplicates": [],
-            "additional_gaps": [], "overall_assessment": {
-                "completeness_rating": "high", "testability_rating": "high",
-                "recommendation": "OK",
-            },
-        })
+def _mock_llm(extraction_json: str, critic_json: str | None = None):
+    """Build mock LLM. First acomplete → extraction, subsequent → critic (APPROVED by default)."""
+    if critic_json is None:
+        critic_json = json.dumps({"verdict": "APPROVED"})
     call_count = 0
     async def _side(prompt, **kwargs):
         nonlocal call_count
         call_count += 1
-        return extraction_json if call_count == 1 else validation_json
+        return extraction_json if call_count == 1 else critic_json
     m = MagicMock()
     m.acomplete = AsyncMock(side_effect=_side)
     return m
