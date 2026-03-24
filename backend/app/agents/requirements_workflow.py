@@ -324,6 +324,7 @@ class RequirementsWorkflow(Workflow):
                 metadata=metadata, rag_sources=ev.rag_sources,
             )
 
+        project_id: str = await ctx.store.get("project_id") or ""
         max_iter = settings.REFLECTION_MAX_ITERATIONS
         if max_iter > 0 and self.llm:
             combined_context: str = await ctx.store.get("combined_context") or ""
@@ -360,7 +361,7 @@ class RequirementsWorkflow(Workflow):
                 ))
 
                 features, gaps = await self._refine_requirements(
-                    source_sample, features, gaps, issues
+                    source_sample, features, gaps, issues, project_id
                 )
         else:
             ctx.write_event_to_stream(RequirementsProgressEvent(
@@ -625,28 +626,41 @@ Return ONLY the corrected requirement as JSON (same structure, all fields preser
             logger.warning("Fix req '%s' failed: %s", item.get("title_or_id"), e)
             return None
 
-    async def _add_acs_llm(self, source_sample: str, req: Dict, item: Dict) -> Optional[List[Dict]]:
-        prompt = f"""Generate acceptance criteria for this requirement.
+    async def _add_acs_llm(self, source_sample: str, req: Dict, item: Dict, project_id: str = "") -> Optional[List[Dict]]:
+        def _build_prompt(ctx: str) -> str:
+            return f"""Generate acceptance criteria for this requirement.
 
 Requirement: {json.dumps(req, ensure_ascii=False)}
 Suggestion: {item.get("suggested_ac", "")}
 
 Source documentation (excerpt):
-{source_sample[:3000]}
+{ctx[:3000]}
 
 Return ONLY a JSON array of acceptance criteria:
 [{{"title": "...", "description": "Given X when Y then Z", "testability": "high|medium|low", "confidence": 0.9}}]
 No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=2048)
+            response = await self.llm.acomplete(_build_prompt(source_sample), max_tokens=2048)
             result = json.loads(_strip_fences(str(response).strip()))
             return result if isinstance(result, list) else None
+        except json.JSONDecodeError:
+            if project_id:
+                query = f"{req.get('title', '')} {item.get('suggested_ac', '')} acceptance criteria"
+                try:
+                    targeted, _ = await self.context_builder.build_with_sources(project_id, query=query, top_k=3)
+                    response = await self.llm.acomplete(_build_prompt(targeted), max_tokens=2048)
+                    result = json.loads(_strip_fences(str(response).strip()))
+                    return result if isinstance(result, list) else None
+                except Exception as e2:
+                    logger.warning("Add ACs for '%s' retry failed: %s", item.get("title_or_id"), e2)
+            return None
         except Exception as e:
             logger.warning("Add ACs for '%s' failed: %s", item.get("title_or_id"), e)
             return None
 
-    async def _create_req_llm(self, source_sample: str, missing: Dict) -> Optional[Dict]:
-        prompt = f"""Create a new functional requirement based on this description.
+    async def _create_req_llm(self, source_sample: str, missing: Dict, project_id: str = "") -> Optional[Dict]:
+        def _build_prompt(ctx: str) -> str:
+            return f"""Create a new functional requirement based on this description.
 
 Missing requirement:
 - Area: {missing.get("area", "")}
@@ -654,7 +668,7 @@ Missing requirement:
 - Suggested title: {missing.get("suggested_title", "")}
 
 Source documentation (excerpt):
-{source_sample[:3000]}
+{ctx[:3000]}
 
 Return ONLY a JSON object:
 {{"external_id": null, "title": "...", "description": "...", "level": "functional_req",
@@ -663,9 +677,20 @@ Return ONLY a JSON object:
   "review_reason": "Added by reviewer", "acceptance_criteria": []}}
 No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=2048)
+            response = await self.llm.acomplete(_build_prompt(source_sample), max_tokens=2048)
             result = json.loads(_strip_fences(str(response).strip()))
             return result if isinstance(result, dict) else None
+        except json.JSONDecodeError:
+            if project_id:
+                query = f"{missing.get('suggested_title', '')} {missing.get('description', '')} requirement"
+                try:
+                    targeted, _ = await self.context_builder.build_with_sources(project_id, query=query, top_k=3)
+                    response = await self.llm.acomplete(_build_prompt(targeted), max_tokens=2048)
+                    result = json.loads(_strip_fences(str(response).strip()))
+                    return result if isinstance(result, dict) else None
+                except Exception as e2:
+                    logger.warning("Create req '%s' retry failed: %s", missing.get("suggested_title"), e2)
+            return None
         except Exception as e:
             logger.warning("Create req '%s' failed: %s", missing.get("suggested_title"), e)
             return None
@@ -693,6 +718,7 @@ No markdown fences."""
         features: List[Dict],
         gaps: List[Dict],
         issues: Dict,
+        project_id: str = "",
     ) -> tuple:
         """Apply targeted per-issue fixes in parallel instead of regenerating the full set."""
         import asyncio
@@ -756,7 +782,7 @@ No markdown fences."""
                     items_for_ac.append(item)
             if reqs_for_ac:
                 ac_results = await asyncio.gather(
-                    *[self._add_acs_llm(source_sample, req, item)
+                    *[self._add_acs_llm(source_sample, req, item, project_id)
                       for req, item in zip(reqs_for_ac, items_for_ac)],
                     return_exceptions=True,
                 )
@@ -768,7 +794,7 @@ No markdown fences."""
         missing_reqs = [_as_dict(x) for x in issues.get("missing_requirements", [])]
         if missing_reqs and self.llm:
             new_reqs = await asyncio.gather(
-                *[self._create_req_llm(source_sample, item) for item in missing_reqs],
+                *[self._create_req_llm(source_sample, item, project_id) for item in missing_reqs],
                 return_exceptions=True,
             )
             for item, new_req in zip(missing_reqs, new_reqs):
