@@ -619,7 +619,7 @@ Source documentation (excerpt):
 
 Return ONLY the corrected requirement as JSON (same structure, all fields preserved). No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=1024)
+            response = await self.llm.acomplete(prompt, max_tokens=2048)
             return json.loads(_strip_fences(str(response).strip()))
         except Exception as e:
             logger.warning("Fix req '%s' failed: %s", item.get("title_or_id"), e)
@@ -638,7 +638,7 @@ Return ONLY a JSON array of acceptance criteria:
 [{{"title": "...", "description": "Given X when Y then Z", "testability": "high|medium|low", "confidence": 0.9}}]
 No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=1024)
+            response = await self.llm.acomplete(prompt, max_tokens=2048)
             result = json.loads(_strip_fences(str(response).strip()))
             return result if isinstance(result, list) else None
         except Exception as e:
@@ -663,7 +663,7 @@ Return ONLY a JSON object:
   "review_reason": "Added by reviewer", "acceptance_criteria": []}}
 No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=1024)
+            response = await self.llm.acomplete(prompt, max_tokens=2048)
             result = json.loads(_strip_fences(str(response).strip()))
             return result if isinstance(result, dict) else None
         except Exception as e:
@@ -680,7 +680,7 @@ Reason they overlap: {reason}
 Return ONLY the merged requirement as JSON (same structure, keep the more complete version).
 No markdown fences."""
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=1024)
+            response = await self.llm.acomplete(prompt, max_tokens=2048)
             result = json.loads(_strip_fences(str(response).strip()))
             return result if isinstance(result, dict) else None
         except Exception as e:
