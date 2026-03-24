@@ -359,8 +359,14 @@ class RequirementsWorkflow(Workflow):
                     stage="review",
                 ))
 
+                # Cap issues per category to keep the refine prompt manageable
+                MAX_ISSUES_PER_CATEGORY = 5
+                capped_issues = {
+                    k: (v[:MAX_ISSUES_PER_CATEGORY] if isinstance(v, list) else v)
+                    for k, v in issues.items()
+                }
                 features, gaps = await self._refine_requirements(
-                    source_sample, features, gaps, issues
+                    source_sample, features, gaps, capped_issues
                 )
         else:
             ctx.write_event_to_stream(RequirementsProgressEvent(
@@ -590,7 +596,7 @@ Current gaps:
 {gaps_json}
 """
         try:
-            response = await self.llm.acomplete(prompt, max_tokens=8192)
+            response = await self.llm.acomplete(prompt, max_tokens=4096)
             raw = _strip_fences(str(response).strip())
             data = json.loads(raw)
             refined_features = data.get("features", features)
