@@ -182,8 +182,8 @@ class ExtractedRequirementsEvent(Event):
     rag_sources: List[Dict]
 
 
-class ValidatedRequirementsEvent(Event):
-    """Emitted after validation pass."""
+class ReviewedRequirementsEvent(Event):
+    """Emitted after the reflection review step."""
     features: List[Dict]
     gaps: List[Dict]
     validation: Dict[str, Any]
@@ -277,6 +277,7 @@ class RequirementsWorkflow(Workflow):
         # Deduplicate chunks that appear in multiple queries; cap at 30K chars
         # (top_k=8 × 4 queries × 512 chars/chunk ≈ 16K unique after dedup — well within this)
         combined_context = self._deduplicate_context(combined_context, max_chars=30000)
+        await ctx.store.set("combined_context", combined_context)
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
             message=f"Extracting requirements from {len(seen_filenames)} source document(s)…",
@@ -302,16 +303,18 @@ class RequirementsWorkflow(Workflow):
             rag_sources=all_sources,
         )
 
-    # ── Step 2: Validate ─────────────────────────────────────────────────────
+    # ── Step 2: Review (Producer-Reviewer reflection) ─────────────────────────
 
     @step
-    async def validate(self, ctx: Context, ev: ExtractedRequirementsEvent) -> ValidatedRequirementsEvent:
+    async def review(self, ctx: Context, ev: ExtractedRequirementsEvent) -> ReviewedRequirementsEvent:
+        from app.core.config import settings
+
         features = ev.raw_result.get("features", [])
         gaps = ev.raw_result.get("gaps", [])
         metadata = ev.raw_result.get("metadata", {})
 
         if not features:
-            return ValidatedRequirementsEvent(
+            return ReviewedRequirementsEvent(
                 features=features, gaps=gaps,
                 validation={"overall_assessment": {
                     "completeness_rating": "low",
@@ -321,12 +324,51 @@ class RequirementsWorkflow(Workflow):
                 metadata=metadata, rag_sources=ev.rag_sources,
             )
 
-        ctx.write_event_to_stream(RequirementsProgressEvent(
-            message="Validating extracted requirements…",
-            progress=0.55, stage="validate"
-        ))
+        max_iter = settings.REFLECTION_MAX_ITERATIONS
+        if max_iter > 0 and self.llm:
+            combined_context: str = await ctx.store.get("combined_context") or ""
+            source_sample = combined_context[:8_000]
 
-        # Rule-based validation only (no second LLM call — avoids timeout)
+            for iteration in range(1, max_iter + 1):
+                ctx.write_event_to_stream(RequirementsProgressEvent(
+                    message=f"Reviewing requirements quality (pass {iteration}/{max_iter})…",
+                    progress=0.55 + 0.06 * (iteration - 1),
+                    stage="review",
+                ))
+
+                issues = await self._review_requirements(source_sample, features, gaps)
+
+                if issues.get("verdict") == "APPROVED":
+                    ctx.write_event_to_stream(RequirementsProgressEvent(
+                        message=f"✓ Requirements approved on pass {iteration}",
+                        progress=0.55 + 0.06 * iteration,
+                        stage="review",
+                    ))
+                    break
+
+                issue_count = (
+                    len(issues.get("missing_requirements", []))
+                    + len(issues.get("incomplete_requirements", []))
+                    + len(issues.get("duplicates", []))
+                    + len(issues.get("hallucinations", []))
+                    + len(issues.get("missing_acceptance_criteria", []))
+                )
+                ctx.write_event_to_stream(RequirementsProgressEvent(
+                    message=f"Reviewer found {issue_count} issue(s) — refining requirements…",
+                    progress=0.55 + 0.06 * iteration,
+                    stage="review",
+                ))
+
+                features, gaps = await self._refine_requirements(
+                    source_sample, features, gaps, issues
+                )
+        else:
+            ctx.write_event_to_stream(RequirementsProgressEvent(
+                message="Reviewing extracted requirements…",
+                progress=0.60, stage="review",
+            ))
+
+        # ── Rule-based post-processing (always runs) ──────────────────────────
         validation = {
             "validated_requirements": [],
             "duplicates": [],
@@ -337,11 +379,7 @@ class RequirementsWorkflow(Workflow):
                 "recommendation": "",
             },
         }
-
-        # Apply rule-based validation (auto-flag low confidence, etc.)
         features = self._apply_validation(features, validation)
-
-        # Recompute metadata after validation
         metadata = self._compute_metadata(features)
 
         n_review = sum(
@@ -351,11 +389,11 @@ class RequirementsWorkflow(Workflow):
         )
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
-            message=f"✓ Validation complete — {n_review} requirement(s) flagged for review",
-            progress=0.75, stage="validate"
+            message=f"✓ Review complete — {n_review} requirement(s) flagged for human review",
+            progress=0.75, stage="review",
         ))
 
-        return ValidatedRequirementsEvent(
+        return ReviewedRequirementsEvent(
             features=features,
             gaps=gaps,
             validation=validation,
@@ -366,7 +404,7 @@ class RequirementsWorkflow(Workflow):
     # ── Step 3: Persist & Assemble ───────────────────────────────────────────
 
     @step
-    async def persist(self, ctx: Context, ev: ValidatedRequirementsEvent) -> StopEvent:
+    async def persist(self, ctx: Context, ev: ReviewedRequirementsEvent) -> StopEvent:
         project_id = await ctx.store.get("project_id")
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
@@ -446,6 +484,121 @@ class RequirementsWorkflow(Workflow):
                         "testability_rating": "unknown",
                         "recommendation": f"Validation error: {e}"
                     }}
+
+    # ── Reflection helpers ────────────────────────────────────────────────────
+
+    async def _review_requirements(
+        self,
+        source_sample: str,
+        features: List[Dict],
+        gaps: List[Dict],
+    ) -> Dict:
+        """Critic call: evaluate quality of extracted requirements against source docs."""
+        features_json = json.dumps(features, ensure_ascii=False)[:12_000]
+        gaps_json = json.dumps(gaps, ensure_ascii=False)
+
+        prompt = f"""You are a senior QA requirements architect performing a critical quality review.
+You will be given:
+1. A sample of the source documentation
+2. Extracted requirements (features → functional requirements → acceptance criteria)
+3. Identified gaps
+
+Your task: find flaws. Be specific. Focus on the most impactful issues only.
+
+Return ONLY valid JSON — no preamble, no markdown fences:
+{{
+  "verdict": "APPROVED" | "NEEDS_REVISION",
+  "missing_requirements": [
+    {{"area": "...", "description": "clearly present in source but not extracted", "suggested_title": "..."}}
+  ],
+  "incomplete_requirements": [
+    {{"title_or_id": "...", "issue": "vague/untestable/insufficient detail", "suggested_fix": "..."}}
+  ],
+  "duplicates": [
+    {{"req_a": "title or external_id", "req_b": "title or external_id", "reason": "why they overlap"}}
+  ],
+  "hallucinations": [
+    {{"title_or_id": "...", "reason": "not supported by source documentation"}}
+  ],
+  "missing_acceptance_criteria": [
+    {{"title_or_id": "...", "risk_level": "high|medium", "suggested_ac": "When X then Y"}}
+  ]
+}}
+
+Rules:
+- Return "APPROVED" when you find no meaningful issues.
+- List at most 5 items per category — prioritise the highest impact.
+- Only flag hallucinations when you are certain the requirement has no basis in the source.
+- Only flag missing ACs for high/medium risk requirements that have zero ACs.
+
+Source documentation (sample):
+{source_sample}
+
+Extracted requirements:
+{features_json}
+
+Identified gaps:
+{gaps_json}
+"""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=4096)
+            raw = _strip_fences(str(response).strip())
+            return json.loads(raw)
+        except Exception as e:
+            logger.warning("Requirements review LLM call failed (%s) — treating as APPROVED", e)
+            return {"verdict": "APPROVED"}
+
+    async def _refine_requirements(
+        self,
+        source_sample: str,
+        features: List[Dict],
+        gaps: List[Dict],
+        issues: Dict,
+    ) -> tuple:
+        """Producer second pass: fix issues identified by the critic."""
+        features_json = json.dumps(features, ensure_ascii=False)
+        gaps_json = json.dumps(gaps, ensure_ascii=False)
+        issues_json = json.dumps(issues, ensure_ascii=False, indent=2)
+
+        prompt = f"""You are a senior QA requirements architect.
+You previously extracted requirements from project documentation.
+A reviewer identified the following issues:
+{issues_json}
+
+Produce a corrected version that addresses every issue:
+- Add missing_requirements into the correct feature (create a new feature if needed)
+- Fix incomplete_requirements descriptions to be specific and testable
+- Remove or merge duplicates (keep the more complete one, update references)
+- Remove hallucinated requirements that are not supported by the source
+- Add missing_acceptance_criteria to the relevant requirements
+
+Return ONLY valid JSON — no preamble, no markdown fences:
+{{
+  "features": [...],
+  "gaps": [...]
+}}
+
+Keep the same JSON structure as the input. Preserve all fields.
+
+Source documentation (sample):
+{source_sample}
+
+Current features:
+{features_json}
+
+Current gaps:
+{gaps_json}
+"""
+        try:
+            response = await self.llm.acomplete(prompt, max_tokens=8192)
+            raw = _strip_fences(str(response).strip())
+            data = json.loads(raw)
+            refined_features = data.get("features", features)
+            refined_gaps = data.get("gaps", gaps)
+            return refined_features, refined_gaps
+        except Exception as e:
+            logger.warning("Requirements refine LLM call failed (%s) — keeping previous extraction", e)
+            return features, gaps
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
