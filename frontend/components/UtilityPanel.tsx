@@ -52,6 +52,9 @@ interface UtilityPanelProps {
   // Tier
   tier?: Tier;
   onTierChange?: (tier: Tier) => void;
+  // Jira
+  jiraItems?: import("./SourcesCard").JiraItem[];
+  onAddJira?: (key: string) => Promise<void>;
 }
 
 // ── UtilityPanel (thin shell) ──────────────────────────────────────────────────
@@ -82,6 +85,8 @@ export default function UtilityPanel({
   latestSnapshotId,
   tier = "audit",
   onTierChange,
+  jiraItems = [],
+  onAddJira,
 }: UtilityPanelProps) {
   return (
     <aside
@@ -111,6 +116,8 @@ export default function UtilityPanel({
               onBuild={onBuild}
               isBuildRunning={isBuildRunning}
               pendingContextFiles={pendingContextFiles}
+              jiraItems={jiraItems}
+              onAddJira={onAddJira}
             />
           )}
 
@@ -120,6 +127,7 @@ export default function UtilityPanel({
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
               heatmapData={heatmapData}
+              onAddJira={onAddJira}
             />
           )}
 
@@ -137,6 +145,7 @@ export default function UtilityPanel({
               onAuditPipeline={onAuditPipeline}
               tier={tier}
               onTierChange={onTierChange}
+              onAddJira={onAddJira}
             />
           )}
         </>

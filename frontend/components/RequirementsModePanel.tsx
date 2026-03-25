@@ -10,6 +10,7 @@ export interface RequirementsModePanelProps {
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
   heatmapData?: HeatmapRow[];
+  onAddJira?: (key: string) => Promise<void>;
 }
 
 function heatmapEmoji(color: HeatmapRow["color"]) {
@@ -21,7 +22,12 @@ export function RequirementsModePanel({
   onAddFiles,
   onFileToggle,
   heatmapData = [],
+  onAddJira,
 }: RequirementsModePanelProps) {
+  const jiraItems = auditFiles
+    .filter((f) => f.source_type === "jira")
+    .map((f) => ({ id: f.id, key: f.filename }));
+
   return (
     <div data-testid="panel-mode-requirements" className="flex flex-col" style={{ gap: 6 }}>
       <SourcesCard
@@ -29,6 +35,8 @@ export function RequirementsModePanel({
         auditFiles={auditFiles}
         onAddFiles={onAddFiles}
         onFileToggle={onFileToggle}
+        jiraItems={jiraItems}
+        onAddJira={onAddJira}
       />
 
       <PanelCard id="heatmap" icon="🗂" title="Heatmap pokrycia" defaultOpen>

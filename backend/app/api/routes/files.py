@@ -133,6 +133,8 @@ async def add_jira_issue(
     body: JiraIssueIn,
     db: AsyncSession = Depends(get_db),
 ):
+    from app.services.jira_client import JiraClient, to_markdown
+
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, f"Project '{project_id}' not found")
@@ -141,26 +143,70 @@ async def add_jira_issue(
     if not issue_key:
         raise HTTPException(400, "issue_key is required")
 
-    file_path = f"jira:{issue_key}"
-    record = ProjectFile(
-        id=str(uuid.uuid4()),
-        project_id=project_id,
-        filename=issue_key,
-        file_path=file_path,
-        size_bytes=0,
-        indexed=False,
-        uploaded_at=datetime.now(timezone.utc),
-        source_type="jira",
+    # Read Jira credentials from project settings (JsonType → already a dict)
+    s: dict = project.settings or {}
+    jira_url = s.get("jira_url", "")
+    user_email = s.get("jira_user_email", "")
+    api_key = s.get("jira_api_key", "")
+    if not jira_url or not api_key:
+        raise HTTPException(
+            400,
+            "Brak konfiguracji Jira. Skonfiguruj połączenie w ustawieniach projektu.",
+        )
+
+    # Fetch issue with full depth-aware context
+    client = JiraClient(jira_url=jira_url, user_email=user_email, api_key=api_key)
+    data = await client.fetch_with_context(issue_key)
+    if data is None:
+        raise HTTPException(404, f"Issue '{issue_key}' not found in Jira.")
+
+    # Save as markdown to disk
+    jira_dir = _upload_root / project_id / "jira"
+    jira_dir.mkdir(parents=True, exist_ok=True)
+    md_path = jira_dir / f"{issue_key}.md"
+    md_path.write_text(to_markdown(data), encoding="utf-8")
+    file_path = str(md_path)
+    size = md_path.stat().st_size
+
+    # Upsert ProjectFile record (re-fetch refreshes the MD)
+    stmt = select(ProjectFile).where(
+        ProjectFile.project_id == project_id,
+        ProjectFile.filename == issue_key,
+        ProjectFile.source_type == "jira",
     )
-    db.add(record)
+    record = (await db.execute(stmt)).scalar_one_or_none()
+    if record:
+        record.file_path = file_path
+        record.size_bytes = size
+        record.uploaded_at = datetime.now(timezone.utc)
+    else:
+        record = ProjectFile(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            filename=issue_key,
+            file_path=file_path,
+            size_bytes=size,
+            indexed=False,
+            uploaded_at=datetime.now(timezone.utc),
+            source_type="jira",
+        )
+        db.add(record)
     await db.commit()
+
+    # Index into Chroma
+    try:
+        await context_builder.index_files(project_id=project_id, file_paths=[file_path])
+        record.indexed = True
+        await db.commit()
+    except Exception as exc:
+        logger.warning("RAG indexing failed for Jira %s: %s", issue_key, exc)
 
     return UploadedFile(
         filename=issue_key,
         file_path=file_path,
-        size_bytes=0,
+        size_bytes=size,
         project_id=project_id,
-        indexed=False,
+        indexed=record.indexed,
     )
 
 

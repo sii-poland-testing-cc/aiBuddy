@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import TopBar from "@/components/TopBar";
 import MessageList from "@/components/MessageList";
@@ -29,6 +29,8 @@ interface AttachedFile {
   name: string;
   path: string;  // full server-side path returned by uploadFiles
 }
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Unified Project Page ───────────────────────────────────────────────────────
 
@@ -216,6 +218,40 @@ export default function ProjectPage() {
     setTier(mode === "context" ? "rag_chat" : "audit");
   }, []);
 
+  // ── Jira ─────────────────────────────────────────────────────────────────────
+
+  const contextJiraItems = useMemo(
+    () =>
+      (contextStatus?.context_files ?? [])
+        .filter((f: string) => f.startsWith("jira:"))
+        .map((f: string) => ({ id: f, key: f.slice(5) })),
+    [contextStatus]
+  );
+
+  const handleAddJira = useCallback(
+    async (issueKey: string) => {
+      const endpoint =
+        activeMode === "context"
+          ? `${API_BASE}/api/context/${projectId}/jira`
+          : `${API_BASE}/api/files/${projectId}/jira`;
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issue_key: issueKey }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail ?? "Błąd podczas dodawania Jira");
+      }
+      if (activeMode === "context") {
+        await fetchStatus();
+      } else {
+        setRefreshKey((k) => k + 1);
+      }
+    },
+    [activeMode, projectId, fetchStatus]
+  );
+
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col bg-buddy-base" style={{ height: "100vh" }}>
@@ -374,6 +410,8 @@ export default function ProjectPage() {
           onTierChange={(t) => {
             setTier(t);
           }}
+          jiraItems={activeMode === "context" ? contextJiraItems : undefined}
+          onAddJira={handleAddJira}
         />
       </div>
 

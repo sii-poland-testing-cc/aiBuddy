@@ -21,6 +21,8 @@ export interface ContextModePanelProps {
   onBuild?: (mode: BuildMode) => void;
   pendingContextFiles?: string[];
   isBuildRunning?: boolean;
+  jiraItems?: import("./SourcesCard").JiraItem[];
+  onAddJira?: (key: string) => Promise<void>;
 }
 
 // ── Static mind map thumbnail SVG ─────────────────────────────────────────────
@@ -64,6 +66,8 @@ export function ContextModePanel({
   onBuild = () => {},
   pendingContextFiles = [],
   isBuildRunning = false,
+  jiraItems = [],
+  onAddJira,
 }: ContextModePanelProps) {
   const [glossarySearch, setGlossarySearch] = useState("");
   const [localBuildMode, setLocalBuildMode] = useState<BuildMode>(buildMode);
@@ -91,7 +95,7 @@ export function ContextModePanel({
       isNew: true,
     })),
     ...(contextStatus?.context_files ?? [])
-      .filter((f) => !pendingContextFiles.includes(f))
+      .filter((f) => !pendingContextFiles.includes(f) && !f.startsWith("jira:"))
       .map((filename) => ({
         id: filename,
         filename,
@@ -109,6 +113,8 @@ export function ContextModePanel({
         auditFiles={contextFiles}
         onAddFiles={onAddFiles}
         onFileToggle={onFileToggle}
+        jiraItems={jiraItems}
+        onAddJira={onAddJira}
       />
 
       {/* Mind Map */}

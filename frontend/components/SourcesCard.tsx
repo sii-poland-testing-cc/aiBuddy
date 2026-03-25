@@ -4,6 +4,13 @@ import { useState } from "react";
 import { PanelCard } from "./PanelCard";
 import type { PanelFile } from "../lib/types";
 
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+export interface JiraItem {
+  id: string;
+  key: string;
+}
+
 // ── File extension helpers ─────────────────────────────────────────────────────
 
 const EXT_COLORS: Record<string, { bg: string; color: string }> = {
@@ -118,22 +125,46 @@ export function SourcesCard({
   auditFiles = [],
   onAddFiles,
   onFileToggle,
+  jiraItems = [],
+  onAddJira,
 }: {
   cardId: string;
   auditFiles: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  jiraItems?: JiraItem[];
+  onAddJira?: (key: string) => Promise<void>;
 }) {
-  const [activeTab, setActiveTab] = useState<"files" | "links">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "jira" | "links">("files");
+  const [jiraInput, setJiraInput] = useState("");
+  const [jiraLoading, setJiraLoading] = useState(false);
+  const [jiraError, setJiraError] = useState<string | null>(null);
 
   const newFiles  = auditFiles.filter((f) => f.source_type === "file" && f.isNew);
   const usedFiles = auditFiles.filter((f) => f.source_type === "file" && !f.isNew);
-  const links     = auditFiles.filter((f) => f.source_type !== "file");
+  // Links = only url + confluence (jira has its own tab)
+  const links = auditFiles.filter(
+    (f) => f.source_type === "url" || f.source_type === "confluence"
+  );
 
   const linkBadgeStyle = (type: string) => {
     if (type === "confluence") return { bg: "rgba(91,127,186,0.2)", color: "#5b7fba" };
-    if (type === "jira")       return { bg: "rgba(74,158,107,0.15)", color: "#6dc28a" };
     return { bg: "var(--surface3)", color: "var(--text-dim)" };
+  };
+
+  const handleAddJira = async () => {
+    const key = jiraInput.trim().toUpperCase();
+    if (!key || !onAddJira) return;
+    setJiraLoading(true);
+    setJiraError(null);
+    try {
+      await onAddJira(key);
+      setJiraInput("");
+    } catch (e: unknown) {
+      setJiraError(e instanceof Error ? e.message : "Błąd podczas dodawania");
+    } finally {
+      setJiraLoading(false);
+    }
   };
 
   return (
@@ -143,7 +174,7 @@ export function SourcesCard({
         className="flex bg-buddy-base"
         style={{ gap: 2, marginBottom: 8, borderRadius: 4, padding: 2 }}
       >
-        {(["files", "links"] as const).map((tab) => (
+        {(["files", "jira", "links"] as const).map((tab) => (
           <button
             key={tab}
             data-testid={`src-tab-${tab}`}
@@ -153,9 +184,9 @@ export function SourcesCard({
                 ? "bg-buddy-surface2 border border-buddy-border text-buddy-text-muted"
                 : "border border-transparent text-buddy-text-dim hover:text-buddy-text-muted"
             }`}
-            style={{ padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer" }}
+            style={{ padding: "4px 6px", borderRadius: 4, fontSize: 11, cursor: "pointer" }}
           >
-            {tab === "files" ? "Pliki" : "Linki"}
+            {tab === "files" ? "Pliki" : tab === "jira" ? "Jira" : "Linki"}
           </button>
         ))}
       </div>
@@ -184,6 +215,77 @@ export function SourcesCard({
         </div>
       )}
 
+      {/* Jira tab */}
+      {activeTab === "jira" && (
+        <div>
+          {/* Input + plus icon button */}
+          <div style={{ display: "flex", gap: 6, marginBottom: jiraError ? 4 : 8 }}>
+            <input
+              type="text"
+              placeholder="np. PROJ-123"
+              value={jiraInput}
+              onChange={(e) => { setJiraInput(e.target.value); setJiraError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAddJira(); }}
+              disabled={jiraLoading}
+              data-testid="jira-key-input"
+              className="flex-1 bg-buddy-surface2 border border-buddy-border text-buddy-text placeholder:text-buddy-text-dim focus:outline-none focus:border-buddy-gold transition-colors"
+              style={{ padding: "5px 8px", borderRadius: 4, fontSize: 11 }}
+            />
+            <button
+              onClick={handleAddJira}
+              disabled={jiraLoading || !jiraInput.trim()}
+              title="Dodaj Jira issue"
+              data-testid="jira-add-btn"
+              className="border border-buddy-border text-buddy-text-dim hover:border-buddy-gold hover:text-buddy-gold-light disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              style={{
+                width: 28, height: 28, borderRadius: 4,
+                background: "none", cursor: "pointer", flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 18, lineHeight: 1,
+              }}
+            >
+              {jiraLoading ? "…" : "+"}
+            </button>
+          </div>
+          {jiraError && (
+            <p style={{ fontSize: 10, color: "#e08080", marginBottom: 6, lineHeight: 1.4 }}>
+              {jiraError}
+            </p>
+          )}
+          {jiraItems.length > 0 ? (
+            <div className="flex flex-col">
+              {jiraItems.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center gap-2 border-b border-buddy-border"
+                  style={{ padding: "5px 0" }}
+                >
+                  <span
+                    className="font-mono font-bold shrink-0"
+                    style={{
+                      fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                      background: "rgba(74,158,107,0.15)", color: "#6dc28a",
+                    }}
+                  >
+                    JIRA
+                  </span>
+                  <span
+                    className="font-mono text-buddy-text-muted flex-1 overflow-hidden"
+                    style={{ fontSize: 10, textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {item.key}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-buddy-text-faint" style={{ fontSize: 11, textAlign: "center", padding: "8px 0" }}>
+              Brak issues Jira
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Links tab */}
       {activeTab === "links" && (
         <div>
@@ -191,8 +293,7 @@ export function SourcesCard({
             <div className="flex flex-col">
               {links.map((f) => {
                 const style = linkBadgeStyle(f.source_type);
-                const label = f.source_type === "confluence" ? "CONF"
-                  : f.source_type === "jira" ? "JIRA" : "URL";
+                const label = f.source_type === "confluence" ? "CONF" : "URL";
                 return (
                   <div
                     key={f.id}

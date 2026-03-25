@@ -25,6 +25,7 @@ export interface AuditModePanelProps {
   onAuditPipeline?: (message: string) => void;
   tier?: Tier;
   onTierChange?: (tier: Tier) => void;
+  onAddJira?: (key: string) => Promise<void>;
 }
 
 // ── CovBadge ──────────────────────────────────────────────────────────────────
@@ -64,8 +65,13 @@ export function AuditModePanel({
   onAuditPipeline,
   tier = "audit",
   onTierChange,
+  onAddJira,
 }: AuditModePanelProps) {
   const [openSnap, setOpenSnap] = useState<AuditSnapshot | null>(null);
+
+  const jiraItems = auditFiles
+    .filter((f) => f.source_type === "jira")
+    .map((f) => ({ id: f.id, key: f.filename }));
 
   return (
     <>
@@ -85,6 +91,8 @@ export function AuditModePanel({
           auditFiles={auditFiles}
           onAddFiles={onAddFiles}
           onFileToggle={onFileToggle}
+          jiraItems={jiraItems}
+          onAddJira={onAddJira}
         />
 
         {/* Mapping */}

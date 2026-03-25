@@ -32,6 +32,7 @@ from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
 from app.db.models import Project
 from app.rag.context_builder import ContextBuilder
+from app.services.jira_client import JiraClient, to_markdown
 
 logger = logging.getLogger("ai_buddy.context")
 
@@ -386,14 +387,46 @@ async def add_context_jira(
     if not issue_key:
         raise HTTPException(400, "issue_key is required")
 
+    # Read Jira credentials from project settings (JsonType → already a dict)
+    s: dict = project.settings or {}
+    jira_url = s.get("jira_url", "")
+    user_email = s.get("jira_user_email", "")
+    api_key = s.get("jira_api_key", "")
+    if not jira_url or not api_key:
+        raise HTTPException(
+            400,
+            "Brak konfiguracji Jira. Skonfiguruj połączenie w ustawieniach projektu.",
+        )
+
+    # Fetch issue with full depth-aware context
+    client = JiraClient(jira_url=jira_url, user_email=user_email, api_key=api_key)
+    data = await client.fetch_with_context(issue_key)
+    if data is None:
+        raise HTTPException(404, f"Issue '{issue_key}' not found in Jira.")
+
+    # Save as markdown to disk
+    jira_dir = UPLOAD_ROOT / project_id / "context" / "jira"
+    jira_dir.mkdir(parents=True, exist_ok=True)
+    md_path = jira_dir / f"{issue_key}.md"
+    md_path.write_text(to_markdown(data), encoding="utf-8")
+    file_path = str(md_path)
+
+    # Index into M1 Chroma
+    try:
+        await _context_builder.index_files(project_id=project_id, file_paths=[file_path])
+    except Exception as exc:
+        logger.warning("Failed to index Jira %s into M1 context: %s", issue_key, exc)
+
+    # Add to context_files (JsonType → operate on list directly)
     entry = f"jira:{issue_key}"
-    existing: list[str] = json.loads(project.context_files) if project.context_files else []
+    existing: list = list(project.context_files or [])
     if entry not in existing:
         existing.append(entry)
-        project.context_files = json.dumps(existing)
+        project.context_files = existing
         await db.commit()
 
-    cache = _context_store.get(project_id, {})
+    # Update write-through cache
+    cache = dict(_context_store.get(project_id, {}))
     cache["context_files"] = existing
     _context_store[project_id] = cache
 
@@ -411,20 +444,14 @@ async def delete_context_jira(
         raise HTTPException(404, "Project not found")
 
     entry = f"jira:{issue_key.upper()}"
-    existing: list[str] = json.loads(project.context_files) if project.context_files else []
+    existing: list = list(project.context_files or [])
     if entry not in existing:
         raise HTTPException(404, "Jira issue not found in context sources")
 
     existing.remove(entry)
-    project.context_files = json.dumps(existing)
+    project.context_files = existing
     await db.commit()
 
-    cache = _context_store.get(project_id, {})
+    cache = dict(_context_store.get(project_id, {}))
     cache["context_files"] = existing
     _context_store[project_id] = cache
-
-
-# ── Helper ────────────────────────────────────────────────────────────────────
-
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
