@@ -6,6 +6,7 @@ import TopBar from "@/components/TopBar";
 import MessageList from "@/components/MessageList";
 import ModeInputBox from "@/components/ModeInputBox";
 import UtilityPanel from "@/components/UtilityPanel";
+import { ProgressBar } from "@/components/ProgressBar";
 import MindMapModal, { layoutModalNodes } from "@/components/MindMapModal";
 import { useAIBuddyChat } from "@/lib/useAIBuddyChat";
 import { useAuditPipeline } from "@/lib/useAuditPipeline";
@@ -254,59 +255,21 @@ export default function ProjectPage() {
         {/* ── Chat column ──────────────────────────────────────────────────── */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
 
-          {/* Extraction progress bar (requirements mode) */}
-          {isExtracting && extractionProgress && (
-            <div
-              className="flex-shrink-0 border-b border-buddy-border bg-buddy-surface flex items-center gap-3"
-              style={{ padding: "8px 48px" }}
-            >
-              <div className="flex-1 bg-buddy-elevated rounded-full overflow-hidden" style={{ height: 4 }}>
-                <div
-                  className="h-full bg-buddy-gold transition-all duration-300 rounded-full"
-                  style={{ width: `${Math.round((extractionProgress.progress ?? 0) * 100)}%` }}
-                />
-              </div>
-              <span className="text-buddy-text-dim" style={{ fontSize: 11, flexShrink: 0 }}>
-                {extractionProgress.message}
-              </span>
-            </div>
-          )}
-
-          {/* Build progress bar (context mode) */}
-          {isBuilding && (
-            <div
-              className="flex-shrink-0 border-b border-buddy-border bg-buddy-surface flex items-center gap-3"
-              style={{ padding: "8px 48px" }}
-            >
-              <div className="flex-1 bg-buddy-elevated rounded-full overflow-hidden" style={{ height: 4 }}>
-                <div
-                  className="h-full bg-buddy-gold transition-all duration-300 rounded-full"
-                  style={{ width: "60%" }}
-                />
-              </div>
-              <span className="text-buddy-text-dim" style={{ fontSize: 11, flexShrink: 0 }}>
-                Budowanie kontekstu…
-              </span>
-            </div>
-          )}
-
-          {/* Progress bar (chat) */}
-          {progress && isLoading && (
-            <div
-              className="flex-shrink-0 border-b border-buddy-border bg-buddy-surface flex items-center gap-3"
-              style={{ padding: "8px 48px" }}
-            >
-              <div className="flex-1 bg-buddy-elevated rounded-full overflow-hidden" style={{ height: 4 }}>
-                <div
-                  className="h-full bg-buddy-gold transition-all duration-300 rounded-full"
-                  style={{ width: `${Math.round((progress.progress ?? 0) * 100)}%` }}
-                />
-              </div>
-              <span className="text-buddy-text-dim" style={{ fontSize: 11, flexShrink: 0 }}>
-                {progress.message}
-              </span>
-            </div>
-          )}
+          {/* Progress bars */}
+          <ProgressBar
+            visible={isExtracting && !!extractionProgress}
+            progress={extractionProgress?.progress}
+            message={extractionProgress?.message}
+          />
+          <ProgressBar
+            visible={isBuilding}
+            message="Budowanie kontekstu…"
+          />
+          <ProgressBar
+            visible={!!(progress && isLoading)}
+            progress={progress?.progress}
+            message={progress?.message}
+          />
 
           {/* Error banner */}
           {chatError && (
