@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useContext } from "react";
 import { ProjectOperationsContext } from "./ProjectOperationsContext";
+import { consumeSSE } from "./sseStream";
 
 const OP_TYPE = "contextBuild" as const;
 
@@ -134,40 +135,26 @@ export function useContextBuilder(projectId: string) {
       if (!res.ok) throw new Error(`Server error ${res.status}: ${await res.text()}`);
       if (!res.body) throw new Error("No response body");
 
-      const reader  = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") break;
-          try {
-            const ev = JSON.parse(payload);
-            if (ev.type === "progress") {
-              setStage(ev.data.stage);
-              setProgress(ev.data.progress);
-              setLog((prev) => [...prev, ev.data.message]);
-              ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
-            } else if (ev.type === "result") {
-              setResult(ev.data as ContextResult);
-              setStatus({
-                project_id: ev.data.project_id,
-                rag_ready: ev.data.rag_ready,
-                artefacts_ready: true,
-                stats: ev.data.stats,
-                context_built_at: new Date().toISOString(),
-              });
-            } else if (ev.type === "error") {
-              setError(ev.data.message);
-              ops?.updateOp(projectId, OP_TYPE, { error: ev.data.message });
-            }
-          } catch { /* malformed line */ }
+      await consumeSSE(res.body, (ev) => {
+        if (ev.type === "progress") {
+          setStage(ev.data.stage);
+          setProgress(ev.data.progress);
+          setLog((prev) => [...prev, ev.data.message]);
+          ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
+        } else if (ev.type === "result") {
+          setResult(ev.data as ContextResult);
+          setStatus({
+            project_id: ev.data.project_id,
+            rag_ready: ev.data.rag_ready,
+            artefacts_ready: true,
+            stats: ev.data.stats,
+            context_built_at: new Date().toISOString(),
+          });
+        } else if (ev.type === "error") {
+          setError(ev.data.message);
+          ops?.updateOp(projectId, OP_TYPE, { error: ev.data.message });
         }
-      }
+      });
       // Refresh status to pick up context_files and document_count
       await fetchStatus();
     } catch (err: any) {

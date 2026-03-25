@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useContext } from "react";
 import { ProjectOperationsContext } from "./ProjectOperationsContext";
+import { consumeSSE } from "./sseStream";
 
 const OP_TYPE = "requirements" as const;
 
@@ -110,35 +111,19 @@ export function useRequirements(projectId: string) {
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       if (!res.body) throw new Error("No response body");
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") break;
-          try {
-            const ev = JSON.parse(payload);
-            if (ev.type === "progress") {
-              setExtractionProgress(ev.data as ExtractionProgress);
-              ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
-            } else if (ev.type === "result") {
-              // Stream complete — reload requirements from DB
-              await fetchAll();
-            } else if (ev.type === "error") {
-              const errMsg = ev.data?.message ?? "Ekstrakcja nie powiodła się.";
-              setError(errMsg);
-              ops?.updateOp(projectId, OP_TYPE, { error: errMsg });
-            }
-          } catch {
-            // malformed line — skip
-          }
+      await consumeSSE(res.body, async (ev) => {
+        if (ev.type === "progress") {
+          setExtractionProgress(ev.data as ExtractionProgress);
+          ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
+        } else if (ev.type === "result") {
+          // Stream complete — reload requirements from DB
+          await fetchAll();
+        } else if (ev.type === "error") {
+          const errMsg = ev.data?.message ?? "Ekstrakcja nie powiodła się.";
+          setError(errMsg);
+          ops?.updateOp(projectId, OP_TYPE, { error: errMsg });
         }
-      }
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const errMsg = msg.includes("Server error") || msg.includes("No response")
