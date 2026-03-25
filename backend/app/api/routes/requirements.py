@@ -282,10 +282,7 @@ async def requirements_gaps(
     if not project:
         raise HTTPException(404, "Project not found")
 
-    stats = project.context_stats or {}
-    gaps = stats.get("requirement_gaps", [])
-
-    return {"project_id": project_id, "gaps": gaps}
+    return {"project_id": project_id, "gaps": project.requirement_gaps or []}
 
 
 # ─── Human Review: Update Requirement ────────────────────────────────────────

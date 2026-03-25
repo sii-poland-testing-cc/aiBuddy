@@ -44,6 +44,9 @@ class Project(Base):
     )
     context_files: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
 
+    # Faza 2 requirement gaps — separate from context_stats to avoid M1 rebuild collision
+    requirement_gaps: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+
     settings: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
     # JSON: arbitrary project-level settings object
 

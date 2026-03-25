@@ -60,10 +60,8 @@ async def persist_gaps(
     project_id: str,
     gaps: List[Dict],
 ) -> None:
-    """Persist requirement gaps as a JSON field on the Project.context_stats column."""
+    """Persist requirement gaps to the dedicated Project.requirement_gaps column."""
     project = await db.get(Project, project_id)
     if project:
-        existing_stats = project.context_stats or {}
-        existing_stats["requirement_gaps"] = gaps
-        project.context_stats = existing_stats
+        project.requirement_gaps = gaps
         await db.commit()
