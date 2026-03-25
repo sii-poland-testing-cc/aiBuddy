@@ -86,7 +86,7 @@ class ProjectFile(Base):
         server_default=func.now(),
     )
     last_used_in_audit_id: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True
+        String, ForeignKey("audit_snapshots.id", ondelete="SET NULL"), nullable=True
     )
     # snapshot id of the last audit that used this file
     # null = never used in any audit → default selected
