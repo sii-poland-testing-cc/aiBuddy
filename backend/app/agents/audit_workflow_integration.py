@@ -11,27 +11,71 @@ Priority chain:
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Tuple
 
+from sqlalchemy import select
+
+from app.db.engine import AsyncSessionLocal
+from app.db.requirements_models import CoverageScore, Requirement
 from app.utils.json_utils import strip_fences
 
 logger = logging.getLogger("ai_buddy.audit_integration")
 
 
-async def extract_requirements_from_registry(
+async def compute_registry_coverage(
     project_id: str,
+    cases: List[Dict],
     rag_context: str,
     llm: Any = None,
+) -> Dict[str, Any]:
+    """
+    Enhanced coverage computation. Priority:
+      1. Faza 5+6 persisted scores -> return immediately (best quality)
+      2. Faza 2 registry -> live matching against TCs
+      3. Legacy LLM extraction -> original behavior (no Faza 2 data)
+
+    NOTE on is_covered semantics:
+      - Priority 1: is_covered = total_score > 0 (Faza 6 multi-dim score; even
+        a single weak mapping gives ~35 points, so >0 is a reliable threshold)
+      - Priority 2/3: is_covered = identifier appears in pattern/LLM matched set
+        (binary; do not silently unify these two branches)
+    """
+    # Priority 1: Faza 5+6 persisted scores (best quality, no LLM calls needed)
+    persisted = await _load_persisted_scores(project_id)
+    if persisted:
+        logger.info(
+            "project=%s - using Faza 5+6 persisted scores (%d reqs)",
+            project_id, persisted["requirements_total"],
+        )
+        return persisted
+
+    # Priority 2: Faza 2 registry
+    req_ids, req_details = await _load_faza2_requirements(project_id)
+    if not req_ids:
+        # Priority 3: legacy LLM extraction (no Faza 2 data)
+        logger.info("project=%s - no Faza 2 registry, falling back to LLM extraction", project_id)
+        req_ids = await _legacy_extract(rag_context, llm)
+        req_details = []
+
+    if not req_ids:
+        return {
+            "requirements_from_docs": [], "requirements_covered": [],
+            "coverage_pct": 0.0, "requirements_total": 0,
+            "requirements_covered_count": 0, "requirements_uncovered": [],
+            "registry_available": False, "per_requirement_scores": [],
+        }
+
+    covered = await _match_requirements_to_tests(cases, req_ids, req_details, llm)
+    return _build_live_coverage_result(req_ids, req_details, covered)
+
+
+async def _load_faza2_requirements(
+    project_id: str,
 ) -> Tuple[List[str], List[Dict]]:
-    from app.db.engine import AsyncSessionLocal
-    try:
-        from app.db.requirements_models import Requirement
-    except ImportError:
-        logger.info("Requirements models not available - using legacy extraction")
-        return await _legacy_extract(rag_context, llm), []
+    """Load functional requirements + acceptance criteria from the Faza 2 DB registry."""
     try:
         async with AsyncSessionLocal() as db:
-            from sqlalchemy import select
             stmt = (
                 select(Requirement)
                 .where(Requirement.project_id == project_id)
@@ -39,29 +83,33 @@ async def extract_requirements_from_registry(
                 .order_by(Requirement.created_at)
             )
             rows = (await db.execute(stmt)).scalars().all()
-            if rows:
-                logger.info("project=%s - loaded %d requirements from Faza 2 registry", project_id, len(rows))
-                req_ids, req_details = [], []
-                for r in rows:
-                    identifier = r.external_id or r.title
-                    req_ids.append(identifier)
-                    req_details.append({
-                        "id": r.id, "external_id": r.external_id, "title": r.title,
-                        "description": r.description or "", "level": r.level,
-                        "confidence": r.confidence or 0.5,
-                        "taxonomy": json.loads(r.taxonomy) if r.taxonomy else {},
-                        "needs_review": r.needs_review,
-                    })
-                return req_ids, req_details
-            logger.info("project=%s - no Faza 2 registry, falling back to LLM", project_id)
+            if not rows:
+                return [], []
+            logger.info(
+                "project=%s - loaded %d requirements from Faza 2 registry",
+                project_id, len(rows),
+            )
+            req_ids, req_details = [], []
+            for r in rows:
+                identifier = r.external_id or r.title
+                req_ids.append(identifier)
+                req_details.append({
+                    "id": r.id, "external_id": r.external_id, "title": r.title,
+                    "description": r.description or "", "level": r.level,
+                    "confidence": r.confidence or 0.5,
+                    "taxonomy": json.loads(r.taxonomy) if r.taxonomy else {},
+                    "needs_review": r.needs_review,
+                })
+            return req_ids, req_details
     except Exception as exc:
-        logger.warning("Failed to load requirements registry: %s", exc)
-    return await _legacy_extract(rag_context, llm), []
+        logger.warning("Failed to load Faza 2 requirements registry: %s", exc)
+        return [], []
 
 
 async def _legacy_extract(rag_context: str, llm: Any) -> List[str]:
+    """Extract requirement IDs from RAG context using the LLM. Returns [] when no LLM."""
     if not llm:
-        return ["FR-001", "FR-002", "FR-003"]
+        return []
     prompt = (
         "Extract all formal requirement IDs from the documentation below.\n"
         "Return ONLY a valid JSON array of strings, no preamble, no markdown.\n"
@@ -75,7 +123,6 @@ async def _legacy_extract(rag_context: str, llm: Any) -> List[str]:
     try:
         response = await llm.acomplete(prompt)
         raw = strip_fences(str(response).strip())
-        import re
         for match in reversed(list(re.finditer(r"\[.*?\]", raw, re.DOTALL))):
             try:
                 items = json.loads(match.group())
@@ -87,74 +134,12 @@ async def _legacy_extract(rag_context: str, llm: Any) -> List[str]:
         return []
 
 
-async def compute_registry_coverage(
-    project_id: str,
-    cases: List[Dict],
-    rag_context: str,
-    llm: Any = None,
-) -> Dict[str, Any]:
-    """
-    Enhanced coverage computation. Priority:
-      1. Faza 5+6 persisted scores -> return immediately (best quality)
-      2. Faza 2 registry -> live matching
-      3. Legacy LLM extraction -> original behavior
-    """
-    # Priority 1: Try Faza 5+6 persisted scores
-    persisted = await _load_persisted_scores(project_id)
-    if persisted:
-        logger.info("project=%s - using Faza 5+6 persisted scores (%d reqs)", project_id, persisted["requirements_total"])
-        return persisted
-
-    # Priority 2+3: Faza 2 registry or legacy extraction
-    req_ids, req_details = await extract_requirements_from_registry(project_id, rag_context, llm)
-
-    if not req_ids:
-        return {
-            "requirements_from_docs": [], "requirements_covered": [],
-            "coverage_pct": 0.0, "requirements_total": 0,
-            "requirements_covered_count": 0, "requirements_uncovered": [],
-            "registry_available": False, "per_requirement_scores": [],
-        }
-
-    covered = await _match_requirements_to_tests(cases, req_ids, req_details, llm)
-
-    total = len(req_ids)
-    n_covered = len(set(covered) & set(req_ids))
-    uncovered = [r for r in req_ids if r not in set(covered)]
-    coverage_pct = round((n_covered / total) * 100, 1) if total else 0.0
-
-    per_req_scores = []
-    if req_details:
-        covered_set = set(covered)
-        for detail in req_details:
-            identifier = detail.get("external_id") or detail.get("title")
-            is_covered = identifier in covered_set
-            confidence = detail.get("confidence", 0.5)
-            base = 40.0 if is_covered else 0.0
-            penalty = -10.0 * max(0, 0.7 - confidence) / 0.7 if confidence < 0.7 else 0.0
-            per_req_scores.append({
-                "requirement_id": detail["id"], "external_id": detail.get("external_id"),
-                "title": detail["title"], "level": detail["level"],
-                "taxonomy": detail.get("taxonomy", {}), "is_covered": is_covered,
-                "score": round(max(0, base + penalty), 1), "confidence": confidence,
-                "needs_review": detail.get("needs_review", False),
-            })
-
-    return {
-        "requirements_from_docs": req_ids, "requirements_covered": covered,
-        "coverage_pct": coverage_pct, "requirements_total": total,
-        "requirements_covered_count": n_covered, "requirements_uncovered": uncovered,
-        "registry_available": bool(req_details), "per_requirement_scores": per_req_scores,
-    }
-
-
 async def _load_persisted_scores(project_id: str) -> Dict[str, Any] | None:
-    """Try loading Faza 5+6 persisted coverage scores. Returns None if none exist."""
-    try:
-        from app.db.engine import AsyncSessionLocal
-        from app.db.requirements_models import CoverageScore, Requirement
-        from sqlalchemy import select
+    """Try loading Faza 5+6 persisted coverage scores. Returns None if none exist.
 
+    is_covered = total_score > 0 (Faza 6 model; a single mapping yields ≥35 pts).
+    """
+    try:
         async with AsyncSessionLocal() as db:
             stmt = select(CoverageScore).where(CoverageScore.project_id == project_id)
             score_rows = (await db.execute(stmt)).scalars().all()
@@ -203,6 +188,47 @@ async def _load_persisted_scores(project_id: str) -> Dict[str, Any] | None:
         return None
 
 
+def _build_live_coverage_result(
+    req_ids: List[str],
+    req_details: List[Dict],
+    covered: List[str],
+) -> Dict[str, Any]:
+    """
+    Build the coverage result dict from live matching output (Priority 2/3).
+
+    is_covered = identifier appears in the matched set (binary pattern/LLM match).
+    This differs from Priority 1's score > 0 threshold — do not unify.
+    """
+    total = len(req_ids)
+    covered_set = set(covered)
+    n_covered = len(covered_set & set(req_ids))
+    uncovered = [r for r in req_ids if r not in covered_set]
+    coverage_pct = round((n_covered / total) * 100, 1) if total else 0.0
+
+    per_req_scores = []
+    if req_details:
+        for detail in req_details:
+            identifier = detail.get("external_id") or detail.get("title")
+            is_covered = identifier in covered_set
+            confidence = detail.get("confidence", 0.5)
+            base = 40.0 if is_covered else 0.0
+            penalty = -10.0 * max(0, 0.7 - confidence) / 0.7 if confidence < 0.7 else 0.0
+            per_req_scores.append({
+                "requirement_id": detail["id"], "external_id": detail.get("external_id"),
+                "title": detail["title"], "level": detail["level"],
+                "taxonomy": detail.get("taxonomy", {}), "is_covered": is_covered,
+                "score": round(max(0, base + penalty), 1), "confidence": confidence,
+                "needs_review": detail.get("needs_review", False),
+            })
+
+    return {
+        "requirements_from_docs": req_ids, "requirements_covered": covered,
+        "coverage_pct": coverage_pct, "requirements_total": total,
+        "requirements_covered_count": n_covered, "requirements_uncovered": uncovered,
+        "registry_available": bool(req_details), "per_requirement_scores": per_req_scores,
+    }
+
+
 async def _match_requirements_to_tests(
     cases: List[Dict], req_ids: List[str], req_details: List[Dict], llm: Any,
 ) -> List[str]:
@@ -210,7 +236,9 @@ async def _match_requirements_to_tests(
         return []
     covered: set = set()
     for case in cases:
-        text = " ".join(str(v) for v in case.values() if isinstance(v, str))
+        # Skip _-prefixed internal keys (e.g. _source_file, _identifier added by mapping_workflow)
+        # to avoid false matches like a file named "FR-017_suite.csv" matching requirement FR-017.
+        text = " ".join(str(v) for k, v in case.items() if isinstance(v, str) and not k.startswith("_"))
         for req_id in req_ids:
             if req_id.lower() in text.lower():
                 covered.add(req_id)
@@ -236,7 +264,6 @@ async def _match_requirements_to_tests(
             try:
                 response = await llm.acomplete(prompt)
                 raw = strip_fences(str(response).strip())
-                import re
                 for match in reversed(list(re.finditer(r"\[.*?\]", raw, re.DOTALL))):
                     try:
                         covered.update(json.loads(match.group()))

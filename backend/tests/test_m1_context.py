@@ -509,11 +509,10 @@ async def test_extract_requirements_returns_list():
         "FR-003: The capture window is 7 days by default.\n"
     )
 
-    # 1. llm=None → mock list
+    # 1. llm=None → empty list (no phantom IDs)
     result = await _legacy_extract(rag_context, llm=None)
     assert isinstance(result, list), "Expected a list"
-    assert len(result) > 0, "Expected non-empty list when llm=None"
-    assert all(isinstance(r, str) for r in result), "All items must be strings"
+    assert result == [], "Expected empty list when no LLM available"
 
     # 2. With a mock LLM that returns a JSON array
     mock_llm = MagicMock()
