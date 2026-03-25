@@ -35,6 +35,7 @@ interface UtilityPanelProps {
   buildMode?: BuildMode;
   onBuildModeChange?: (mode: BuildMode) => void;
   onBuild?: (mode: BuildMode) => void;
+  isBuildRunning?: boolean;
   // Pending context files (selected but not yet built)
   pendingContextFiles?: string[];
   // Heatmap
@@ -69,6 +70,7 @@ export default function UtilityPanel({
   buildMode = "append",
   onBuildModeChange,
   onBuild,
+  isBuildRunning = false,
   pendingContextFiles = [],
   heatmapData = [],
   lastMappingDate,
@@ -107,6 +109,7 @@ export default function UtilityPanel({
               buildMode={buildMode}
               onBuildModeChange={onBuildModeChange}
               onBuild={onBuild}
+              isBuildRunning={isBuildRunning}
               pendingContextFiles={pendingContextFiles}
             />
           )}

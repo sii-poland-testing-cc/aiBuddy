@@ -362,6 +362,7 @@ export default function ProjectPage() {
           buildMode={buildMode}
           onBuildModeChange={setBuildMode}
           onBuild={handleBuild}
+          isBuildRunning={isBuilding}
           heatmapData={heatmap}
           lastMappingDate={lastMappingDate}
           isMappingRunning={isMappingRunning}

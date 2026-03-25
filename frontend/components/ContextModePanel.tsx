@@ -20,6 +20,7 @@ export interface ContextModePanelProps {
   onBuildModeChange?: (mode: BuildMode) => void;
   onBuild?: (mode: BuildMode) => void;
   pendingContextFiles?: string[];
+  isBuildRunning?: boolean;
 }
 
 // ── Static mind map thumbnail SVG ─────────────────────────────────────────────
@@ -62,6 +63,7 @@ export function ContextModePanel({
   onBuildModeChange,
   onBuild = () => {},
   pendingContextFiles = [],
+  isBuildRunning = false,
 }: ContextModePanelProps) {
   const [glossarySearch, setGlossarySearch] = useState("");
   const [localBuildMode, setLocalBuildMode] = useState<BuildMode>(buildMode);
@@ -256,14 +258,19 @@ export function ContextModePanel({
         </div>
         <button
           data-testid="build-btn"
-          onClick={() => onBuild(localBuildMode)}
-          className="w-full font-semibold transition-opacity hover:opacity-[0.88] text-buddy-surface"
+          onClick={() => !isBuildRunning && onBuild(localBuildMode)}
+          disabled={isBuildRunning}
+          className="w-full font-semibold transition-opacity text-buddy-surface"
           style={{
-            padding: 8, borderRadius: 5, border: "none", cursor: "pointer", fontSize: 12,
-            background: "linear-gradient(135deg, #c8902a, #e0aa42)",
+            padding: 8, borderRadius: 5, border: "none", fontSize: 12,
+            background: isBuildRunning
+              ? "linear-gradient(135deg, #7a5618, #9a7028)"
+              : "linear-gradient(135deg, #c8902a, #e0aa42)",
+            cursor: isBuildRunning ? "not-allowed" : "pointer",
+            opacity: isBuildRunning ? 0.65 : 1,
           }}
         >
-          ▶ Uruchom budowanie
+          {isBuildRunning ? "⏳ Budowanie w toku…" : "▶ Uruchom budowanie"}
         </button>
       </PanelCard>
     </div>

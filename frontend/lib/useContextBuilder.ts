@@ -107,6 +107,7 @@ export function useContextBuilder(projectId: string) {
   }, [projectId]);
 
   const buildContext = useCallback(async (files: File[], mode: "append" | "rebuild" = "append") => {
+    if (isBuilding) return;
     setIsBuilding(true);
     setLog([]);
     setStage("parse");
@@ -177,11 +178,13 @@ export function useContextBuilder(projectId: string) {
       }
     } finally {
       setIsBuilding(false);
-      ops?.updateOp(projectId, OP_TYPE, { isRunning: false });
+      setProgress(0);
+      setStage(null);
+      ops?.updateOp(projectId, OP_TYPE, { isRunning: false, progress: 0, stage: null });
     }
   // fetchStatus is stable (useCallback with [projectId]); ops is stable (context)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, ops]);
+  }, [projectId, ops, isBuilding]);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
