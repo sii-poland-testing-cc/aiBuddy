@@ -8,14 +8,29 @@ const OP_TYPE = "requirements" as const;
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+/** Mirrors backend `requirements_models.py` Requirement.level enum values. */
+export type RequirementLevel =
+  | "domain_concept"
+  | "feature"
+  | "functional_req"
+  | "acceptance_criterion"
+  | (string & Record<never, never>);  // allow future backend values without breaking TS
+
+/** Mirrors backend Requirement.source_type enum values. */
+export type RequirementSourceType =
+  | "formal"
+  | "implicit"
+  | "reconstructed"
+  | (string & Record<never, never>);  // allow future backend values without breaking TS
+
 export interface Requirement {
   id: string;
   parent_id: string | null;
-  level: string;
+  level: RequirementLevel;
   external_id: string | null;
   title: string;
   description: string;
-  source_type: string;
+  source_type: RequirementSourceType;
   confidence: number;
   human_reviewed: boolean;
   needs_review: boolean;
