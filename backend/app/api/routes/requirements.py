@@ -24,7 +24,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.requirements_workflow import RequirementsWorkflow, RequirementsProgressEvent
-from app.api.sse import sse_event
+from app.api.sse import SSE_DONE, sse_event
 from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
@@ -133,7 +133,7 @@ async def _run_extraction(project_id: str, user_message: str):
         logger.exception("Requirements extraction failed")
         yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
-        yield "data: [DONE]\n\n"
+        yield SSE_DONE
 
 
 async def _persist_requirements(db: AsyncSession, project_id: str, flat_reqs: List[Dict]):

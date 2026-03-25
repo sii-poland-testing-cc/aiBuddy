@@ -522,3 +522,75 @@ async def test_extract_requirements_returns_list():
     assert all(isinstance(r, str) for r in result2)
     assert "FR-001" in result2
     assert "FR-003" in result2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _merge_mind_maps + _merge_glossaries  (pure-function unit tests)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_merge_mind_maps_deduplicates_nodes_by_id():
+    from app.api.routes.context import _merge_mind_maps
+
+    existing = {"nodes": [{"id": "A", "label": "A"}], "edges": []}
+    new      = {"nodes": [{"id": "A", "label": "A-new"}, {"id": "B", "label": "B"}], "edges": []}
+    result = _merge_mind_maps(existing, new)
+
+    ids = [n["id"] for n in result["nodes"]]
+    assert ids.count("A") == 1, "Duplicate node A must appear exactly once"
+    assert "B" in ids
+    # existing wins on duplicate (existing processed first)
+    assert next(n for n in result["nodes"] if n["id"] == "A")["label"] == "A"
+
+
+def test_merge_mind_maps_deduplicates_edges_by_source_target():
+    from app.api.routes.context import _merge_mind_maps
+
+    e1 = {"source": "A", "target": "B"}
+    existing = {"nodes": [], "edges": [e1]}
+    new      = {"nodes": [], "edges": [{"source": "A", "target": "B"}, {"source": "B", "target": "C"}]}
+    result = _merge_mind_maps(existing, new)
+
+    keys = [(e["source"], e["target"]) for e in result["edges"]]
+    assert keys.count(("A", "B")) == 1
+    assert ("B", "C") in keys
+
+
+def test_merge_mind_maps_empty_inputs():
+    from app.api.routes.context import _merge_mind_maps
+
+    assert _merge_mind_maps({}, {}) == {"nodes": [], "edges": []}
+    assert _merge_mind_maps({"nodes": [{"id": "X"}], "edges": []}, {}) == {
+        "nodes": [{"id": "X"}], "edges": []
+    }
+
+
+def test_merge_glossaries_new_wins_on_duplicate_term():
+    from app.api.routes.context import _merge_glossaries
+
+    existing = [{"term": "Auth", "definition": "old"}]
+    new      = [{"term": "auth", "definition": "new"}, {"term": "Token", "definition": "JWT"}]
+    result = _merge_glossaries(existing, new)
+
+    terms = {t["term"].lower(): t for t in result}
+    assert terms["auth"]["definition"] == "new", "New entry must win on duplicate term"
+    assert "token" in terms
+
+
+def test_merge_glossaries_case_insensitive_dedup():
+    from app.api.routes.context import _merge_glossaries
+
+    existing = [{"term": "SMOKE TEST", "definition": "a"}]
+    new      = [{"term": "smoke test", "definition": "b"}]
+    result = _merge_glossaries(existing, new)
+
+    assert len(result) == 1, "Case-insensitive duplicate should produce one entry"
+    assert result[0]["definition"] == "b"
+
+
+def test_merge_glossaries_empty_inputs():
+    from app.api.routes.context import _merge_glossaries
+
+    assert _merge_glossaries([], []) == []
+    assert _merge_glossaries([{"term": "T", "definition": "d"}], []) == [
+        {"term": "T", "definition": "d"}
+    ]

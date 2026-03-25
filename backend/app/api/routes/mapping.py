@@ -23,7 +23,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.mapping_workflow import MappingWorkflow, MappingProgressEvent
-from app.api.sse import sse_event
+from app.api.sse import SSE_DONE, sse_event
 from app.api.streaming import stream_with_keepalive
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
@@ -110,7 +110,7 @@ async def _run_mapping(project_id: str, file_paths: List[str], user_message: str
         logger.exception("Mapping workflow failed")
         yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
-        yield "data: [DONE]\n\n"
+        yield SSE_DONE
 
 
 async def _persist_mappings(db: AsyncSession, project_id: str, mappings: List[Dict]):

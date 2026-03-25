@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # M1 workflow timeout (seconds); large corpora with many batches need more time
     M1_WORKFLOW_TIMEOUT_SECONDS: int = 1800
 
+    # M2 workflow timeout (seconds; audit + optimize); increase for large test suites
+    M2_WORKFLOW_TIMEOUT_SECONDS: int = 300
+
     # Faza 2 requirements workflow timeout (seconds); reflection adds multiple LLM calls
     REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS: int = 1800
 

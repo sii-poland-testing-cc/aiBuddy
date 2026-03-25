@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.context_builder_workflow import ContextBuilderWorkflow, ProgressEvent
-from app.api.sse import sse_event
+from app.api.sse import SSE_DONE, sse_event
 from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
@@ -37,7 +37,20 @@ logger = logging.getLogger("ai_buddy.context")
 router = APIRouter()
 _context_builder = ContextBuilder()
 
-# Write-through in-memory cache: { project_id: { mind_map, glossary, stats } }
+# Write-through in-memory cache: { project_id: { mind_map, glossary, stats, ... } }
+#
+# WHY: mind map + glossary payloads can be large (hundreds of nodes); caching
+# avoids re-parsing JSON from the DB column on every GET request.
+#
+# MULTI-WORKER NOTE: this dict lives in a single process. In Gunicorn multi-worker
+# deployments each worker has its own independent cache. A build on worker A warms
+# A's cache only; other workers cold-miss and fall through to DB until they serve
+# their first warm-through request. Correctness is unaffected (DB is authoritative),
+# but the cache yields no latency benefit on a fresh worker restart.
+#
+# LOOKUP ORDER:
+#   context_status() → DB-first (must check Chroma for live rag_ready; cache can be stale)
+#   get_mindmap() / get_glossary() → cache-first (JSON payload; DB is the fallback)
 _context_store: dict = {}
 
 UPLOAD_ROOT = Path(settings.UPLOAD_DIR)
@@ -222,7 +235,7 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
         logger.error("M1 context build FAILED — project=%s error=%s", project_id, exc)
         yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
-        yield "data: [DONE]\n\n"
+        yield SSE_DONE
 
 
 # ── Merge helpers ─────────────────────────────────────────────────────────────
@@ -316,16 +329,7 @@ async def get_mindmap(project_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Mind map not available.")
 
     # Warm the cache for subsequent requests
-    _context_store[project_id] = {
-        "mind_map": json.loads(project.mind_map),
-        "glossary": json.loads(project.glossary) if project.glossary else [],
-        "stats": json.loads(project.context_stats) if project.context_stats else {},
-        "context_built_at": (
-            project.context_built_at.isoformat()
-            if isinstance(project.context_built_at, datetime)
-            else str(project.context_built_at)
-        ),
-    }
+    _context_store[project_id] = _load_project_artefacts(project)
     return _context_store[project_id]["mind_map"]
 
 
@@ -345,9 +349,17 @@ async def get_glossary(project_id: str, db: AsyncSession = Depends(get_db)):
     if not project.glossary:
         raise HTTPException(404, "Glossary not available.")
 
-    _context_store[project_id] = {
+    _context_store[project_id] = _load_project_artefacts(project)
+    return _context_store[project_id]["glossary"]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _load_project_artefacts(project: Project) -> dict:
+    """Build a _context_store entry from a Project ORM row (no DB calls)."""
+    return {
         "mind_map": json.loads(project.mind_map) if project.mind_map else {"nodes": [], "edges": []},
-        "glossary": json.loads(project.glossary),
+        "glossary": json.loads(project.glossary) if project.glossary else [],
         "stats": json.loads(project.context_stats) if project.context_stats else {},
         "context_built_at": (
             project.context_built_at.isoformat()
@@ -355,7 +367,3 @@ async def get_glossary(project_id: str, db: AsyncSession = Depends(get_db)):
             else str(project.context_built_at)
         ),
     }
-    return _context_store[project_id]["glossary"]
-
-
-# ── Helper ────────────────────────────────────────────────────────────────────
