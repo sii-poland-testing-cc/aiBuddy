@@ -798,7 +798,7 @@ class MappingWorkflow(Workflow):
                         "description": r.description or "",
                         "level": r.level,
                         "confidence": r.confidence or 0.5,
-                        "taxonomy": json.loads(r.taxonomy) if r.taxonomy else {},
+                        "taxonomy": r.taxonomy or {},
                         "needs_review": r.needs_review,
                     }
                     for r in rows

@@ -97,7 +97,7 @@ async def _load_faza2_requirements(
                     "id": r.id, "external_id": r.external_id, "title": r.title,
                     "description": r.description or "", "level": r.level,
                     "confidence": r.confidence or 0.5,
-                    "taxonomy": json.loads(r.taxonomy) if r.taxonomy else {},
+                    "taxonomy": r.taxonomy or {},
                     "needs_review": r.needs_review,
                 })
             return req_ids, req_details
@@ -165,7 +165,7 @@ async def _load_persisted_scores(project_id: str) -> Dict[str, Any] | None:
                     "external_id": req.external_id if req else None,
                     "title": req.title if req else "Unknown",
                     "level": req.level if req else None,
-                    "taxonomy": json.loads(req.taxonomy) if req and req.taxonomy else {},
+                    "taxonomy": req.taxonomy or {} if req else {},
                     "is_covered": is_covered, "score": s.total_score,
                     "confidence": req.confidence if req else 0.5,
                     "needs_review": req.needs_review if req else False,

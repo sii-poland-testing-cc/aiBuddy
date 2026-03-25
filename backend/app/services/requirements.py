@@ -5,7 +5,6 @@ Business logic for persisting extracted requirements and gaps.
 Separated from the route layer so it can be tested and reused independently.
 """
 
-import json
 import logging
 from typing import Dict, List
 
@@ -64,7 +63,7 @@ async def persist_gaps(
     """Persist requirement gaps as a JSON field on the Project.context_stats column."""
     project = await db.get(Project, project_id)
     if project:
-        existing_stats = json.loads(project.context_stats or "{}") if project.context_stats else {}
+        existing_stats = project.context_stats or {}
         existing_stats["requirement_gaps"] = gaps
-        project.context_stats = json.dumps(existing_stats, ensure_ascii=False)
+        project.context_stats = existing_stats
         await db.commit()

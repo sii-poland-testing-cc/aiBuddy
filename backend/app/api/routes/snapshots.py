@@ -4,7 +4,6 @@ Audit Snapshots read API
 Endpoints to retrieve and manage per-project audit history.
 """
 
-import json
 import logging
 from typing import Any, Dict, List
 
@@ -24,11 +23,11 @@ def _parse_snapshot(snap: AuditSnapshot) -> Dict[str, Any]:
     return {
         "id": snap.id,
         "created_at": snap.created_at.isoformat(),
-        "files_used": json.loads(snap.files_used or "[]"),
-        "summary": json.loads(snap.summary or "{}"),
-        "requirements_uncovered": json.loads(snap.requirements_uncovered or "[]"),
-        "recommendations": json.loads(snap.recommendations or "[]"),
-        "diff": json.loads(snap.diff) if snap.diff else None,
+        "files_used": snap.files_used or [],
+        "summary": snap.summary or {},
+        "requirements_uncovered": snap.requirements_uncovered or [],
+        "recommendations": snap.recommendations or [],
+        "diff": snap.diff,
     }
 
 
@@ -73,7 +72,7 @@ async def get_trend(
 
     for snap in rows:
         labels.append(snap.created_at.isoformat())
-        summary = json.loads(snap.summary or "{}")
+        summary = snap.summary or {}
         coverage.append(summary.get("coverage_pct", 0.0))
         duplicates.append(summary.get("duplicates_found", 0))
         requirements_covered.append(summary.get("requirements_covered", 0))

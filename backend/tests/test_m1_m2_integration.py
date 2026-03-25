@@ -775,9 +775,9 @@ def test_snapshot_saved_after_audit(app_client):
 
     snap = snapshots[0]
     assert snap.summary is not None
-    summary = json.loads(snap.summary)
+    summary = snap.summary
     assert "coverage_pct" in summary, f"summary missing coverage_pct: {summary}"
-    assert any("sample_tests.csv" in p for p in json.loads(snap.files_used or "[]"))
+    assert any("sample_tests.csv" in p for p in snap.files_used or [])
     assert snap.diff is None, "First audit must have diff=None"
 
 
@@ -807,7 +807,7 @@ def test_diff_computed_on_second_audit(app_client):
 
     newest = snapshots[0]
     assert newest.diff is not None, "Second audit must have a diff"
-    diff = json.loads(newest.diff)
+    diff = newest.diff
     assert "coverage_delta" in diff
     assert "new_covered" in diff
     assert "files_added" in diff

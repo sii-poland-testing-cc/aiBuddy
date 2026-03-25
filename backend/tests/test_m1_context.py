@@ -426,7 +426,6 @@ def test_audit_snapshot_table_exists(app_client):
     app_client triggers lifespan → init_db() which must create audit_snapshots.
     Verify the model class and that all JSON fields round-trip correctly.
     """
-    import json
     from app.db.models import AuditSnapshot
 
     assert AuditSnapshot.__tablename__ == "audit_snapshots"
@@ -454,19 +453,19 @@ def test_audit_snapshot_table_exists(app_client):
     snap = AuditSnapshot(
         id=snap_id,
         project_id="test-project-id",
-        files_used=json.dumps(["file1.xlsx"]),
-        summary=json.dumps(summary_data),
-        requirements_uncovered=json.dumps(uncovered),
-        recommendations=json.dumps(recs),
-        diff=json.dumps(diff_data),
+        files_used=["file1.xlsx"],
+        summary=summary_data,
+        requirements_uncovered=uncovered,
+        recommendations=recs,
+        diff=diff_data,
     )
 
-    # All JSON fields round-trip correctly
-    assert json.loads(snap.summary)["coverage_pct"] == 33.3        # type: ignore[arg-type]
-    assert json.loads(snap.requirements_uncovered) == uncovered     # type: ignore[arg-type]
-    assert json.loads(snap.recommendations) == recs                 # type: ignore[arg-type]
-    assert json.loads(snap.diff)["coverage_delta"] == 12.5          # type: ignore[arg-type]
-    assert json.loads(snap.files_used) == ["file1.xlsx"]            # type: ignore[arg-type]
+    # All JSON fields are stored as Python objects (JsonType handles serialization at DB boundary)
+    assert snap.summary["coverage_pct"] == 33.3             # type: ignore[index]
+    assert snap.requirements_uncovered == uncovered          # type: ignore[comparison-overlap]
+    assert snap.recommendations == recs                      # type: ignore[comparison-overlap]
+    assert snap.diff["coverage_delta"] == 12.5               # type: ignore[index]
+    assert snap.files_used == ["file1.xlsx"]                 # type: ignore[comparison-overlap]
 
     # id matches what we passed
     assert snap.id == snap_id

@@ -5,7 +5,6 @@ Business logic for persisting requirement↔TC mappings and coverage scores.
 Separated from the route layer so it can be tested and reused independently.
 """
 
-import json
 import logging
 from typing import Dict, List
 
@@ -36,7 +35,7 @@ async def persist_mappings(
             tc_identifier=m.get("tc_identifier", "unknown"),
             mapping_confidence=m.get("mapping_confidence", 0.5),
             mapping_method=m.get("mapping_method", "embedding"),
-            coverage_aspects=json.dumps(m.get("coverage_aspects", [])),
+            coverage_aspects=m.get("coverage_aspects", []),
             human_verified=False,
         )
         db.add(row)
@@ -68,8 +67,8 @@ async def persist_scores(
             confidence_penalty=s.get("confidence_penalty", 0),
             crossref_bonus=s.get("crossref_bonus", 0),
             matched_tc_count=s.get("matched_tc_count", 0),
-            coverage_aspects_present=json.dumps(s.get("coverage_aspects_present", [])),
-            coverage_aspects_missing=json.dumps(s.get("coverage_aspects_missing", [])),
+            coverage_aspects_present=s.get("coverage_aspects_present", []),
+            coverage_aspects_missing=s.get("coverage_aspects_missing", []),
         )
         db.add(row)
 

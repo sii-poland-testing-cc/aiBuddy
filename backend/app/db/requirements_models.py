@@ -25,6 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 # Import Base from existing models to share the same metadata
 from app.db.models import Base
+from app.db.types import JsonType
 
 
 class Requirement(Base):
@@ -68,13 +69,13 @@ class Requirement(Base):
     # "implicit"      — derived from Jira stories / acceptance criteria
     # "reconstructed" — reverse-engineered from code/tests (lowest confidence)
 
-    # JSON: list of source filenames or references
-    source_references: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # e.g. '["srs_v2.docx", "PROJ-1234"]'
+    # List of source filenames or references
+    source_references: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["srs_v2.docx", "PROJ-1234"]
 
-    # Taxonomy tags (JSON)
-    taxonomy: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # e.g. '{"module": "payments", "risk_level": "high", "business_domain": "compliance"}'
+    # Taxonomy tags
+    taxonomy: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
+    # e.g. {"module": "payments", "risk_level": "high", "business_domain": "compliance"}
 
     # Quality metrics
     completeness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -163,10 +164,65 @@ class RequirementTCMapping(Base):
     # "human"     — manually confirmed by user
 
     # What aspects of the requirement does this TC cover?
-    coverage_aspects: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["happy_path", "negative", "boundary", "integration", "edge_case"]
+    coverage_aspects: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["happy_path", "negative", "boundary", "integration", "edge_case"]
 
     human_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationships
+    requirement: Mapped["Requirement"] = relationship(
+        "Requirement", back_populates="tc_mappings"
+    )
+
+
+class CoverageScore(Base):
+    """
+    Multi-dimensional coverage score per requirement per audit snapshot.
+
+    Scoring model (0–100 total):
+      base_coverage      (0–40)  — is the happy path covered?
+      depth_coverage      (0–30)  — negative, boundary, edge cases
+      quality_weight      (0–20)  — quality of matched TCs
+      confidence_penalty  (-10–0) — penalty for low-confidence mappings
+      crossref_bonus      (0–10)  — covered by both manual + automated tests
+    """
+    __tablename__ = "coverage_scores"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    requirement_id: Mapped[str] = mapped_column(
+        String, ForeignKey("requirements.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    snapshot_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("audit_snapshots.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+
+    # Score components
+    total_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    base_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    depth_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    quality_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    confidence_penalty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    crossref_bonus: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Context
+    matched_tc_count: Mapped[int] = mapped_column(Integer, default=0)
+    coverage_aspects_present: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["happy_path", "negative"]
+    coverage_aspects_missing: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["boundary", "edge_case", "integration"]
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -217,58 +273,3 @@ class RequirementTCMapping(Base):
         if clamped != float(v):
             _log.warning("crossref_bonus %s clamped to %s", v, clamped)
         return clamped
-
-    # Relationships
-    requirement: Mapped["Requirement"] = relationship(
-        "Requirement", back_populates="tc_mappings"
-    )
-
-
-class CoverageScore(Base):
-    """
-    Multi-dimensional coverage score per requirement per audit snapshot.
-
-    Scoring model (0–100 total):
-      base_coverage      (0–40)  — is the happy path covered?
-      depth_coverage      (0–30)  — negative, boundary, edge cases
-      quality_weight      (0–20)  — quality of matched TCs
-      confidence_penalty  (-10–0) — penalty for low-confidence mappings
-      crossref_bonus      (0–10)  — covered by both manual + automated tests
-    """
-    __tablename__ = "coverage_scores"
-
-    id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    requirement_id: Mapped[str] = mapped_column(
-        String, ForeignKey("requirements.id", ondelete="CASCADE"),
-        nullable=False, index=True,
-    )
-    snapshot_id: Mapped[Optional[str]] = mapped_column(
-        String, ForeignKey("audit_snapshots.id", ondelete="SET NULL"),
-        nullable=True, index=True,
-    )
-    project_id: Mapped[str] = mapped_column(
-        String, ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False, index=True,
-    )
-
-    # Score components
-    total_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    base_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    depth_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    quality_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    confidence_penalty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    crossref_bonus: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-
-    # Context
-    matched_tc_count: Mapped[int] = mapped_column(Integer, default=0)
-    coverage_aspects_present: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["happy_path", "negative"]
-    coverage_aspects_missing: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["boundary", "edge_case", "integration"]
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-    )

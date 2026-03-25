@@ -12,7 +12,6 @@ Endpoints:
 """
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -283,7 +282,7 @@ async def requirements_gaps(
     if not project:
         raise HTTPException(404, "Project not found")
 
-    stats = json.loads(project.context_stats or "{}") if project.context_stats else {}
+    stats = project.context_stats or {}
     gaps = stats.get("requirement_gaps", [])
 
     return {"project_id": project_id, "gaps": gaps}
@@ -311,10 +310,6 @@ async def update_requirement(
         raise HTTPException(404, "Requirement not found")
 
     update_data = body.model_dump(exclude_none=True)
-
-    # Handle taxonomy as JSON
-    if "taxonomy" in update_data:
-        update_data["taxonomy"] = json.dumps(update_data["taxonomy"])
 
     for key, value in update_data.items():
         setattr(req, key, value)
@@ -360,7 +355,7 @@ def _req_to_dict(r: Requirement) -> Dict[str, Any]:
         "title": r.title,
         "description": r.description,
         "source_type": r.source_type,
-        "taxonomy": json.loads(r.taxonomy) if r.taxonomy else None,
+        "taxonomy": r.taxonomy,
         "completeness_score": r.completeness_score,
         "confidence": r.confidence,
         "human_reviewed": r.human_reviewed,

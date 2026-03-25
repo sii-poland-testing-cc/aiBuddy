@@ -12,7 +12,6 @@ for fast in-memory reads on the same server instance.
 """
 
 import asyncio
-import json
 import logging
 import shutil
 from datetime import datetime, timezone
@@ -175,10 +174,10 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
                         project = await db.get(Project, project_id)
                         if project and project.context_built_at:
                             existing = {
-                                "mind_map": json.loads(project.mind_map) if project.mind_map else {"nodes": [], "edges": []},
-                                "glossary": json.loads(project.glossary) if project.glossary else [],
+                                "mind_map": project.mind_map or {"nodes": [], "edges": []},
+                                "glossary": project.glossary or [],
                             }
-                            existing_files = json.loads(project.context_files) if project.context_files else []
+                            existing_files = project.context_files or []
                 except Exception:
                     pass
             else:
@@ -198,11 +197,11 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
             async with AsyncSessionLocal() as db:
                 project = await db.get(Project, project_id)
                 if project:
-                    project.mind_map = json.dumps(result["mind_map"], ensure_ascii=False)
-                    project.glossary = json.dumps(result["glossary"], ensure_ascii=False)
-                    project.context_stats = json.dumps(result["stats"], ensure_ascii=False)
+                    project.mind_map = result["mind_map"]
+                    project.glossary = result["glossary"]
+                    project.context_stats = result["stats"]
                     project.context_built_at = built_at
-                    project.context_files = json.dumps(merged_files)
+                    project.context_files = merged_files
                     await db.commit()
                 else:
                     logger.warning(
@@ -280,13 +279,13 @@ async def context_status(project_id: str, db: AsyncSession = Depends(get_db)):
         # Crucially this prevents M2 test-file uploads (which write to the same
         # Chroma collection) from falsely advertising rag_ready=True.
         rag_ready = await _context_builder.is_indexed(project_id)
-        stats = json.loads(project.context_stats) if project.context_stats else None
+        stats = project.context_stats
         built_at = (
             project.context_built_at.isoformat()
             if isinstance(project.context_built_at, datetime)
             else str(project.context_built_at)
         )
-        files = json.loads(project.context_files) if project.context_files else []
+        files = project.context_files or []
         return {
             "project_id": project_id,
             "rag_ready": rag_ready,
@@ -358,9 +357,9 @@ async def get_glossary(project_id: str, db: AsyncSession = Depends(get_db)):
 def _load_project_artefacts(project: Project) -> dict:
     """Build a _context_store entry from a Project ORM row (no DB calls)."""
     return {
-        "mind_map": json.loads(project.mind_map) if project.mind_map else {"nodes": [], "edges": []},
-        "glossary": json.loads(project.glossary) if project.glossary else [],
-        "stats": json.loads(project.context_stats) if project.context_stats else {},
+        "mind_map": project.mind_map or {"nodes": [], "edges": []},
+        "glossary": project.glossary or [],
+        "stats": project.context_stats or {},
         "context_built_at": (
             project.context_built_at.isoformat()
             if isinstance(project.context_built_at, datetime)

@@ -5,7 +5,6 @@ Business logic for creating, diffing, and pruning AuditSnapshot records.
 Separated from the route layer so it can be tested and reused independently.
 """
 
-import json
 import logging
 from pathlib import Path
 from typing import List
@@ -49,10 +48,10 @@ async def save_snapshot(
     # Compute diff vs previous snapshot
     diff = None
     if previous:
-        prev_summary   = json.loads(previous.summary or "{}")
-        prev_uncovered = set(json.loads(previous.requirements_uncovered or "[]"))
+        prev_summary   = previous.summary or {}
+        prev_uncovered = set(previous.requirements_uncovered or [])
         curr_uncovered = set(requirements_uncovered)
-        prev_files     = set(json.loads(previous.files_used or "[]"))
+        prev_files     = set(previous.files_used or [])
         curr_files     = set(files_used)
 
         diff = {
@@ -70,11 +69,11 @@ async def save_snapshot(
 
     snapshot = AuditSnapshot(
         project_id=project_id,
-        files_used=json.dumps(files_used),
-        summary=json.dumps(summary),
-        requirements_uncovered=json.dumps(requirements_uncovered),
-        recommendations=json.dumps(recommendations),
-        diff=json.dumps(diff) if diff is not None else None,
+        files_used=files_used,
+        summary=summary,
+        requirements_uncovered=requirements_uncovered,
+        recommendations=recommendations,
+        diff=diff,
     )
     db.add(snapshot)
 

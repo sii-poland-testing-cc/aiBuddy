@@ -17,16 +17,16 @@ def _make_snapshot(project_id: str, offset_seconds: int = 0, **overrides):
         id=str(uuid.uuid4()),
         project_id=project_id,
         created_at=datetime.now(timezone.utc) + timedelta(seconds=offset_seconds),
-        files_used=json.dumps(overrides.get("files_used", ["test.csv"])),
-        summary=json.dumps(overrides.get("summary", {
+        files_used=overrides.get("files_used", ["test.csv"]),
+        summary=overrides.get("summary", {
             "coverage_pct": 80.0,
             "duplicates_found": 2,
             "requirements_total": 10,
             "requirements_covered": 8,
-        })),
-        requirements_uncovered=json.dumps(overrides.get("requirements_uncovered", ["FR-009", "FR-010"])),
-        recommendations=json.dumps(overrides.get("recommendations", ["Add more tests"])),
-        diff=json.dumps(overrides.get("diff")) if "diff" in overrides else None,
+        }),
+        requirements_uncovered=overrides.get("requirements_uncovered", ["FR-009", "FR-010"]),
+        recommendations=overrides.get("recommendations", ["Add more tests"]),
+        diff=overrides.get("diff"),
     )
     return snap
 
@@ -288,7 +288,7 @@ def test_chat_auto_selects_new_files_only(app_client):
 
     snap = asyncio.get_event_loop().run_until_complete(_query_snap())
     assert snap is not None
-    files_used = json.loads(snap.files_used or "[]")
+    files_used = snap.files_used or []
     assert any("file_v2.csv" in p for p in files_used), \
         f"file_v2.csv should be in files_used: {files_used}"
     assert not any("file_v1.csv" in p for p in files_used), \

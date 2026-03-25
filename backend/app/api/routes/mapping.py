@@ -12,7 +12,6 @@ Endpoints:
 """
 
 import asyncio
-import json
 import logging
 from typing import Dict, List, Optional
 
@@ -218,7 +217,7 @@ async def coverage_scores(
             "external_id": req.external_id if req else None,
             "title": req.title if req else "Unknown",
             "level": req.level if req else None,
-            "taxonomy": json.loads(req.taxonomy) if req and req.taxonomy else None,
+            "taxonomy": req.taxonomy if req else None,
         })
 
     return {
@@ -307,7 +306,7 @@ async def coverage_heatmap(
     modules: Dict[str, List] = {}
     for s in score_rows:
         req = reqs_by_id.get(s.requirement_id)
-        taxonomy = json.loads(req.taxonomy) if req and req.taxonomy else {}
+        taxonomy = req.taxonomy or {} if req else {}
         module = taxonomy.get("module", "unknown")
         modules.setdefault(module, []).append({
             "requirement_id": s.requirement_id,
@@ -357,7 +356,7 @@ async def verify_mapping(
     if body.mapping_confidence is not None:
         mapping.mapping_confidence = body.mapping_confidence
     if body.coverage_aspects is not None:
-        mapping.coverage_aspects = json.dumps(body.coverage_aspects)
+        mapping.coverage_aspects = body.coverage_aspects
     mapping.mapping_method = "human"
 
     await db.commit()
@@ -394,7 +393,7 @@ def _mapping_to_dict(m: RequirementTCMapping) -> Dict:
         "tc_identifier": m.tc_identifier,
         "mapping_confidence": m.mapping_confidence,
         "mapping_method": m.mapping_method,
-        "coverage_aspects": json.loads(m.coverage_aspects) if m.coverage_aspects else [],
+        "coverage_aspects": m.coverage_aspects or [],
         "human_verified": m.human_verified,
         "created_at": m.created_at.isoformat() if m.created_at else None,
     }
@@ -411,8 +410,8 @@ def _score_to_dict(s: CoverageScore) -> Dict:
         "confidence_penalty": s.confidence_penalty,
         "crossref_bonus": s.crossref_bonus,
         "matched_tc_count": s.matched_tc_count,
-        "coverage_aspects_present": json.loads(s.coverage_aspects_present) if s.coverage_aspects_present else [],
-        "coverage_aspects_missing": json.loads(s.coverage_aspects_missing) if s.coverage_aspects_missing else [],
+        "coverage_aspects_present": s.coverage_aspects_present or [],
+        "coverage_aspects_missing": s.coverage_aspects_missing or [],
     }
 
 
