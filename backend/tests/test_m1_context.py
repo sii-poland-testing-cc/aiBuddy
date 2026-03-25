@@ -474,19 +474,20 @@ def test_audit_snapshot_table_exists(app_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AuditWorkflow._extract_requirements
+# audit_workflow_integration — coverage helpers
+# (previously tested via AuditWorkflow._requirements_in_tests / _extract_requirements,
+#  now tested at their live home in the integration module)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_requirements_in_tests_pattern_match():
     """Pattern matching covers requirements mentioned in test case fields."""
-    from app.agents.audit_workflow import AuditWorkflow
+    from app.agents.audit_workflow_integration import _match_requirements_to_tests
 
     cases = [{"name": "Test FR-002 card schemes", "tags": ""}]
     known_reqs = ["FR-001", "FR-002", "FR-003"]
 
-    wf = AuditWorkflow(llm=None, timeout=30)
-    result = await wf._requirements_in_tests(cases, known_reqs)
+    result = await _match_requirements_to_tests(cases, known_reqs, [], llm=None)
 
     assert "FR-002" in result
     assert "FR-001" not in result
@@ -496,11 +497,11 @@ async def test_requirements_in_tests_pattern_match():
 @pytest.mark.asyncio
 async def test_extract_requirements_returns_list():
     """
-    _extract_requirements with llm=None returns the mock list.
+    _legacy_extract with llm=None returns the mock list.
     With a real-ish mock LLM, it parses JSON and returns a list of strings.
     """
     from unittest.mock import AsyncMock, MagicMock
-    from app.agents.audit_workflow import AuditWorkflow
+    from app.agents.audit_workflow_integration import _legacy_extract
 
     rag_context = (
         "FR-001: The system shall support Visa payments.\n"
@@ -509,8 +510,7 @@ async def test_extract_requirements_returns_list():
     )
 
     # 1. llm=None → mock list
-    wf_no_llm = AuditWorkflow(llm=None, timeout=30)
-    result = await wf_no_llm._extract_requirements(rag_context)
+    result = await _legacy_extract(rag_context, llm=None)
     assert isinstance(result, list), "Expected a list"
     assert len(result) > 0, "Expected non-empty list when llm=None"
     assert all(isinstance(r, str) for r in result), "All items must be strings"
@@ -518,8 +518,7 @@ async def test_extract_requirements_returns_list():
     # 2. With a mock LLM that returns a JSON array
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["FR-001", "FR-002", "FR-003"]')
-    wf_with_llm = AuditWorkflow(llm=mock_llm, timeout=30)
-    result2 = await wf_with_llm._extract_requirements(rag_context)
+    result2 = await _legacy_extract(rag_context, llm=mock_llm)
     assert isinstance(result2, list)
     assert all(isinstance(r, str) for r in result2)
     assert "FR-001" in result2

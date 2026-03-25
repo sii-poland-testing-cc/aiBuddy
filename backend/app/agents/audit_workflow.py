@@ -31,12 +31,18 @@ from llama_index.core.workflow import (
     step,
 )
 
+from app.agents.audit_workflow_integration import compute_registry_coverage
 from app.core.config import settings
-from app.utils.json_utils import parse_json_array, parse_json_object, strip_fences
+from app.utils.json_utils import parse_json_object, strip_fences
 from app.rag.context_builder import ContextBuilder
 from app.parsers.test_case_parser import build_tc_text, parse_test_file
 
 logger = logging.getLogger("ai_buddy.audit")
+
+# Cosine similarity thresholds for duplicate detection.
+# Pairs above CERTAIN are flagged immediately; pairs in (CANDIDATE, CERTAIN) go to LLM.
+_DUPE_CERTAIN_THRESHOLD    = 0.98
+_DUPE_CANDIDATE_THRESHOLD  = 0.93
 
 
 # ─── Events ──────────────────────────────────────────────────────────────────
@@ -116,23 +122,9 @@ class AuditWorkflow(Workflow):
         ctx.write_event_to_stream(
             AnalysisProgressEvent(message="Detecting duplicates…", progress=0.4)
         )
-        embedded = await self._embed_test_cases(cases)
-        certain, candidates = self._find_duplicate_candidates(embedded)
-        await ctx.store.set("certain_duplicates", certain)
-        await ctx.store.set("llm_candidates", candidates)
-
-        if candidates and self.llm:
-            ctx.write_event_to_stream(
-                AnalysisProgressEvent(message=f"LLM judging {len(candidates)} candidate duplicate pair(s)…", progress=0.42)
-            )
-            llm_confirmed = await self._judge_candidates_with_llm(candidates)
-        else:
-            llm_confirmed = candidates  # no LLM — treat all candidates as duplicates
-
-        similar_pairs = [c for c in candidates if c not in llm_confirmed]
-        duplicates = certain + llm_confirmed
-        await ctx.store.set("duplicates", duplicates)
-        await ctx.store.set("similar_pairs", similar_pairs)
+        certain, candidates, _, similar_pairs, duplicates = (
+            await self._run_duplicate_detection(ctx, cases)
+        )
 
         ctx.write_event_to_stream(
             AnalysisProgressEvent(message="Checking tag coverage…", progress=0.6)
@@ -162,21 +154,18 @@ class AuditWorkflow(Workflow):
 
         # ── Faza 2: Use Requirements Registry when available ──────────────
         # compute_registry_coverage() checks the DB for a Faza 2 registry.
-        # If found → uses rich requirement details for matching.
-        # If not found → falls back to original _extract_requirements() logic.
-        from app.agents.audit_workflow_integration import compute_registry_coverage
-
+        # Priority: Faza 5+6 persisted scores → Faza 2 registry → legacy LLM extraction.
         coverage_result = await compute_registry_coverage(
             project_id, cases, rag_context, self.llm
         )
 
         requirements_from_docs = coverage_result["requirements_from_docs"]
         await ctx.store.set("requirements_from_docs", requirements_from_docs)
-        logger.info("[DEBUG] requirements_from_docs: %s", requirements_from_docs)
+        logger.debug("requirements_from_docs: %s", requirements_from_docs)
 
         covered = coverage_result["requirements_covered"]
         await ctx.store.set("requirements_covered", covered)
-        logger.info("[DEBUG] requirements_covered: %s", covered)
+        logger.debug("requirements_covered: %s", covered)
 
         # Store Faza 2 enrichment data for the report step
         await ctx.store.set(
@@ -297,6 +286,41 @@ class AuditWorkflow(Workflow):
             "reason": pair.get("reason") or None,
         }
 
+    async def _run_duplicate_detection(
+        self, ctx: Context, cases: List[Dict]
+    ) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict]]:
+        """Embed test cases, find candidates, LLM-judge them.
+
+        Returns (certain, candidates, llm_confirmed, similar_pairs, duplicates).
+        """
+        embedded = await self._embed_test_cases(cases)
+        certain, candidates = self._find_duplicate_candidates(embedded)
+        await ctx.store.set("certain_duplicates", certain)
+        await ctx.store.set("llm_candidates", candidates)
+
+        if candidates and self.llm:
+            ctx.write_event_to_stream(
+                AnalysisProgressEvent(
+                    message=f"LLM judging {len(candidates)} candidate duplicate pair(s)…",
+                    progress=0.42,
+                )
+            )
+            llm_confirmed = await self._judge_candidates_with_llm(candidates)
+        else:
+            llm_confirmed = candidates  # no LLM — treat all candidates as duplicates
+
+        # Track confirmed pairs by object identity — each confirmed entry is
+        # {**pair, "reason": ...}, so dict equality would never match the original.
+        confirmed_keys = {(id(r["tc_a"]), id(r["tc_b"])) for r in llm_confirmed}
+        similar_pairs = [
+            c for c in candidates
+            if (id(c["tc_a"]), id(c["tc_b"])) not in confirmed_keys
+        ]
+        duplicates = certain + llm_confirmed
+        await ctx.store.set("duplicates", duplicates)
+        await ctx.store.set("similar_pairs", similar_pairs)
+        return certain, candidates, llm_confirmed, similar_pairs, duplicates
+
     async def _embed_test_cases(
         self, cases: List[Dict]
     ) -> List[Tuple[Dict, List[float]]]:
@@ -319,10 +343,12 @@ class AuditWorkflow(Workflow):
     @staticmethod
     def _find_duplicate_candidates(
         embedded: List[Tuple[Dict, List[float]]],
-        threshold_certain: float = 0.98,
-        threshold_candidate: float = 0.93,
     ) -> Tuple[List[Dict], List[Dict]]:
-        """Return (certain_duplicates, candidates_for_llm) via cosine similarity."""
+        """Return (certain_duplicates, candidates_for_llm) via cosine similarity.
+
+        Pairs with sim >= _DUPE_CERTAIN_THRESHOLD are flagged without LLM review.
+        Pairs in [_DUPE_CANDIDATE_THRESHOLD, _DUPE_CERTAIN_THRESHOLD) go to the LLM judge.
+        """
         import numpy as np
 
         n = len(embedded)
@@ -346,9 +372,9 @@ class AuditWorkflow(Workflow):
             for j in range(i + 1, n):
                 case_j, emb_j = embedded[j]
                 sim = cosine(emb_i, emb_j)
-                if sim >= threshold_certain:
+                if sim >= _DUPE_CERTAIN_THRESHOLD:
                     certain.append({"tc_a": case_i, "tc_b": case_j, "similarity": round(sim, 4)})
-                elif sim >= threshold_candidate:
+                elif sim >= _DUPE_CANDIDATE_THRESHOLD:
                     candidates.append({"tc_a": case_i, "tc_b": case_j, "similarity": round(sim, 4)})
 
         logger.info("Certain duplicates: %d, LLM candidates: %d", len(certain), len(candidates))
@@ -369,8 +395,7 @@ class AuditWorkflow(Workflow):
             )
             batch = sorted(candidates, key=lambda p: p["similarity"], reverse=True)[:20]
 
-        # Judge all candidate pairs concurrently (semaphore limits to 5 parallel API calls)
-        sem = asyncio.Semaphore(5)
+        sem = asyncio.Semaphore(settings.LLM_CONCURRENT_CALLS)
 
         async def _judge_one(pair: Dict):
             tc_a, tc_b = pair["tc_a"], pair["tc_b"]
@@ -411,79 +436,6 @@ Respond with ONLY a JSON object, no markdown:
 
         results = await asyncio.gather(*[_judge_one(p) for p in batch])
         return [r for r in results if r is not None]
-
-    async def _requirements_in_tests(
-        self, cases: List[Dict], known_reqs: List[str]
-    ) -> List[str]:
-        """Return which known requirement IDs are mentioned in the test suite.
-
-        NOTE: This method is kept for backward compatibility.
-        The primary path now goes through audit_workflow_integration.compute_registry_coverage(),
-        which calls its own matching logic. This method is still used as a fallback
-        inside that integration layer.
-        """
-        if not known_reqs:
-            return []
-
-        # Step A — pattern matching (no LLM needed)
-        covered: set[str] = set()
-        for case in cases:
-            text = " ".join(str(v) for v in case.values() if isinstance(v, str))
-            for req in known_reqs:
-                if req.lower() in text.lower():
-                    covered.add(req)
-
-        # Step B — LLM fallback when pattern matching finds nothing
-        if not covered and self.llm:
-            prompt = (
-                "Given these test cases:\n"
-                f"{json.dumps([c.get('name', '') for c in cases[:20]])}\n\n"
-                f"And these requirements:\n{known_reqs}\n\n"
-                "Which requirements are covered by at least one test case?\n"
-                "Return ONLY a valid JSON array of covered requirement IDs."
-            )
-            try:
-                response = await self.llm.acomplete(prompt, max_tokens=512)
-                raw = str(response).strip()
-                covered = set(parse_json_array(raw))
-            except Exception as exc:
-                logger.warning("LLM requirement matching failed: %s", exc)
-
-        return list(covered)
-
-    async def _extract_requirements(self, rag_context: str) -> List[str]:
-        """Extract formal requirement IDs (e.g. FR-001) from the RAG context.
-
-        NOTE: This method is kept for backward compatibility.
-        The primary path now goes through audit_workflow_integration.compute_registry_coverage().
-        This method is still called as a fallback when no Faza 2 registry exists.
-        """
-        logger.info("[DEBUG] _extract_requirements: RAG context length: %d", len(rag_context))
-        logger.info("[DEBUG] _extract_requirements: LLM instance: %s", self.llm)
-
-        if not self.llm:
-            return ["FR-001", "FR-002", "FR-003"]
-
-        prompt = (
-            "Extract all formal requirement IDs from the documentation below.\n"
-            "Return ONLY a valid JSON array of strings, no preamble, no markdown.\n"
-            'Examples: ["FR-001", "FR-002", "NFR-Performance"]\n'
-            "Rules:\n"
-            "- Include only requirement IDs (e.g. FR-*, NFR-*, REQ-*, US-*)\n"
-            "- Do NOT include test case IDs (e.g. TC-*, test identifiers)\n"
-            "- If no formal requirement IDs exist, return []\n\n"
-            f"Documentation:\n{rag_context}"
-        )
-        try:
-            response = await self.llm.acomplete(prompt, max_tokens=512)
-            raw = str(response).strip()
-            logger.info("[DEBUG] _extract_requirements: raw LLM response: %r", raw[:500])
-            items = parse_json_array(raw)
-            # Post-filter: drop anything that looks like a test case ID (TC-*)
-            return [r for r in items if not str(r).upper().startswith("TC-")]
-        except Exception as exc:
-            logger.exception("[DEBUG] _extract_requirements: exception")
-            return []
 
     async def _llm_recommendations(
         self, cases: List[Dict], context: str, user_question: str = ""

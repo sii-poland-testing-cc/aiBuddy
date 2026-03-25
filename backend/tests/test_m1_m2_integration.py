@@ -570,7 +570,7 @@ def test_coverage_reflects_requirement_gaps(app_client):
     )
 
     with patch(
-             "app.agents.audit_workflow_integration.compute_registry_coverage",
+             "app.agents.audit_workflow.compute_registry_coverage",
              AsyncMock(return_value=FAKE_COVERAGE_RESULT),
          ), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
@@ -613,7 +613,7 @@ def test_coverage_zero_without_m1_context(app_client):
     """
     Without M1 context (no docs indexed), coverage_pct must be 0.0
     and recommendations must include a hint to run Context Builder.
-    _extract_requirements is patched to return [] (simulates empty RAG context).
+    compute_registry_coverage is patched to return empty (simulates no context/registry).
     """
     from pathlib import Path
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -652,7 +652,7 @@ def test_coverage_zero_without_m1_context(app_client):
     }
 
     with patch(
-             "app.agents.audit_workflow_integration.compute_registry_coverage",
+             "app.agents.audit_workflow.compute_registry_coverage",
              AsyncMock(return_value=EMPTY_COVERAGE_RESULT),
          ), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
@@ -869,7 +869,13 @@ def test_no_false_duplicates_on_title_field(app_client):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -937,7 +943,13 @@ def test_no_false_duplicates_fr002_fr003(app_client):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -1009,7 +1021,13 @@ def test_identical_tc_detected_as_certain_duplicate(app_client, tmp_path):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Add more tests."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -1132,7 +1150,13 @@ def test_report_includes_duplicate_pairs(app_client, tmp_path):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Add more tests."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -1200,7 +1224,13 @@ def test_report_zero_duplicates_on_fr002_fr003(app_client):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",

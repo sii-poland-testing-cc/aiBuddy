@@ -13,6 +13,8 @@ import json
 import logging
 from typing import Any, Dict, List, Tuple
 
+from app.utils.json_utils import strip_fences
+
 logger = logging.getLogger("ai_buddy.audit_integration")
 
 
@@ -72,9 +74,8 @@ async def _legacy_extract(rag_context: str, llm: Any) -> List[str]:
     )
     try:
         response = await llm.acomplete(prompt)
-        raw = str(response).strip()
+        raw = strip_fences(str(response).strip())
         import re
-        raw = re.sub(r"```[a-z]*\s*", "", raw).replace("```", "").strip()
         for match in reversed(list(re.finditer(r"\[.*?\]", raw, re.DOTALL))):
             try:
                 items = json.loads(match.group())
@@ -234,9 +235,8 @@ async def _match_requirements_to_tests(
             )
             try:
                 response = await llm.acomplete(prompt)
-                raw = str(response).strip()
+                raw = strip_fences(str(response).strip())
                 import re
-                raw = re.sub(r"```[a-z]*\s*", "", raw).replace("```", "").strip()
                 for match in reversed(list(re.finditer(r"\[.*?\]", raw, re.DOTALL))):
                     try:
                         covered.update(json.loads(match.group()))
