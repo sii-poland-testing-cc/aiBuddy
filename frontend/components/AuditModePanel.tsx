@@ -8,6 +8,7 @@ import { PanelCard } from "./PanelCard";
 import { SourcesCard } from "./SourcesCard";
 import { TierButton } from "./TierButton";
 import { AuditResultCard } from "./AuditResultCard";
+import { coverageColor, coverageBg } from "../lib/coverageColor";
 
 type Tier = "audit" | "optimize" | "regenerate" | "rag_chat";
 
@@ -29,14 +30,10 @@ export interface AuditModePanelProps {
 // ── CovBadge ──────────────────────────────────────────────────────────────────
 
 function CovBadge({ pct }: { pct: number }) {
-  const cls = pct >= 80 ? "rgba(74,158,107,0.2) #4a9e6b"
-    : pct >= 50 ? "rgba(200,144,42,0.2) #c8902a"
-    : "rgba(192,80,74,0.2) #e08080";
-  const [bg, color] = cls.split(" ");
   return (
     <span
       className="font-mono font-bold"
-      style={{ padding: "1px 6px", borderRadius: 3, fontSize: 10, background: bg, color }}
+      style={{ padding: "1px 6px", borderRadius: 3, fontSize: 10, background: coverageBg(pct), color: coverageColor(pct) }}
     >
       {Math.round(pct)}%
     </span>

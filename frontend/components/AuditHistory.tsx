@@ -10,6 +10,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
+import { coverageColor } from "../lib/coverageColor";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -60,11 +62,6 @@ function formatDate(iso: string): string {
   return `${day} ${month} ${hh}:${mm}`;
 }
 
-function coverageColor(pct: number): string {
-  if (pct >= 80) return "#4a9e6b";
-  if (pct >= 50) return "#c8902a";
-  return "#c85a3a";
-}
 
 function DiffBadge({ delta }: { delta: number }) {
   if (delta > 0)
