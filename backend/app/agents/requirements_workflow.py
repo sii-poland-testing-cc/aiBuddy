@@ -18,8 +18,11 @@ NOTE: Uses LlamaIndex Workflow Context API v0.14+
   Read:  value = await ctx.store.get("key")
 """
 
+import asyncio
+import copy
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -32,20 +35,11 @@ from llama_index.core.workflow import (
     step,
 )
 
+from app.core.config import settings
 from app.rag.context_builder import ContextBuilder
+from app.utils.json_utils import strip_fences
 
 logger = logging.getLogger("ai_buddy.requirements")
-
-
-def _strip_fences(text: str) -> str:
-    """Remove markdown code fences and find the first valid JSON value."""
-    import re
-    text = re.sub(r"^```[a-z]*\s*", "", text.strip())
-    text = re.sub(r"\s*```$", "", text)
-    for i, ch in enumerate(text):
-        if ch in ("{", "["):
-            return text[i:]
-    return text
 
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
@@ -121,50 +115,75 @@ Return ONLY valid JSON — no preamble, no markdown fences:
 Documentation:
 """
 
-VALIDATE_REQUIREMENTS_PROMPT = """You are a QA requirements reviewer. Review the extracted requirements below for quality and completeness.
+REVIEW_REQUIREMENTS_PROMPT = """\
+You are a senior QA requirements architect performing a critical quality review.
+You will be given:
+1. A sample of the source documentation
+2. Extracted requirements (features → functional requirements → acceptance criteria)
+3. Identified gaps
 
-For each requirement, check:
-1. Is it testable? (has clear expected behavior)
-2. Is it unambiguous? (single interpretation)
-3. Is it complete? (sufficient detail to write test cases)
-4. Are there duplicates or overlaps?
-5. Are there obvious gaps — areas of the system not covered?
+Your task: find flaws. Be specific. Focus on the most impactful issues only.
 
-Return ONLY valid JSON:
-{
-  "validated_requirements": [
-    {
-      "external_id_or_title": "identifier",
-      "is_valid": true,
-      "issues": [],
-      "adjusted_confidence": 0.85,
-      "completeness_score": 0.8,
-      "review_notes": "optional notes"
-    }
+Return ONLY valid JSON — no preamble, no markdown fences:
+{{
+  "verdict": "APPROVED" | "NEEDS_REVISION",
+  "missing_requirements": [
+    {{"area": "...", "description": "clearly present in source but not extracted", "suggested_title": "..."}}
+  ],
+  "incomplete_requirements": [
+    {{"title_or_id": "...", "issue": "vague/untestable/insufficient detail", "suggested_fix": "..."}}
   ],
   "duplicates": [
-    {
-      "req_a": "identifier",
-      "req_b": "identifier",
-      "reason": "why they overlap"
-    }
+    {{"req_a": "title or external_id", "req_b": "title or external_id", "reason": "why they overlap"}}
   ],
-  "additional_gaps": [
-    {
-      "area": "area name",
-      "description": "what's missing",
-      "severity": "high|medium|low"
-    }
+  "hallucinations": [
+    {{"title_or_id": "...", "reason": "not supported by source documentation"}}
   ],
-  "overall_assessment": {
-    "completeness_rating": "high|medium|low",
-    "testability_rating": "high|medium|low",
-    "recommendation": "summary recommendation"
-  }
-}
+  "missing_acceptance_criteria": [
+    {{"title_or_id": "...", "risk_level": "high|medium", "suggested_ac": "When X then Y"}}
+  ]
+}}
 
-Requirements to validate:
+Rules:
+- Return "APPROVED" when you find no meaningful issues.
+- List at most 5 items per category — prioritise the highest impact.
+- Only flag hallucinations when you are certain the requirement has no basis in the source.
+- Only flag missing ACs for high/medium risk requirements that have zero ACs.
+
+Source documentation (sample):
+{source_sample}
+
+Extracted requirements:
+{features_json}
+
+Identified gaps:
+{gaps_json}
 """
+
+
+# ─── Module-level helpers ─────────────────────────────────────────────────────
+
+def _as_dict(item, id_field: str = "title_or_id") -> Dict:
+    """Normalise a bare string issue item to {id_field: item} so .get() is always safe."""
+    if isinstance(item, str):
+        return {id_field: item}
+    return item if isinstance(item, dict) else {}
+
+
+async def _guarded(sem: asyncio.Semaphore, coro):
+    """Acquire *sem* then await *coro* — rate-limits parallel LLM calls."""
+    async with sem:
+        return await coro
+
+
+# Fixed RAG queries that provide broad coverage regardless of user_message.
+# The caller appends a user_message-derived query when present.
+_RAG_QUERIES: List[str] = [
+    "functional requirements specifications features",
+    "business rules constraints validations",
+    "acceptance criteria user stories scenarios",
+    "non-functional requirements performance security",
+]
 
 
 # ─── Events ──────────────────────────────────────────────────────────────────
@@ -214,6 +233,41 @@ class RequirementsWorkflow(Workflow):
         self.llm = llm
         self.context_builder = ContextBuilder()
 
+    # ── RAG context helper ────────────────────────────────────────────────────
+
+    async def _build_rag_context(
+        self, ctx: Context, project_id: str, user_message: str
+    ) -> tuple:
+        """Fan out across _RAG_QUERIES (+ optional user_message query) and return
+        (deduplicated combined_context, unique_sources)."""
+        queries = list(_RAG_QUERIES)
+        if user_message:
+            queries.append(f"{user_message} requirements")
+
+        all_context_parts: List[str] = []
+        all_sources: List[Dict] = []
+        seen_filenames: set = set()
+
+        for i, query in enumerate(queries):
+            ctx.write_event_to_stream(RequirementsProgressEvent(
+                message=f"Querying knowledge base ({i + 1}/{len(queries)})…",
+                progress=0.05 + 0.15 * ((i + 1) / len(queries)),
+                stage="extract"
+            ))
+            context_text, sources = await self.context_builder.build_with_sources(
+                project_id, query=query, top_k=8
+            )
+            all_context_parts.append(context_text)
+            for s in sources:
+                if s["filename"] not in seen_filenames:
+                    seen_filenames.add(s["filename"])
+                    all_sources.append(s)
+
+        combined = "\n\n---\n\n".join(all_context_parts)
+        # Deduplicate chunks across queries; cap at 30K chars
+        combined = self._deduplicate_context(combined, max_chars=30000)
+        return combined, all_sources
+
     # ── Step 1: Extract ──────────────────────────────────────────────────────
 
     @step
@@ -244,43 +298,13 @@ class RequirementsWorkflow(Workflow):
                 rag_sources=[]
             )
 
-        # Multiple RAG queries to get comprehensive coverage
-        queries = [
-            "functional requirements specifications features",
-            "business rules constraints validations",
-            "acceptance criteria user stories scenarios",
-            "non-functional requirements performance security",
-            f"{user_message} requirements" if user_message else "",
-        ]
-        queries = [q for q in queries if q.strip()]
-
-        all_context_parts: List[str] = []
-        all_sources: List[Dict] = []
-        seen_filenames: set = set()
-
-        for i, query in enumerate(queries):
-            ctx.write_event_to_stream(RequirementsProgressEvent(
-                message=f"Querying knowledge base ({i+1}/{len(queries)})…",
-                progress=0.05 + 0.15 * ((i + 1) / len(queries)),
-                stage="extract"
-            ))
-            context_text, sources = await self.context_builder.build_with_sources(
-                project_id, query=query, top_k=8
-            )
-            all_context_parts.append(context_text)
-            for s in sources:
-                if s["filename"] not in seen_filenames:
-                    seen_filenames.add(s["filename"])
-                    all_sources.append(s)
-
-        combined_context = "\n\n---\n\n".join(all_context_parts)
-        # Deduplicate chunks that appear in multiple queries; cap at 30K chars
-        # (top_k=8 × 4 queries × 512 chars/chunk ≈ 16K unique after dedup — well within this)
-        combined_context = self._deduplicate_context(combined_context, max_chars=30000)
+        combined_context, all_sources = await self._build_rag_context(
+            ctx, project_id, user_message
+        )
         await ctx.store.set("combined_context", combined_context)
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
-            message=f"Extracting requirements from {len(seen_filenames)} source document(s)…",
+            message=f"Extracting requirements from {len(all_sources)} source document(s)…",
             progress=0.25, stage="extract"
         ))
 
@@ -307,8 +331,6 @@ class RequirementsWorkflow(Workflow):
 
     @step
     async def review(self, ctx: Context, ev: ExtractedRequirementsEvent) -> ReviewedRequirementsEvent:
-        from app.core.config import settings
-
         features = ev.raw_result.get("features", [])
         gaps = ev.raw_result.get("gaps", [])
         metadata = ev.raw_result.get("metadata", {})
@@ -370,17 +392,12 @@ class RequirementsWorkflow(Workflow):
             ))
 
         # ── Rule-based post-processing (always runs) ──────────────────────────
-        validation = {
-            "validated_requirements": [],
-            "duplicates": [],
-            "additional_gaps": [],
-            "overall_assessment": {
-                "completeness_rating": "medium",
-                "testability_rating": "medium",
-                "recommendation": "",
-            },
-        }
-        features = self._apply_validation(features, validation)
+        features = self._flag_low_confidence(features)
+        validation = {"overall_assessment": {
+            "completeness_rating": "medium",
+            "testability_rating": "medium",
+            "recommendation": "",
+        }}
         metadata = self._compute_metadata(features)
 
         n_review = sum(
@@ -405,7 +422,7 @@ class RequirementsWorkflow(Workflow):
     # ── Step 3: Persist & Assemble ───────────────────────────────────────────
 
     @step
-    async def persist(self, ctx: Context, ev: ReviewedRequirementsEvent) -> StopEvent:
+    async def assemble(self, ctx: Context, ev: ReviewedRequirementsEvent) -> StopEvent:
         project_id = await ctx.store.get("project_id")
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
@@ -443,7 +460,7 @@ class RequirementsWorkflow(Workflow):
 
         try:
             response = await self.llm.acomplete(prompt, max_tokens=8192)
-            raw = _strip_fences(str(response).strip())
+            raw = strip_fences(str(response).strip())
             result = json.loads(raw)
 
             # Sanity checks
@@ -459,33 +476,6 @@ class RequirementsWorkflow(Workflow):
             logger.warning("Requirements extraction failed: %s — using fallback", e)
             return self._mock_extraction()
 
-    async def _validate_with_llm(self, flat_reqs: List[Dict]) -> Dict:
-        """Validate extracted requirements using a second LLM pass."""
-        if not self.llm:
-            return {"validated_requirements": [], "duplicates": [],
-                    "additional_gaps": [], "overall_assessment": {
-                        "completeness_rating": "unknown",
-                        "testability_rating": "unknown",
-                        "recommendation": "Enable LLM for validation."
-                    }}
-
-        # Limit context size for validation
-        reqs_summary = json.dumps(flat_reqs[:50], ensure_ascii=False, indent=1)
-        prompt = VALIDATE_REQUIREMENTS_PROMPT + reqs_summary
-
-        try:
-            response = await self.llm.acomplete(prompt)
-            raw = _strip_fences(str(response).strip())
-            return json.loads(raw)
-        except Exception as e:
-            logger.warning("Requirements validation failed: %s", e)
-            return {"validated_requirements": [], "duplicates": [],
-                    "additional_gaps": [], "overall_assessment": {
-                        "completeness_rating": "unknown",
-                        "testability_rating": "unknown",
-                        "recommendation": f"Validation error: {e}"
-                    }}
-
     # ── Reflection helpers ────────────────────────────────────────────────────
 
     async def _review_requirements(
@@ -498,52 +488,14 @@ class RequirementsWorkflow(Workflow):
         features_json = json.dumps(features, ensure_ascii=False)[:12_000]
         gaps_json = json.dumps(gaps, ensure_ascii=False)
 
-        prompt = f"""You are a senior QA requirements architect performing a critical quality review.
-You will be given:
-1. A sample of the source documentation
-2. Extracted requirements (features → functional requirements → acceptance criteria)
-3. Identified gaps
-
-Your task: find flaws. Be specific. Focus on the most impactful issues only.
-
-Return ONLY valid JSON — no preamble, no markdown fences:
-{{
-  "verdict": "APPROVED" | "NEEDS_REVISION",
-  "missing_requirements": [
-    {{"area": "...", "description": "clearly present in source but not extracted", "suggested_title": "..."}}
-  ],
-  "incomplete_requirements": [
-    {{"title_or_id": "...", "issue": "vague/untestable/insufficient detail", "suggested_fix": "..."}}
-  ],
-  "duplicates": [
-    {{"req_a": "title or external_id", "req_b": "title or external_id", "reason": "why they overlap"}}
-  ],
-  "hallucinations": [
-    {{"title_or_id": "...", "reason": "not supported by source documentation"}}
-  ],
-  "missing_acceptance_criteria": [
-    {{"title_or_id": "...", "risk_level": "high|medium", "suggested_ac": "When X then Y"}}
-  ]
-}}
-
-Rules:
-- Return "APPROVED" when you find no meaningful issues.
-- List at most 5 items per category — prioritise the highest impact.
-- Only flag hallucinations when you are certain the requirement has no basis in the source.
-- Only flag missing ACs for high/medium risk requirements that have zero ACs.
-
-Source documentation (sample):
-{source_sample}
-
-Extracted requirements:
-{features_json}
-
-Identified gaps:
-{gaps_json}
-"""
+        prompt = REVIEW_REQUIREMENTS_PROMPT.format(
+            source_sample=source_sample,
+            features_json=features_json,
+            gaps_json=gaps_json,
+        )
         try:
             response = await self.llm.acomplete(prompt, max_tokens=4096)
-            raw = _strip_fences(str(response).strip())
+            raw = strip_fences(str(response).strip())
             return json.loads(raw)
         except Exception as e:
             logger.warning("Requirements review LLM call failed (%s) — treating as APPROVED", e)
@@ -621,12 +573,14 @@ Source documentation (excerpt):
 Return ONLY the corrected requirement as JSON (same structure, all fields preserved). No markdown fences."""
         try:
             response = await self.llm.acomplete(prompt, max_tokens=2048)
-            return json.loads(_strip_fences(str(response).strip()))
+            return json.loads(strip_fences(str(response).strip()))
         except Exception as e:
             logger.warning("Fix req '%s' failed: %s", item.get("title_or_id"), e)
             return None
 
     async def _add_acs_llm(self, source_sample: str, req: Dict, item: Dict, project_id: str = "") -> Optional[List[Dict]]:
+        # _build_prompt is a closure so we can swap `source_sample` for a more targeted
+        # RAG snippet on JSON-decode retry without duplicating the prompt string.
         def _build_prompt(ctx: str) -> str:
             return f"""Generate acceptance criteria for this requirement.
 
@@ -641,7 +595,7 @@ Return ONLY a JSON array of acceptance criteria:
 No markdown fences."""
         try:
             response = await self.llm.acomplete(_build_prompt(source_sample), max_tokens=2048)
-            result = json.loads(_strip_fences(str(response).strip()))
+            result = json.loads(strip_fences(str(response).strip()))
             return result if isinstance(result, list) else None
         except json.JSONDecodeError:
             if project_id:
@@ -649,7 +603,7 @@ No markdown fences."""
                 try:
                     targeted, _ = await self.context_builder.build_with_sources(project_id, query=query, top_k=3)
                     response = await self.llm.acomplete(_build_prompt(targeted), max_tokens=2048)
-                    result = json.loads(_strip_fences(str(response).strip()))
+                    result = json.loads(strip_fences(str(response).strip()))
                     return result if isinstance(result, list) else None
                 except Exception as e2:
                     logger.warning("Add ACs for '%s' retry failed: %s", item.get("title_or_id"), e2)
@@ -659,6 +613,7 @@ No markdown fences."""
             return None
 
     async def _create_req_llm(self, source_sample: str, missing: Dict, project_id: str = "") -> Optional[Dict]:
+        # Same _build_prompt closure pattern as _add_acs_llm — allows targeted RAG retry.
         def _build_prompt(ctx: str) -> str:
             return f"""Create a new functional requirement based on this description.
 
@@ -678,7 +633,7 @@ Return ONLY a JSON object:
 No markdown fences."""
         try:
             response = await self.llm.acomplete(_build_prompt(source_sample), max_tokens=2048)
-            result = json.loads(_strip_fences(str(response).strip()))
+            result = json.loads(strip_fences(str(response).strip()))
             return result if isinstance(result, dict) else None
         except json.JSONDecodeError:
             if project_id:
@@ -686,7 +641,7 @@ No markdown fences."""
                 try:
                     targeted, _ = await self.context_builder.build_with_sources(project_id, query=query, top_k=3)
                     response = await self.llm.acomplete(_build_prompt(targeted), max_tokens=2048)
-                    result = json.loads(_strip_fences(str(response).strip()))
+                    result = json.loads(strip_fences(str(response).strip()))
                     return result if isinstance(result, dict) else None
                 except Exception as e2:
                     logger.warning("Create req '%s' retry failed: %s", missing.get("suggested_title"), e2)
@@ -706,7 +661,7 @@ Return ONLY the merged requirement as JSON (same structure, keep the more comple
 No markdown fences."""
         try:
             response = await self.llm.acomplete(prompt, max_tokens=2048)
-            result = json.loads(_strip_fences(str(response).strip()))
+            result = json.loads(strip_fences(str(response).strip()))
             return result if isinstance(result, dict) else None
         except Exception as e:
             logger.warning("Merge duplicate failed: %s", e)
@@ -720,31 +675,28 @@ No markdown fences."""
         issues: Dict,
         project_id: str = "",
     ) -> tuple:
-        """Apply targeted per-issue fixes in parallel instead of regenerating the full set."""
-        import asyncio
-        import copy
-
-        from app.core.config import settings
+        """Apply targeted per-issue fixes instead of regenerating the full set."""
         features = copy.deepcopy(features)
         gaps = copy.deepcopy(gaps)
         sem = asyncio.Semaphore(settings.LLM_CONCURRENT_CALLS)
+        features = self._apply_hallucination_removals(features, issues)
+        features = await self._apply_dup_merges(features, issues, source_sample)
+        features = await self._apply_incomplete_fixes(features, issues, source_sample, sem)
+        features = await self._apply_missing_acs(features, issues, source_sample, sem, project_id)
+        features = await self._apply_missing_reqs(features, issues, source_sample, sem, project_id)
+        return features, gaps
 
-        def _as_dict(item, id_field: str = "title_or_id") -> Dict:
-            """Normalise a bare string item to {id_field: item} so .get() is always safe."""
-            if isinstance(item, str):
-                return {id_field: item}
-            return item if isinstance(item, dict) else {}
-
-        async def _guarded(coro):
-            async with sem:
-                return await coro
-
-        # ── 1. Remove hallucinations (no LLM needed) ──────────────────────────
+    def _apply_hallucination_removals(self, features: List[Dict], issues: Dict) -> List[Dict]:
+        """Remove requirements flagged as hallucinations (no LLM needed)."""
         for h in [_as_dict(x) for x in issues.get("hallucinations", [])]:
             features = self._remove_req_by_id(features, h.get("title_or_id", ""))
             logger.debug("Removed hallucination: %s", h.get("title_or_id"))
+        return features
 
-        # ── 2. Merge duplicates (sequential to avoid conflicting mutations) ────
+    async def _apply_dup_merges(
+        self, features: List[Dict], issues: Dict, source_sample: str
+    ) -> List[Dict]:
+        """Merge duplicate requirement pairs (sequential to avoid conflicting mutations)."""
         for dup in [_as_dict(x) for x in issues.get("duplicates", [])]:
             fi_a, ri_a = self._find_req(features, dup.get("req_a", ""))
             fi_b, ri_b = self._find_req(features, dup.get("req_b", ""))
@@ -755,177 +707,159 @@ No markdown fences."""
                 if merged:
                     features = self._apply_req_fix(features, dup.get("req_a", ""), merged)
                     features = self._remove_req_by_id(features, dup.get("req_b", ""))
+        return features
 
-        # ── 3. Fix incomplete requirements (parallel, rate-limited) ───────────
+    async def _apply_incomplete_fixes(
+        self, features: List[Dict], issues: Dict, source_sample: str, sem: asyncio.Semaphore
+    ) -> List[Dict]:
+        """Fix vague/untestable requirements in parallel."""
         incomplete = [_as_dict(x) for x in issues.get("incomplete_requirements", [])]
-        if incomplete and self.llm:
-            reqs_for_fix = []
-            items_for_fix = []
-            for item in incomplete:
-                fi, ri = self._find_req(features, item.get("title_or_id", ""))
-                if fi is not None:
-                    reqs_for_fix.append(features[fi]["requirements"][ri])
-                    items_for_fix.append(item)
-            if reqs_for_fix:
-                fixes = await asyncio.gather(
-                    *[_guarded(self._fix_req_llm(source_sample, req, item))
-                      for req, item in zip(reqs_for_fix, items_for_fix)],
-                    return_exceptions=True,
-                )
-                for item, fix in zip(items_for_fix, fixes):
-                    if isinstance(fix, dict):
-                        features = self._apply_req_fix(features, item.get("title_or_id", ""), fix)
-
-        # ── 4. Add missing acceptance criteria (parallel, rate-limited) ───────
-        missing_acs = [_as_dict(x) for x in issues.get("missing_acceptance_criteria", [])]
-        if missing_acs and self.llm:
-            reqs_for_ac = []
-            items_for_ac = []
-            for item in missing_acs:
-                fi, ri = self._find_req(features, item.get("title_or_id", ""))
-                if fi is not None:
-                    reqs_for_ac.append(features[fi]["requirements"][ri])
-                    items_for_ac.append(item)
-            if reqs_for_ac:
-                ac_results = await asyncio.gather(
-                    *[_guarded(self._add_acs_llm(source_sample, req, item, project_id))
-                      for req, item in zip(reqs_for_ac, items_for_ac)],
-                    return_exceptions=True,
-                )
-                for item, acs in zip(items_for_ac, ac_results):
-                    if isinstance(acs, list):
-                        features = self._apply_acs(features, item.get("title_or_id", ""), acs)
-
-        # ── 5. Create missing requirements (parallel, rate-limited) ───────────
-        missing_reqs = [_as_dict(x) for x in issues.get("missing_requirements", [])]
-        if missing_reqs and self.llm:
-            new_reqs = await asyncio.gather(
-                *[_guarded(self._create_req_llm(source_sample, item, project_id)) for item in missing_reqs],
+        if not incomplete or not self.llm:
+            return features
+        reqs_for_fix, items_for_fix = [], []
+        for item in incomplete:
+            fi, ri = self._find_req(features, item.get("title_or_id", ""))
+            if fi is not None:
+                reqs_for_fix.append(features[fi]["requirements"][ri])
+                items_for_fix.append(item)
+        if reqs_for_fix:
+            fixes = await asyncio.gather(
+                *[_guarded(sem, self._fix_req_llm(source_sample, req, item))
+                  for req, item in zip(reqs_for_fix, items_for_fix)],
                 return_exceptions=True,
             )
-            for item, new_req in zip(missing_reqs, new_reqs):
-                if isinstance(new_req, dict):
-                    features = self._insert_req(features, item.get("area", ""), new_req)
+            for item, fix in zip(items_for_fix, fixes):
+                if isinstance(fix, dict):
+                    features = self._apply_req_fix(features, item.get("title_or_id", ""), fix)
+        return features
 
-        return features, gaps
+    async def _apply_missing_acs(
+        self, features: List[Dict], issues: Dict, source_sample: str,
+        sem: asyncio.Semaphore, project_id: str,
+    ) -> List[Dict]:
+        """Add missing acceptance criteria in parallel."""
+        missing_acs = [_as_dict(x) for x in issues.get("missing_acceptance_criteria", [])]
+        if not missing_acs or not self.llm:
+            return features
+        reqs_for_ac, items_for_ac = [], []
+        for item in missing_acs:
+            fi, ri = self._find_req(features, item.get("title_or_id", ""))
+            if fi is not None:
+                reqs_for_ac.append(features[fi]["requirements"][ri])
+                items_for_ac.append(item)
+        if reqs_for_ac:
+            ac_results = await asyncio.gather(
+                *[_guarded(sem, self._add_acs_llm(source_sample, req, item, project_id))
+                  for req, item in zip(reqs_for_ac, items_for_ac)],
+                return_exceptions=True,
+            )
+            for item, acs in zip(items_for_ac, ac_results):
+                if isinstance(acs, list):
+                    features = self._apply_acs(features, item.get("title_or_id", ""), acs)
+        return features
+
+    async def _apply_missing_reqs(
+        self, features: List[Dict], issues: Dict, source_sample: str,
+        sem: asyncio.Semaphore, project_id: str,
+    ) -> List[Dict]:
+        """Create requirements for areas present in source but not extracted, in parallel."""
+        missing_reqs = [_as_dict(x) for x in issues.get("missing_requirements", [])]
+        if not missing_reqs or not self.llm:
+            return features
+        new_reqs = await asyncio.gather(
+            *[_guarded(sem, self._create_req_llm(source_sample, item, project_id))
+              for item in missing_reqs],
+            return_exceptions=True,
+        )
+        for item, new_req in zip(missing_reqs, new_reqs):
+            if isinstance(new_req, dict):
+                features = self._insert_req(features, item.get("area", ""), new_req)
+        return features
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _flatten_requirements(self, features: List[Dict]) -> List[Dict]:
-        """Flatten hierarchical features into a list for validation."""
-        flat = []
-        for feature in features:
-            for req in feature.get("requirements", []):
-                flat.append({
-                    "external_id": req.get("external_id"),
-                    "title": req.get("title", ""),
-                    "description": req.get("description", ""),
-                    "level": req.get("level", "functional_req"),
-                    "source_type": req.get("source_type", "implicit"),
-                    "feature": feature.get("title", ""),
-                    "confidence": req.get("confidence", 0.5),
-                })
-        return flat
+    def _feature_row(self, feature: Dict, feature_id: str, project_id: str) -> Dict:
+        return {
+            "id": feature_id,
+            "project_id": project_id,
+            "parent_id": None,
+            "level": "feature",
+            "external_id": None,
+            "title": feature.get("title", "Unknown Feature"),
+            "description": feature.get("description", ""),
+            "source_type": "implicit",
+            "taxonomy": json.dumps({"module": feature.get("module", "unknown")}),
+            "confidence": 0.9,
+            "completeness_score": None,
+            "needs_review": False,
+            "review_reason": None,
+        }
+
+    def _req_row(self, req: Dict, req_id: str, feature_id: str, project_id: str) -> Dict:
+        confidence = float(req.get("confidence") or 0.5)
+        needs_review = req.get("needs_review", confidence < 0.7)
+        return {
+            "id": req_id,
+            "project_id": project_id,
+            "parent_id": feature_id,
+            "level": req.get("level", "functional_req"),
+            "external_id": req.get("external_id"),
+            "title": req.get("title", ""),
+            "description": req.get("description", ""),
+            "source_type": req.get("source_type", "implicit"),
+            "taxonomy": json.dumps(req.get("taxonomy", {})),
+            "confidence": confidence,
+            "completeness_score": req.get("completeness_score"),
+            "needs_review": needs_review,
+            "review_reason": req.get("review_reason") or (
+                f"Low confidence ({confidence:.2f})" if needs_review else None
+            ),
+        }
+
+    def _ac_row(self, ac: Dict, req_id: str, project_id: str, req: Dict, parent_confidence: float) -> Dict:
+        if not isinstance(ac, dict):
+            ac = {"title": str(ac), "description": "", "testability": "medium"}
+        ac_confidence = float(ac.get("confidence") or parent_confidence * 0.9)
+        return {
+            "id": str(uuid.uuid4()),
+            "project_id": project_id,
+            "parent_id": req_id,
+            "level": "acceptance_criterion",
+            "external_id": None,
+            "title": ac.get("title", ""),
+            "description": ac.get("description", ""),
+            "source_type": req.get("source_type", "implicit"),
+            "taxonomy": json.dumps(req.get("taxonomy", {})),
+            "confidence": ac_confidence,
+            "completeness_score": None,
+            "needs_review": ac_confidence < 0.7,
+            "review_reason": None,
+        }
 
     def _flatten_for_persistence(self, features: List[Dict], project_id: str) -> List[Dict]:
         """Build flat requirement list with UUIDs and parent references for DB."""
-        import uuid
         flat = []
-
         for feature in features:
             feature_id = str(uuid.uuid4())
-            flat.append({
-                "id": feature_id,
-                "project_id": project_id,
-                "parent_id": None,
-                "level": "feature",
-                "external_id": None,
-                "title": feature.get("title", "Unknown Feature"),
-                "description": feature.get("description", ""),
-                "source_type": "implicit",
-                "taxonomy": json.dumps({"module": feature.get("module", "unknown")}),
-                "confidence": 0.9,
-                "completeness_score": None,
-                "needs_review": False,
-                "review_reason": None,
-            })
-
+            flat.append(self._feature_row(feature, feature_id, project_id))
             for req in feature.get("requirements", []):
                 if not isinstance(req, dict):
                     continue
                 req_id = str(uuid.uuid4())
-                confidence = float(req.get("confidence") or 0.5)
-                needs_review = req.get("needs_review", confidence < 0.7)
-
-                flat.append({
-                    "id": req_id,
-                    "project_id": project_id,
-                    "parent_id": feature_id,
-                    "level": req.get("level", "functional_req"),
-                    "external_id": req.get("external_id"),
-                    "title": req.get("title", ""),
-                    "description": req.get("description", ""),
-                    "source_type": req.get("source_type", "implicit"),
-                    "taxonomy": json.dumps(req.get("taxonomy", {})),
-                    "confidence": confidence,
-                    "completeness_score": req.get("completeness_score"),
-                    "needs_review": needs_review,
-                    "review_reason": req.get("review_reason") or (
-                        f"Low confidence ({confidence:.2f})" if needs_review else None
-                    ),
-                })
-
+                row = self._req_row(req, req_id, feature_id, project_id)
+                flat.append(row)
                 for ac in req.get("acceptance_criteria", []):
-                    if not isinstance(ac, dict):
-                        ac = {"title": str(ac), "description": "", "testability": "medium"}
-                    ac_confidence = float(ac.get("confidence") or confidence * 0.9)
-                    flat.append({
-                        "id": str(uuid.uuid4()),
-                        "project_id": project_id,
-                        "parent_id": req_id,
-                        "level": "acceptance_criterion",
-                        "external_id": None,
-                        "title": ac.get("title", ""),
-                        "description": ac.get("description", ""),
-                        "source_type": req.get("source_type", "implicit"),
-                        "taxonomy": json.dumps(req.get("taxonomy", {})),
-                        "confidence": ac_confidence,
-                        "completeness_score": None,
-                        "needs_review": ac_confidence < 0.7,
-                        "review_reason": None,
-                    })
-
+                    flat.append(self._ac_row(ac, req_id, project_id, req, row["confidence"]))
         return flat
 
-    def _apply_validation(self, features: List[Dict], validation: Dict) -> List[Dict]:
-        """Apply validation results back to the feature tree."""
-        validated = {
-            v.get("external_id_or_title", ""): v
-            for v in validation.get("validated_requirements", [])
-        }
-
+    def _flag_low_confidence(self, features: List[Dict]) -> List[Dict]:
+        """Flag requirements with confidence < 0.7 for human review."""
         for feature in features:
             for req in feature.get("requirements", []):
-                key = req.get("external_id") or req.get("title", "")
-                v = validated.get(key)
-                if v:
-                    if v.get("adjusted_confidence") is not None:
-                        req["confidence"] = v["adjusted_confidence"]
-                    if v.get("completeness_score") is not None:
-                        req["completeness_score"] = v["completeness_score"]
-                    if v.get("issues"):
-                        req["needs_review"] = True
-                        req["review_reason"] = "; ".join(v["issues"])
-                    elif not v.get("is_valid", True):
-                        req["needs_review"] = True
-                        req["review_reason"] = v.get("review_notes", "Flagged during validation")
-
-                # Auto-flag low confidence
                 conf = req.get("confidence", 0) or 0
                 if conf < 0.7 and not req.get("needs_review"):
                     req["needs_review"] = True
                     req["review_reason"] = f"Low confidence ({conf:.2f})"
-
         return features
 
     def _compute_metadata(self, features: List[Dict]) -> Dict:

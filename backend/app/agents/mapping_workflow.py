@@ -33,18 +33,10 @@ from llama_index.core.workflow import (
 )
 
 from app.rag.context_builder import ContextBuilder
+from app.utils.json_utils import strip_fences
+from app.parsers.test_case_parser import parse_test_file
 
 logger = logging.getLogger("ai_buddy.mapping")
-
-
-def _strip_fences(text: str) -> str:
-    import re
-    text = re.sub(r"^```[a-z]*\s*", "", text.strip())
-    text = re.sub(r"\s*```$", "", text)
-    for i, ch in enumerate(text):
-        if ch in ("{", "["):
-            return text[i:]
-    return text
 
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
@@ -191,7 +183,7 @@ class MappingWorkflow(Workflow):
 
         test_cases = []
         for path in file_paths:
-            cases = await self._parse_file(path)
+            cases = await parse_test_file(path)
             source = Path(path).name
             for tc in cases:
                 tc["_source_file"] = source
@@ -591,7 +583,7 @@ class MappingWorkflow(Workflow):
 
         try:
             response = await self.llm.acomplete(prompt)
-            raw = _strip_fences(str(response).strip())
+            raw = strip_fences(str(response).strip())
             results = json.loads(raw)
             if isinstance(results, list) and len(results) == len(pairs):
                 return results
@@ -739,7 +731,7 @@ class MappingWorkflow(Workflow):
 
             try:
                 response = await self.llm.acomplete(prompt)
-                raw = _strip_fences(str(response).strip())
+                raw = strip_fences(str(response).strip())
                 data = json.loads(raw)
 
                 depth_map = {"high": 25, "medium": 15, "low": 8}
@@ -852,40 +844,3 @@ class MappingWorkflow(Workflow):
             "requirement_description", "tc_text", "similarity"
         )}
 
-    # ── File parsing (reused from AuditWorkflow) ──────────────────────────────
-
-    async def _parse_file(self, path: str) -> List[Dict]:
-        ext = path.rsplit(".", 1)[-1].lower()
-        if ext in ("xlsx", "csv"):
-            return await self._parse_spreadsheet(path)
-        elif ext == "json":
-            return await self._parse_json(path)
-        elif ext == "feature":
-            return await self._parse_gherkin(path)
-        return []
-
-    async def _parse_spreadsheet(self, path: str) -> List[Dict]:
-        import pandas as pd
-        df = pd.read_excel(path) if path.endswith(".xlsx") else pd.read_csv(path)
-        return df.to_dict(orient="records")
-
-    async def _parse_json(self, path: str) -> List[Dict]:
-        with open(path) as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else [data]
-
-    async def _parse_gherkin(self, path: str) -> List[Dict]:
-        cases = []
-        with open(path) as f:
-            scenario, steps = None, []
-            for line in f:
-                line = line.strip()
-                if line.startswith("Scenario"):
-                    if scenario:
-                        cases.append({"name": scenario, "steps": steps, "tags": []})
-                    scenario, steps = line.split(":", 1)[1].strip(), []
-                elif line.startswith(("Given", "When", "Then", "And")):
-                    steps.append(line)
-            if scenario:
-                cases.append({"name": scenario, "steps": steps, "tags": []})
-        return cases

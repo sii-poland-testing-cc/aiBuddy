@@ -23,6 +23,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.mapping_workflow import MappingWorkflow, MappingProgressEvent
+from app.api.sse import sse_event
+from app.api.streaming import stream_with_keepalive
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
 from app.db.models import ProjectFile
@@ -72,21 +74,29 @@ async def _run_mapping(project_id: str, file_paths: List[str], user_message: str
             user_message=user_message,
         )
 
-        async for ev in handler.stream_events():
-            if isinstance(ev, MappingProgressEvent):
-                yield _sse({
-                    "type": "progress",
-                    "data": {
-                        "message": ev.message,
-                        "progress": ev.progress,
-                        "stage": ev.stage,
-                    },
-                })
+        last_progress = {"message": "Processing…", "progress": 0.05, "stage": "load"}
+        result = None
+        async for kind, item in stream_with_keepalive(handler):
+            if kind == "event":
+                if isinstance(item, MappingProgressEvent):
+                    last_progress = {
+                        "message": item.message,
+                        "progress": item.progress,
+                        "stage": item.stage,
+                    }
+                    yield sse_event({"type": "progress", "data": last_progress})
+                    await asyncio.sleep(0)
+            elif kind == "keepalive":
+                yield sse_event({"type": "progress", "data": last_progress})
                 await asyncio.sleep(0)
-
-        result = await handler
+            elif kind == "result":
+                result = item
+            elif kind == "error":
+                raise item
 
         # Persist mappings and scores to DB
+        if result is None:
+            result = {}
         try:
             async with AsyncSessionLocal() as db:
                 await _persist_mappings(db, project_id, result.get("mappings", []))
@@ -94,11 +104,11 @@ async def _run_mapping(project_id: str, file_paths: List[str], user_message: str
         except Exception as exc:
             logger.warning("Failed to persist mappings/scores: %s", exc)
 
-        yield _sse({"type": "result", "data": result})
+        yield sse_event({"type": "result", "data": result})
 
     except Exception as exc:
         logger.exception("Mapping workflow failed")
-        yield _sse({"type": "error", "data": {"message": str(exc)}})
+        yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
         yield "data: [DONE]\n\n"
 
@@ -440,5 +450,3 @@ def _score_to_dict(s: CoverageScore) -> Dict:
     }
 
 
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

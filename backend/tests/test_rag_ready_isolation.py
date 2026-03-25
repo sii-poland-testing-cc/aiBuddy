@@ -35,7 +35,9 @@ def _make_m1_mock_llm():
     async def _side(prompt, **kwargs):
         if "entities and their relationships" in prompt:
             return _entities
-        if "glossary" in prompt.lower() and "documentation" in prompt:
+        if "domain-specific term" in prompt:  # _enumerate_term_names (phase 1)
+            return _json.dumps(["Test Case", "Defect", "QA Engineer"])
+        if "Write glossary definitions" in prompt:  # _define_term_group (phase 2)
             return _glossary
         return _approved
 

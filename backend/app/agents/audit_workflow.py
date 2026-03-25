@@ -32,7 +32,9 @@ from llama_index.core.workflow import (
 )
 
 from app.core.config import settings
+from app.utils.json_utils import parse_json_array, parse_json_object, strip_fences
 from app.rag.context_builder import ContextBuilder
+from app.parsers.test_case_parser import build_tc_text, parse_test_file
 
 logger = logging.getLogger("ai_buddy.audit")
 
@@ -96,7 +98,7 @@ class AuditWorkflow(Workflow):
 
         test_cases: List[Dict] = []
         for path in file_paths:
-            cases = await self._parse_file(path)
+            cases = await parse_test_file(path)
             test_cases.extend(cases)
 
         ctx.write_event_to_stream(
@@ -295,59 +297,11 @@ class AuditWorkflow(Workflow):
             "reason": pair.get("reason") or None,
         }
 
-    async def _parse_file(self, path: str) -> List[Dict]:
-        """Parse .xlsx / .csv / .json / .feature into a uniform dict list."""
-        ext = path.rsplit(".", 1)[-1].lower()
-        if ext in ("xlsx", "csv"):
-            return await self._parse_spreadsheet(path)
-        elif ext == "json":
-            return await self._parse_json(path)
-        elif ext == "feature":
-            return await self._parse_gherkin(path)
-        return []
-
-    async def _parse_spreadsheet(self, path: str) -> List[Dict]:
-        import pandas as pd
-        df = pd.read_excel(path) if path.endswith(".xlsx") else pd.read_csv(path)
-        return df.to_dict(orient="records")
-
-    async def _parse_json(self, path: str) -> List[Dict]:
-        with open(path) as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else [data]
-
-    async def _parse_gherkin(self, path: str) -> List[Dict]:
-        # Minimal Gherkin parser – replace with `gherkin` package in production
-        cases = []
-        with open(path) as f:
-            scenario, steps = None, []
-            for line in f:
-                line = line.strip()
-                if line.startswith("Scenario"):
-                    if scenario:
-                        cases.append({"name": scenario, "steps": steps, "tags": []})
-                    scenario, steps = line.split(":", 1)[1].strip(), []
-                elif line.startswith(("Given", "When", "Then", "And")):
-                    steps.append(line)
-            if scenario:
-                cases.append({"name": scenario, "steps": steps, "tags": []})
-        return cases
-
-    @staticmethod
-    def _build_tc_text(case: Dict) -> Optional[str]:
-        """Concatenate key fields for embedding; title weighted 2× for similarity."""
-        title    = str(case.get("title")           or case.get("name")       or "").strip()
-        steps    = str(case.get("steps")           or case.get("test_steps") or "").strip()
-        expected = str(case.get("expected_result") or case.get("assertions") or "").strip()
-        if not title and not steps and not expected:
-            return None
-        return f"{title}. {title}. {steps}. {expected}"
-
     async def _embed_test_cases(
         self, cases: List[Dict]
     ) -> List[Tuple[Dict, List[float]]]:
         """Embed each test case using the app's configured embed model."""
-        valid = [(c, self._build_tc_text(c)) for c in cases]
+        valid = [(c, build_tc_text(c)) for c in cases]
         valid = [(c, t) for c, t in valid if t is not None]
 
         results: List[Tuple[Dict, List[float]]] = []
@@ -445,7 +399,7 @@ Respond with ONLY a JSON object, no markdown:
             async with sem:
                 try:
                     response = await self.llm.acomplete(prompt, max_tokens=200)
-                    data = self._parse_json_object(str(response).strip())
+                    data = parse_json_object(str(response).strip())
                     verdict = str(data.get("verdict", "")).upper()
                     reason  = data.get("reason", "")
                     logger.info("LLM verdict for pair (sim=%.4f): %s — %s", pair["similarity"], verdict, reason)
@@ -491,43 +445,11 @@ Respond with ONLY a JSON object, no markdown:
             try:
                 response = await self.llm.acomplete(prompt, max_tokens=512)
                 raw = str(response).strip()
-                covered = set(self._parse_json_array(raw))
+                covered = set(parse_json_array(raw))
             except Exception as exc:
                 logger.warning("LLM requirement matching failed: %s", exc)
 
         return list(covered)
-
-    @staticmethod
-    def _parse_json_object(text: str) -> Dict:
-        """Extract the last valid JSON object {...} from an LLM response."""
-        import re
-        text = re.sub(r"```[a-z]*\s*", "", text).replace("```", "").strip()
-        for match in reversed(list(re.finditer(r"\{.*?\}", text, re.DOTALL))):
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                continue
-        return json.loads(text)
-
-    @staticmethod
-    def _parse_json_array(text: str) -> List:
-        """Extract the last valid JSON array from an LLM response.
-
-        Models sometimes emit reasoning text before or after the JSON, e.g.:
-          '[]\\n\\nWait, let me re-read...\\n\\n["FR-001", "FR-002"]'
-        Scanning from the end for the last '[...]' block returns the real answer.
-        """
-        import re
-        # Strip markdown fences
-        text = re.sub(r"```[a-z]*\s*", "", text).replace("```", "").strip()
-        # Find all [...] candidates and return the last parseable one
-        for match in reversed(list(re.finditer(r"\[.*?\]", text, re.DOTALL))):
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                continue
-        # Last resort: try the whole string
-        return json.loads(text)
 
     async def _extract_requirements(self, rag_context: str) -> List[str]:
         """Extract formal requirement IDs (e.g. FR-001) from the RAG context.
@@ -556,7 +478,7 @@ Respond with ONLY a JSON object, no markdown:
             response = await self.llm.acomplete(prompt, max_tokens=512)
             raw = str(response).strip()
             logger.info("[DEBUG] _extract_requirements: raw LLM response: %r", raw[:500])
-            items = self._parse_json_array(raw)
+            items = parse_json_array(raw)
             # Post-filter: drop anything that looks like a test case ID (TC-*)
             return [r for r in items if not str(r).upper().startswith("TC-")]
         except Exception as exc:
@@ -595,7 +517,7 @@ Respond ONLY with a valid JSON array of 5 strings. No preamble, no markdown."""
 
         try:
             response = await self.llm.acomplete(prompt, max_tokens=1024)
-            raw = str(response).strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            raw = strip_fences(str(response).strip())
             return json.loads(raw)
         except Exception:
             return ["Enable LLM for AI-powered recommendations."]

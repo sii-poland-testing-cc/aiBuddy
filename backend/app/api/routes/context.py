@@ -24,6 +24,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.context_builder_workflow import ContextBuilderWorkflow, ProgressEvent
+from app.api.sse import sse_event
+from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
@@ -111,48 +113,6 @@ async def rebuild_from_existing(
     )
 
 
-async def _stream_with_keepalive(handler, keepalive_interval: float = 5.0):
-    """
-    Yield (kind, item) tuples from a LlamaIndex workflow handler, emitting a
-    ("keepalive", None) tuple every ``keepalive_interval`` seconds when the
-    workflow is silent (e.g. waiting for an LLM response).
-
-    Kinds: "event" (ProgressEvent), "result" (dict), "error" (Exception), "keepalive"
-    """
-    queue: asyncio.Queue = asyncio.Queue()
-
-    async def _collect():
-        try:
-            async for ev in handler.stream_events():
-                await queue.put(("event", ev))
-            result = await handler
-            await queue.put(("result", result))
-        except Exception as exc:
-            await queue.put(("error", exc))
-        finally:
-            await queue.put(("done", None))
-
-    task = asyncio.create_task(_collect())
-    try:
-        getter = asyncio.ensure_future(queue.get())
-        while True:
-            done, _ = await asyncio.wait({getter}, timeout=keepalive_interval)
-            if not done:
-                yield ("keepalive", None)
-                continue
-            kind, item = getter.result()
-            if kind == "done":
-                getter.cancel()
-                break
-            getter = asyncio.ensure_future(queue.get())
-            yield (kind, item)
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
 
 async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
     # ── Rebuild: wipe existing Chroma collection + clear cache ────────────────
@@ -171,14 +131,14 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
     try:
         handler = workflow.run(project_id=project_id, file_paths=file_paths)
 
-        async for kind, item in _stream_with_keepalive(handler):
+        async for kind, item in stream_with_keepalive(handler):
             if kind == "event":
                 if isinstance(item, ProgressEvent):
                     last_progress = {"message": item.message, "progress": item.progress, "stage": item.stage}
-                    yield _sse({"type": "progress", "data": last_progress})
+                    yield sse_event({"type": "progress", "data": last_progress})
                     await asyncio.sleep(0)
             elif kind == "keepalive":
-                yield _sse({"type": "progress", "data": last_progress})
+                yield sse_event({"type": "progress", "data": last_progress})
                 await asyncio.sleep(0)
             elif kind == "result":
                 result = item
@@ -256,11 +216,11 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
             stats.get("term_count", "?"),
             merged_files,
         )
-        yield _sse({"type": "result", "data": result})
+        yield sse_event({"type": "result", "data": result})
 
     except Exception as exc:
         logger.error("M1 context build FAILED — project=%s error=%s", project_id, exc)
-        yield _sse({"type": "error", "data": {"message": str(exc)}})
+        yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
         yield "data: [DONE]\n\n"
 
@@ -399,6 +359,3 @@ async def get_glossary(project_id: str, db: AsyncSession = Depends(get_db)):
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────
-
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

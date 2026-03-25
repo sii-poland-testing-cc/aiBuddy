@@ -19,6 +19,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.audit_workflow import AuditWorkflow, AnalysisProgressEvent
+from app.api.sse import sse_event
 from app.agents.optimize_workflow import OptimizeWorkflow, OptimizeProgressEvent
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
@@ -245,9 +246,9 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
             if llm is None:
                 raise RuntimeError("LLM is not configured. Check LLM_PROVIDER and credentials.")
             response = await llm.acomplete(prompt)
-            yield _sse({"type": "result", "data": {"message": str(response), "rag_sources": sources}})
+            yield sse_event({"type": "result", "data": {"message": str(response), "rag_sources": sources}})
         except Exception as exc:
-            yield _sse({"type": "error", "data": {"message": str(exc)}})
+            yield sse_event({"type": "error", "data": {"message": str(exc)}})
         finally:
             yield "data: [DONE]\n\n"
         return
@@ -274,7 +275,7 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
         # Stream intermediate events (both tiers share the same payload shape)
         async for ev in handler.stream_events():
             if isinstance(ev, (AnalysisProgressEvent, OptimizeProgressEvent)):
-                yield _sse({
+                yield sse_event({
                     "type": "progress",
                     "data": {"message": ev.message, "progress": ev.progress},
                 })
@@ -297,14 +298,12 @@ async def _run_workflow(req: ChatRequest) -> AsyncGenerator[str, None]:
             except Exception as exc:
                 logger.warning("Failed to save audit snapshot: %s", exc)
 
-        yield _sse({"type": "result", "data": result})
+        yield sse_event({"type": "result", "data": result})
 
     except Exception as exc:
-        yield _sse({"type": "error", "data": {"message": str(exc)}})
+        yield sse_event({"type": "error", "data": {"message": str(exc)}})
 
     finally:
         yield "data: [DONE]\n\n"
 
 
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

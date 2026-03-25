@@ -40,6 +40,8 @@ _ENTITIES_RESPONSE = json.dumps({
     ],
 })
 
+_TERM_NAMES_RESPONSE = json.dumps(["Test Case", "Regression"])
+
 _GLOSSARY_RESPONSE = json.dumps([
     {"term": "Test Case",  "definition": "A set of conditions to verify behaviour.", "related_terms": [], "source": "docs"},
     {"term": "Regression", "definition": "Re-execution of tests after changes.",     "related_terms": [], "source": "docs"},
@@ -185,9 +187,11 @@ async def test_m1_reflection_disabled_max_iter_zero():
 
     async def _side(prompt, **kwargs):
         calls.append(prompt[:30])
-        if len(calls) == 1:
+        if "entities and their relationships" in prompt:
             return _ENTITIES_RESPONSE
-        return _GLOSSARY_RESPONSE
+        if "domain-specific term" in prompt:
+            return _TERM_NAMES_RESPONSE
+        return _GLOSSARY_RESPONSE  # "Write glossary definitions"
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side)
@@ -196,16 +200,19 @@ async def test_m1_reflection_disabled_max_iter_zero():
 
     with patch("app.agents.context_builder_workflow.ContextBuilder", return_value=wf.context_builder), \
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
-         patch("app.core.config.settings") as mock_settings:
+         patch("app.agents.context_builder_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 0
         mock_settings.LLM_CONCURRENT_CALLS = 4
+        mock_settings.M1_BATCH_CHARS = 12_000
+        mock_settings.M1_BATCH_OVERLAP = 1_800
+        mock_settings.M1_GLOSSARY_TERMS_PER_GROUP = 15
         handler = wf.run(project_id="refl-zero", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
         result = await handler
 
-    # Only 2 calls: entities + glossary — no critic or refine
-    assert len(calls) == 2
+    # Only 3 calls: entities + enumerate terms + define group — no critic or refine
+    assert len(calls) == 3
     assert result["rag_ready"] is True
 
 
@@ -216,11 +223,13 @@ async def test_m1_reflection_approved_first_pass():
 
     async def _side(prompt, **kwargs):
         calls.append("call")
-        if len(calls) == 1:
+        if "entities and their relationships" in prompt:
             return _ENTITIES_RESPONSE
-        if len(calls) == 2:
+        if "domain-specific term" in prompt:
+            return _TERM_NAMES_RESPONSE
+        if "Write glossary definitions" in prompt:
             return _GLOSSARY_RESPONSE
-        # calls 3+ = critic
+        # calls 4+ = critic
         return _APPROVED_RESPONSE
 
     mock_llm = MagicMock()
@@ -230,16 +239,19 @@ async def test_m1_reflection_approved_first_pass():
 
     with patch("app.agents.context_builder_workflow.ContextBuilder", return_value=wf.context_builder), \
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
-         patch("app.core.config.settings") as mock_settings:
+         patch("app.agents.context_builder_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
+        mock_settings.M1_BATCH_CHARS = 12_000
+        mock_settings.M1_BATCH_OVERLAP = 1_800
+        mock_settings.M1_GLOSSARY_TERMS_PER_GROUP = 15
         handler = wf.run(project_id="refl-approved", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
         result = await handler
 
-    # Exactly 3 calls: entities + glossary + critic (approved on first pass, no refine)
-    assert len(calls) == 3
+    # Exactly 4 calls: entities + enumerate terms + define group + critic (approved, no refine)
+    assert len(calls) == 4
     assert result["rag_ready"] is True
 
 
@@ -253,16 +265,18 @@ async def test_m1_reflection_refines_on_issues():
 
     async def _side(prompt, **kwargs):
         calls.append("call")
-        if len(calls) == 1:
-            return _ENTITIES_RESPONSE         # entity batch
-        if len(calls) == 2:
-            return _GLOSSARY_RESPONSE         # glossary batch
-        if len(calls) == 3:
-            return _NEEDS_REVISION_RESPONSE   # critic: needs revision
-        # calls 4+5: per-issue refine (missing_entity + missing_term, run in separate gather steps)
+        if "entities and their relationships" in prompt:
+            return _ENTITIES_RESPONSE         # entity extraction
+        if "domain-specific term" in prompt:
+            return _TERM_NAMES_RESPONSE       # enumerate term names
+        if "Write glossary definitions" in prompt:
+            return _GLOSSARY_RESPONSE         # define term group
         if len(calls) == 4:
-            return _NEW_ENTITY                # _create_entity_llm for "Payment Gateway"
+            return _NEEDS_REVISION_RESPONSE   # critic: needs revision
+        # calls 5+6: per-issue refine (missing_entity + missing_term)
         if len(calls) == 5:
+            return _NEW_ENTITY                # _create_entity_llm for "Payment Gateway"
+        if len(calls) == 6:
             return _NEW_TERM                  # _create_term_llm for "idempotency key"
         return _APPROVED_RESPONSE             # critic pass 2: approved
 
@@ -273,16 +287,19 @@ async def test_m1_reflection_refines_on_issues():
 
     with patch("app.agents.context_builder_workflow.ContextBuilder", return_value=wf.context_builder), \
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
-         patch("app.core.config.settings") as mock_settings:
+         patch("app.agents.context_builder_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
+        mock_settings.M1_BATCH_CHARS = 12_000
+        mock_settings.M1_BATCH_OVERLAP = 1_800
+        mock_settings.M1_GLOSSARY_TERMS_PER_GROUP = 15
         handler = wf.run(project_id="refl-refine", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
         result = await handler
 
-    # 6 calls: entities + glossary + critic1 + create_entity + create_term + critic2
-    assert len(calls) == 6
+    # 7 calls: entities + enumerate terms + define group + critic1 + create_entity + create_term + critic2
+    assert len(calls) == 7
     node_names = [n["label"] for n in result["mind_map"]["nodes"]]
     assert "Payment Gateway" in node_names, "Refined entity should be in mind map"
     term_names = [t["term"] for t in result["glossary"]]
@@ -293,7 +310,7 @@ async def test_m1_reflection_refines_on_issues():
 async def test_m1_reflection_max_iterations_respected():
     """Critic always returns NEEDS_REVISION (empty issues) but loop stops at REFLECTION_MAX_ITERATIONS=2."""
     # Use an empty-issues NEEDS_REVISION so refine makes zero per-issue LLM calls.
-    # This lets us count exactly: 2 extract + 2 critic = 4 calls, regardless of refine internals.
+    # This lets us count exactly: 3 extract + 2 critic = 5 calls, regardless of refine internals.
     _needs_revision_empty = json.dumps({
         "verdict": "NEEDS_REVISION",
         "missing_entities": [],
@@ -306,9 +323,11 @@ async def test_m1_reflection_max_iterations_respected():
 
     async def _side(prompt, **kwargs):
         calls.append("call")
-        if len(calls) == 1:
+        if "entities and their relationships" in prompt:
             return _ENTITIES_RESPONSE
-        if len(calls) == 2:
+        if "domain-specific term" in prompt:
+            return _TERM_NAMES_RESPONSE
+        if "Write glossary definitions" in prompt:
             return _GLOSSARY_RESPONSE
         return _needs_revision_empty  # critic always NEEDS_REVISION, no items to fix
 
@@ -319,16 +338,19 @@ async def test_m1_reflection_max_iterations_respected():
 
     with patch("app.agents.context_builder_workflow.ContextBuilder", return_value=wf.context_builder), \
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
-         patch("app.core.config.settings") as mock_settings:
+         patch("app.agents.context_builder_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
+        mock_settings.M1_BATCH_CHARS = 12_000
+        mock_settings.M1_BATCH_OVERLAP = 1_800
+        mock_settings.M1_GLOSSARY_TERMS_PER_GROUP = 15
         handler = wf.run(project_id="refl-max-iter", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
         result = await handler
 
-    # 2 extract calls + 2 critic calls (no per-issue refine calls since issues are empty)
-    assert len(calls) == 4
+    # 3 extract calls + 2 critic calls (no per-issue refine calls since issues are empty)
+    assert len(calls) == 5
     assert result["rag_ready"] is True
 
 
@@ -339,11 +361,13 @@ async def test_m1_reflection_critic_failure_graceful():
 
     async def _side(prompt, **kwargs):
         calls.append("call")
-        if len(calls) == 1:
+        if "entities and their relationships" in prompt:
             return _ENTITIES_RESPONSE
-        if len(calls) == 2:
+        if "domain-specific term" in prompt:
+            return _TERM_NAMES_RESPONSE
+        if "Write glossary definitions" in prompt:
             return _GLOSSARY_RESPONSE
-        raise RuntimeError("LLM service unavailable")  # critic fails
+        raise RuntimeError("LLM service unavailable")  # critic fails (call 4)
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side)
@@ -352,9 +376,12 @@ async def test_m1_reflection_critic_failure_graceful():
 
     with patch("app.agents.context_builder_workflow.ContextBuilder", return_value=wf.context_builder), \
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
-         patch("app.core.config.settings") as mock_settings:
+         patch("app.agents.context_builder_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
+        mock_settings.M1_BATCH_CHARS = 12_000
+        mock_settings.M1_BATCH_OVERLAP = 1_800
+        mock_settings.M1_GLOSSARY_TERMS_PER_GROUP = 15
         handler = wf.run(project_id="refl-critic-fail", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -371,13 +398,15 @@ async def test_m1_reflection_refine_failure_graceful():
 
     async def _side(prompt, **kwargs):
         calls.append("call")
-        if len(calls) == 1:
+        if "entities and their relationships" in prompt:
             return _ENTITIES_RESPONSE
-        if len(calls) == 2:
+        if "domain-specific term" in prompt:
+            return _TERM_NAMES_RESPONSE
+        if "Write glossary definitions" in prompt:
             return _GLOSSARY_RESPONSE
-        if len(calls) == 3:
+        if len(calls) == 4:
             return _NEEDS_REVISION_RESPONSE    # critic: needs revision
-        raise RuntimeError("refine LLM failed")  # refine fails
+        raise RuntimeError("refine LLM failed")  # refine fails (call 5+)
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side)
@@ -386,9 +415,12 @@ async def test_m1_reflection_refine_failure_graceful():
 
     with patch("app.agents.context_builder_workflow.ContextBuilder", return_value=wf.context_builder), \
          patch("app.agents.context_builder_workflow.DocumentParser", return_value=wf.parser), \
-         patch("app.core.config.settings") as mock_settings:
+         patch("app.agents.context_builder_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
+        mock_settings.M1_BATCH_CHARS = 12_000
+        mock_settings.M1_BATCH_OVERLAP = 1_800
+        mock_settings.M1_GLOSSARY_TERMS_PER_GROUP = 15
         handler = wf.run(project_id="refl-refine-fail", file_paths=["/fake/srs.docx"])
         async for _ in handler.stream_events():
             pass
@@ -433,7 +465,7 @@ async def test_req_reflection_approved_first_pass():
 
     wf = _make_requirements_workflow(llm=mock_llm)
 
-    with patch("app.core.config.settings") as mock_settings:
+    with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-approved", user_message="")
@@ -468,7 +500,7 @@ async def test_req_reflection_adds_missing_requirements():
 
     wf = _make_requirements_workflow(llm=mock_llm)
 
-    with patch("app.core.config.settings") as mock_settings:
+    with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-refine", user_message="")
@@ -501,7 +533,7 @@ async def test_req_reflection_max_iterations_respected():
 
     wf = _make_requirements_workflow(llm=mock_llm)
 
-    with patch("app.core.config.settings") as mock_settings:
+    with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-max-iter", user_message="")
@@ -530,7 +562,7 @@ async def test_req_reflection_critic_failure_graceful():
 
     wf = _make_requirements_workflow(llm=mock_llm)
 
-    with patch("app.core.config.settings") as mock_settings:
+    with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-critic-fail", user_message="")
@@ -559,7 +591,7 @@ async def test_req_reflection_refine_failure_graceful():
 
     wf = _make_requirements_workflow(llm=mock_llm)
 
-    with patch("app.core.config.settings") as mock_settings:
+    with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 2
         mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-refine-fail", user_message="")
@@ -604,7 +636,7 @@ async def test_req_combined_context_passed_to_critic():
         return_value=("UNIQUE_SOURCE_MARKER payment transfer FR-001", [])
     )
 
-    with patch("app.core.config.settings") as mock_settings:
+    with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 1
         mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-ctx-store", user_message="")
@@ -651,7 +683,7 @@ async def test_req_reflection_rule_based_always_runs():
 
     wf = _make_requirements_workflow(llm=mock_llm)
 
-    with patch("app.core.config.settings") as mock_settings:
+    with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 1
         mock_settings.LLM_CONCURRENT_CALLS = 4
         handler = wf.run(project_id="req-rule-based", user_message="")
