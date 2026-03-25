@@ -222,9 +222,7 @@ export default function ProjectPage() {
 
   const contextJiraItems = useMemo(
     () =>
-      (contextStatus?.context_files ?? [])
-        .filter((f: string) => f.startsWith("jira:"))
-        .map((f: string) => ({ id: f, key: f.slice(5) })),
+      (contextStatus?.jira_sources ?? []).map((j) => ({ id: `jira:${j.key}`, key: j.key })),
     [contextStatus]
   );
 

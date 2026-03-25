@@ -95,7 +95,7 @@ export function ContextModePanel({
       isNew: true,
     })),
     ...(contextStatus?.context_files ?? [])
-      .filter((f) => !pendingContextFiles.includes(f) && !f.startsWith("jira:"))
+      .filter((f) => !pendingContextFiles.includes(f))
       .map((filename) => ({
         id: filename,
         filename,

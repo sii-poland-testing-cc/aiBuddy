@@ -32,8 +32,10 @@ class DocumentParser:
             return await self._parse_docx(path)
         elif ext == ".pdf":
             return await self._parse_pdf(path)
+        elif ext == ".md":
+            return await self._parse_md(path)
         else:
-            raise ValueError(f"Unsupported file type for M1: {ext}. Use .docx or .pdf")
+            raise ValueError(f"Unsupported file type for M1: {ext}. Use .docx, .pdf or .md")
 
     # ── Word (.docx) ──────────────────────────────────────────────────────────
 
@@ -115,6 +117,24 @@ class DocumentParser:
             "headings": [],
             "tables": [],
             "metadata": {"source": "pdf-pypdf", "path": str(path)},
+        }
+
+    # ── Markdown (.md) ────────────────────────────────────────────────────────
+
+    async def _parse_md(self, path: Path) -> Dict[str, Any]:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        headings: List[Dict] = []
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                level = len(stripped) - len(stripped.lstrip("#"))
+                headings.append({"level": min(level, 6), "text": stripped.lstrip("#").strip()})
+        return {
+            "filename": path.name,
+            "text": text,
+            "headings": headings,
+            "tables": [],
+            "metadata": {"source": "md", "path": str(path)},
         }
 
     # ── Helpers ───────────────────────────────────────────────────────────────

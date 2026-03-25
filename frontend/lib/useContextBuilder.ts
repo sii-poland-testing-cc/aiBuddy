@@ -10,6 +10,12 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+export interface JiraSource {
+  key: string;
+  indexed: boolean;
+  indexed_at: string | null;
+}
+
 export interface ContextStatus {
   project_id: string;
   rag_ready: boolean;
@@ -17,6 +23,7 @@ export interface ContextStatus {
   stats: { entity_count: number; relation_count: number; term_count: number } | null;
   context_built_at?: string | null;
   context_files?: string[] | null;
+  jira_sources?: JiraSource[] | null;
   document_count?: number;
 }
 

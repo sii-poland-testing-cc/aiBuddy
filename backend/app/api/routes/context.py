@@ -59,6 +59,33 @@ UPLOAD_ROOT = Path(settings.UPLOAD_DIR)
 M1_ALLOWED = {".docx", ".pdf"}
 
 
+def _jira_md_paths(project_id: str) -> list[str]:
+    """Return sorted paths of Jira markdown files already fetched for this project."""
+    jira_dir = UPLOAD_ROOT / project_id / "context" / "jira"
+    if not jira_dir.exists():
+        return []
+    return sorted(str(p) for p in jira_dir.iterdir() if p.suffix.lower() == ".md")
+
+
+def _parse_context_files(raw) -> dict:
+    """
+    Parse context_files from DB into canonical dict form.
+
+    Handles both formats for backward compatibility:
+      Legacy: ["doc.pdf", "jira:KEY"]
+      New:    {"docs": ["doc.pdf"], "jira": [{"key": "KEY", "indexed": True, "indexed_at": "..."}]}
+    """
+    if raw is None:
+        return {"docs": [], "jira": []}
+    if isinstance(raw, list):
+        docs = [f for f in raw if not f.startswith("jira:")]
+        jira = [{"key": f[5:], "indexed": True, "indexed_at": None} for f in raw if f.startswith("jira:")]
+        return {"docs": docs, "jira": jira}
+    if isinstance(raw, dict):
+        return {"docs": list(raw.get("docs", [])), "jira": list(raw.get("jira", []))}
+    return {"docs": [], "jira": []}
+
+
 # ── Build (SSE) ───────────────────────────────────────────────────────────────
 
 @router.post("/{project_id}/build")
@@ -91,6 +118,10 @@ async def build_context(
             shutil.copyfileobj(upload.file, f)
         file_paths.append(str(dest))
 
+    # In rebuild mode also include Jira MDs so Chroma is fully re-populated
+    if mode == "rebuild":
+        file_paths.extend(_jira_md_paths(project_id))
+
     return StreamingResponse(
         _run_m1(project_id, file_paths, mode),
         media_type="text/event-stream",
@@ -116,10 +147,12 @@ async def rebuild_from_existing(
     file_paths = sorted(
         str(p) for p in proj_dir.iterdir() if p.suffix.lower() in M1_ALLOWED
     )
+    # Always include Jira MDs (present regardless of mode)
+    file_paths.extend(_jira_md_paths(project_id))
     if not file_paths:
         raise HTTPException(
             404,
-            "No .docx or .pdf files found. Upload documents first via /build."
+            "No context files found (.docx, .pdf, or Jira issues). Upload documents first via /build."
         )
     return StreamingResponse(
         _run_m1(project_id, file_paths, mode),
@@ -163,11 +196,13 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
         if result is None:
             raise RuntimeError("Workflow completed without a result")
 
-        # ── New filenames from this build ─────────────────────────────────────
-        new_filenames = [Path(p).name for p in file_paths]
+        # ── New doc filenames (exclude jira/ MDs — tracked separately) ──────────
+        norm = lambda p: str(p).replace("\\", "/")
+        new_doc_names = [Path(p).name for p in file_paths if "/context/jira/" not in norm(p)]
 
         # ── Append mode: merge new artefacts with existing ones ───────────────
-        existing_files: list[str] = []
+        existing_cf: dict = {"docs": [], "jira": []}
+        existing: dict | None = None
         if mode == "append":
             existing = _context_store.get(project_id)
             if not existing:
@@ -180,19 +215,39 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
                                 "mind_map": project.mind_map or {"nodes": [], "edges": []},
                                 "glossary": project.glossary or [],
                             }
-                            existing_files = project.context_files or []
+                            existing_cf = _parse_context_files(project.context_files)
                 except Exception:
                     pass
             else:
-                existing_files = existing.get("context_files", [])
+                existing_cf = _parse_context_files(existing.get("context_files"))
             if existing:
                 result["mind_map"] = _merge_mind_maps(existing["mind_map"], result["mind_map"])
                 result["glossary"] = _merge_glossaries(existing["glossary"], result["glossary"])
                 result["stats"]["entity_count"] = len(result["mind_map"]["nodes"])
                 result["stats"]["term_count"] = len(result["glossary"])
 
-        # Merge filenames (append: union; rebuild: only new)
-        merged_files = list(dict.fromkeys(existing_files + new_filenames)) if mode == "append" else new_filenames
+        # ── Merge context_files into new dict format ──────────────────────────
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if mode == "append":
+            merged_docs = list(dict.fromkeys(existing_cf["docs"] + new_doc_names))
+            merged_jira = existing_cf["jira"]  # managed by add/delete endpoints
+        else:
+            # rebuild: only newly uploaded docs; re-stamp indexed_at on all jira items
+            merged_docs = new_doc_names
+            # Load existing jira metadata from DB (Chroma was wiped, re-indexed above)
+            old_jira: list = existing_cf["jira"]
+            try:
+                async with AsyncSessionLocal() as db:
+                    project_row = await db.get(Project, project_id)
+                    if project_row:
+                        old_jira = _parse_context_files(project_row.context_files)["jira"]
+            except Exception:
+                pass
+            merged_jira = [
+                {**j, "indexed": True, "indexed_at": now_iso} for j in old_jira
+            ]
+
+        merged_cf = {"docs": merged_docs, "jira": merged_jira}
 
         # ── Persist artefacts to DB ───────────────────────────────────────────
         built_at = datetime.now(timezone.utc)
@@ -204,7 +259,7 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
                     project.glossary = result["glossary"]
                     project.context_stats = result["stats"]
                     project.context_built_at = built_at
-                    project.context_files = merged_files
+                    project.context_files = merged_cf
                     await db.commit()
                 else:
                     logger.warning(
@@ -219,17 +274,18 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
             "glossary": result["glossary"],
             "stats": result["stats"],
             "context_built_at": built_at.isoformat(),
-            "context_files": merged_files,
+            "context_files": merged_cf,
         }
 
         stats = result.get("stats", {})
         logger.info(
-            "M1 context build DONE — project=%s entities=%s relations=%s terms=%s files=%s",
+            "M1 context build DONE — project=%s entities=%s relations=%s terms=%s docs=%s jira=%s",
             project_id,
             stats.get("entity_count", "?"),
             stats.get("relation_count", "?"),
             stats.get("term_count", "?"),
-            merged_files,
+            merged_docs,
+            [j["key"] for j in merged_jira],
         )
         yield sse_event({"type": "result", "data": result})
 
@@ -288,29 +344,31 @@ async def context_status(project_id: str, db: AsyncSession = Depends(get_db)):
             if isinstance(project.context_built_at, datetime)
             else str(project.context_built_at)
         )
-        files = project.context_files or []
+        cf = _parse_context_files(project.context_files)
         return {
             "project_id": project_id,
             "rag_ready": rag_ready,
             "artefacts_ready": True,
             "stats": stats,
             "context_built_at": built_at,
-            "document_count": len(files),
-            "context_files": files,
+            "document_count": len(cf["docs"]),
+            "context_files": cf["docs"],
+            "jira_sources": cf["jira"],
         }
 
     # M1 has never run for this project — Chroma may contain M2 test-file
     # vectors but those do not constitute M1 context.  Always return False.
     cache = _context_store.get(project_id, {})
-    files = cache.get("context_files", [])
+    cf = _parse_context_files(cache.get("context_files"))
     return {
         "project_id": project_id,
         "rag_ready": False,
         "artefacts_ready": bool(cache),
         "stats": cache.get("stats"),
         "context_built_at": cache.get("context_built_at"),
-        "document_count": len(files),
-        "context_files": files,
+        "document_count": len(cf["docs"]),
+        "context_files": cf["docs"],
+        "jira_sources": cf["jira"],
     }
 
 
@@ -368,6 +426,7 @@ def _load_project_artefacts(project: Project) -> dict:
             if isinstance(project.context_built_at, datetime)
             else str(project.context_built_at)
         ),
+        "context_files": _parse_context_files(project.context_files),
     }
 
 # ── Jira context sources ──────────────────────────────────────────────────────
@@ -412,25 +471,35 @@ async def add_context_jira(
     file_path = str(md_path)
 
     # Index into M1 Chroma
+    indexed = False
     try:
         await _context_builder.index_files(project_id=project_id, file_paths=[file_path])
+        indexed = True
     except Exception as exc:
         logger.warning("Failed to index Jira %s into M1 context: %s", issue_key, exc)
 
-    # Add to context_files (JsonType → operate on list directly)
-    entry = f"jira:{issue_key}"
-    existing: list = list(project.context_files or [])
-    if entry not in existing:
-        existing.append(entry)
-        project.context_files = existing
-        await db.commit()
+    # Update context_files in new dict format
+    cf = _parse_context_files(project.context_files)
+    existing_keys = [j["key"] for j in cf["jira"]]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if issue_key not in existing_keys:
+        cf["jira"].append({"key": issue_key, "indexed": indexed, "indexed_at": now_iso if indexed else None})
+    else:
+        # Re-fetch: update indexed status and timestamp
+        cf["jira"] = [
+            {**j, "indexed": indexed, "indexed_at": now_iso if indexed else j.get("indexed_at")}
+            if j["key"] == issue_key else j
+            for j in cf["jira"]
+        ]
+    project.context_files = cf
+    await db.commit()
 
     # Update write-through cache
     cache = dict(_context_store.get(project_id, {}))
-    cache["context_files"] = existing
+    cache["context_files"] = cf
     _context_store[project_id] = cache
 
-    return {"issue_key": issue_key, "context_files": existing}
+    return {"issue_key": issue_key, "indexed": indexed, "indexed_at": now_iso if indexed else None}
 
 
 @router.delete("/{project_id}/jira/{issue_key}", status_code=204)
@@ -443,15 +512,15 @@ async def delete_context_jira(
     if not project:
         raise HTTPException(404, "Project not found")
 
-    entry = f"jira:{issue_key.upper()}"
-    existing: list = list(project.context_files or [])
-    if entry not in existing:
+    key = issue_key.upper()
+    cf = _parse_context_files(project.context_files)
+    if key not in [j["key"] for j in cf["jira"]]:
         raise HTTPException(404, "Jira issue not found in context sources")
 
-    existing.remove(entry)
-    project.context_files = existing
+    cf["jira"] = [j for j in cf["jira"] if j["key"] != key]
+    project.context_files = cf
     await db.commit()
 
     cache = dict(_context_store.get(project_id, {}))
-    cache["context_files"] = existing
+    cache["context_files"] = cf
     _context_store[project_id] = cache
