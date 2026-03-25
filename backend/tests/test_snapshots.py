@@ -17,23 +17,36 @@ def _make_snapshot(project_id: str, offset_seconds: int = 0, **overrides):
         id=str(uuid.uuid4()),
         project_id=project_id,
         created_at=datetime.now(timezone.utc) + timedelta(seconds=offset_seconds),
-        files_used=json.dumps(overrides.get("files_used", ["test.csv"])),
-        summary=json.dumps(overrides.get("summary", {
+        files_used=overrides.get("files_used", ["test.csv"]),
+        summary=overrides.get("summary", {
             "coverage_pct": 80.0,
             "duplicates_found": 2,
             "requirements_total": 10,
             "requirements_covered": 8,
-        })),
-        requirements_uncovered=json.dumps(overrides.get("requirements_uncovered", ["FR-009", "FR-010"])),
-        recommendations=json.dumps(overrides.get("recommendations", ["Add more tests"])),
-        diff=json.dumps(overrides.get("diff")) if "diff" in overrides else None,
+        }),
+        requirements_uncovered=overrides.get("requirements_uncovered", ["FR-009", "FR-010"]),
+        recommendations=overrides.get("recommendations", ["Add more tests"]),
+        diff=overrides.get("diff"),
     )
     return snap
 
 
-async def _insert_snapshots(snapshots):
-    """Insert ORM objects into the test DB."""
+async def _make_project(project_id: str) -> None:
+    """Insert a minimal Project row so FK constraints on AuditSnapshot are satisfied."""
     from app.db.engine import AsyncSessionLocal
+    from app.db.models import Project
+
+    async with AsyncSessionLocal() as db:
+        db.add(Project(id=project_id, name="test-project"))
+        await db.commit()
+
+
+async def _insert_snapshots(snapshots, project_id: str | None = None):
+    """Insert ORM objects into the test DB, creating a parent project if needed."""
+    from app.db.engine import AsyncSessionLocal
+
+    if project_id is not None:
+        await _make_project(project_id)
 
     async with AsyncSessionLocal() as db:
         for s in snapshots:
@@ -58,7 +71,7 @@ async def test_list_returns_snapshots(app_client):
         _make_snapshot(project_id, offset_seconds=0),
         _make_snapshot(project_id, offset_seconds=60),
     ]
-    await _insert_snapshots(snaps)
+    await _insert_snapshots(snaps, project_id=project_id)
 
     resp = app_client.get(f"/api/snapshots/{project_id}")
     assert resp.status_code == 200
@@ -81,7 +94,7 @@ async def test_trend_shape(app_client):
         _make_snapshot(project_id, offset_seconds=0, summary={"coverage_pct": 60.0, "duplicates_found": 1, "requirements_total": 5, "requirements_covered": 3}),
         _make_snapshot(project_id, offset_seconds=60, summary={"coverage_pct": 80.0, "duplicates_found": 0, "requirements_total": 5, "requirements_covered": 4}),
     ]
-    await _insert_snapshots(snaps)
+    await _insert_snapshots(snaps, project_id=project_id)
 
     resp = app_client.get(f"/api/snapshots/{project_id}/trend")
     assert resp.status_code == 200
@@ -101,12 +114,26 @@ async def test_latest_returns_newest(app_client):
     project_id = str(uuid.uuid4())
     older = _make_snapshot(project_id, offset_seconds=0)
     newer = _make_snapshot(project_id, offset_seconds=120)
-    await _insert_snapshots([older, newer])
+    await _insert_snapshots([older, newer], project_id=project_id)
 
     resp = app_client.get(f"/api/snapshots/{project_id}/latest")
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == newer.id
+
+
+@pytest.mark.asyncio
+async def test_first_snapshot_has_null_diff(app_client):
+    """The first snapshot for a project has diff=null (no previous snapshot to compare)."""
+    project_id = str(uuid.uuid4())
+    snap = _make_snapshot(project_id)
+    await _insert_snapshots([snap], project_id=project_id)
+
+    resp = app_client.get(f"/api/snapshots/{project_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["diff"] is None, "First snapshot must have diff=null"
 
 
 @pytest.mark.asyncio
@@ -122,7 +149,7 @@ async def test_delete_snapshot(app_client):
     """DELETE /api/snapshots/{project_id}/{snapshot_id} removes the snapshot."""
     project_id = str(uuid.uuid4())
     snap = _make_snapshot(project_id)
-    await _insert_snapshots([snap])
+    await _insert_snapshots([snap], project_id=project_id)
 
     resp = app_client.delete(f"/api/snapshots/{project_id}/{snap.id}")
     assert resp.status_code == 204
@@ -138,7 +165,7 @@ async def test_delete_wrong_project_returns_404(app_client):
     project_id = str(uuid.uuid4())
     other_project_id = str(uuid.uuid4())
     snap = _make_snapshot(project_id)
-    await _insert_snapshots([snap])
+    await _insert_snapshots([snap], project_id=project_id)
 
     resp = app_client.delete(f"/api/snapshots/{other_project_id}/{snap.id}")
     assert resp.status_code == 404
@@ -242,12 +269,12 @@ def test_audit_selection_url_always_selected(app_client):
     assert item["selected"] is True, "URL source must stay selected regardless of audit history"
 
 
-def test_chat_auto_selects_new_files_only(app_client):
+@pytest.mark.asyncio
+async def test_chat_auto_selects_new_files_only(app_client):
     """
     When file_paths is empty, the chat endpoint must only include files that
     haven't been used before (last_used_in_audit_id is None).
     """
-    import asyncio
     from app.db.engine import AsyncSessionLocal
     from app.db.models import AuditSnapshot
     from sqlalchemy import select as sa_select
@@ -267,15 +294,13 @@ def test_chat_auto_selects_new_files_only(app_client):
     snapshot_id = result.get("snapshot_id")
     assert snapshot_id, "snapshot_id missing from second audit result"
 
-    async def _query_snap():
-        async with AsyncSessionLocal() as db:
-            return (await db.execute(
-                sa_select(AuditSnapshot).where(AuditSnapshot.id == snapshot_id)
-            )).scalars().first()
+    async with AsyncSessionLocal() as db:
+        snap = (await db.execute(
+            sa_select(AuditSnapshot).where(AuditSnapshot.id == snapshot_id)
+        )).scalars().first()
 
-    snap = asyncio.get_event_loop().run_until_complete(_query_snap())
     assert snap is not None
-    files_used = json.loads(snap.files_used or "[]")
+    files_used = snap.files_used or []
     assert any("file_v2.csv" in p for p in files_used), \
         f"file_v2.csv should be in files_used: {files_used}"
     assert not any("file_v1.csv" in p for p in files_used), \

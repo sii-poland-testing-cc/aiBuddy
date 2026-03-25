@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import MindMapModal, { layoutModalNodes } from "../components/MindMapModal";
-import type { ModalNode } from "../components/MindMapModal";
+import MindMapModal from "../components/MindMapModal";
+import type { ModalNode } from "../lib/mindMapLayout";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -247,42 +247,4 @@ describe("MindMapModal", () => {
     expect(screen.getByTestId("mm-node-e3")).toBeInTheDocument();
   });
 
-  // ── layoutModalNodes ────────────────────────────────────────────────────────
-
-  describe("layoutModalNodes", () => {
-    const API_NODES = [
-      { id: "root",    label: "Root",    type: "root",    description: "desc r" },
-      { id: "child1",  label: "Child 1", type: "process", description: "desc c1" },
-      { id: "child2",  label: "Child 2", type: "actor",   description: "desc c2" },
-    ];
-    const API_EDGES = [
-      { source: "root", target: "child1" },
-      { source: "root", target: "child2" },
-    ];
-
-    it("assigns x,y from dagre layout", () => {
-      const result = layoutModalNodes(API_NODES, API_EDGES);
-      expect(result.every((n) => typeof n.x === "number" && typeof n.y === "number")).toBe(true);
-    });
-
-    it("assigns depth 0 to root node", () => {
-      const result = layoutModalNodes(API_NODES, API_EDGES);
-      expect(result.find((n) => n.id === "root")?.depth).toBe(0);
-    });
-
-    it("assigns depth 1 to direct children", () => {
-      const result = layoutModalNodes(API_NODES, API_EDGES);
-      expect(result.find((n) => n.id === "child1")?.depth).toBe(1);
-      expect(result.find((n) => n.id === "child2")?.depth).toBe(1);
-    });
-
-    it("returns empty array for empty input", () => {
-      expect(layoutModalNodes([], [])).toEqual([]);
-    });
-
-    it("preserves desc from api node.description", () => {
-      const result = layoutModalNodes(API_NODES, API_EDGES);
-      expect(result.find((n) => n.id === "root")?.desc).toBe("desc r");
-    });
-  });
 });

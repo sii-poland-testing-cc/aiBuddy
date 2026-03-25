@@ -12,21 +12,25 @@ Endpoints:
 """
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.requirements_workflow import RequirementsWorkflow, RequirementsProgressEvent
+from app.api.sse import SSE_DONE, sse_event
+from app.api.streaming import stream_with_keepalive
+from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
-from app.db.requirements_models import CoverageScore, Requirement, RequirementTCMapping
+from app.db.models import Project
+from app.db.requirements_models import Requirement
+from app.services.requirements import persist_gaps, persist_requirements
 
 logger = logging.getLogger("ai_buddy.requirements_api")
 
@@ -72,7 +76,14 @@ async def extract_requirements(project_id: str, req: ExtractRequest = ExtractReq
 
 async def _run_extraction(project_id: str, user_message: str):
     llm = get_llm()
-    workflow = RequirementsWorkflow(llm=llm, timeout=300)
+    workflow = RequirementsWorkflow(
+        llm=llm, timeout=settings.REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS
+    )
+
+    last_progress = {"message": "Processing…", "progress": 0.05, "stage": "extract"}
+    result = None
+
+    logger.info("Faza2 requirements extraction STARTED — project=%s", project_id)
 
     try:
         handler = workflow.run(
@@ -80,86 +91,50 @@ async def _run_extraction(project_id: str, user_message: str):
             user_message=user_message,
         )
 
-        async for ev in handler.stream_events():
-            if isinstance(ev, RequirementsProgressEvent):
-                yield _sse({
-                    "type": "progress",
-                    "data": {
-                        "message": ev.message,
-                        "progress": ev.progress,
-                        "stage": ev.stage,
-                    },
-                })
+        async for kind, item in stream_with_keepalive(handler):
+            if kind == "event":
+                if isinstance(item, RequirementsProgressEvent):
+                    last_progress = {"message": item.message, "progress": item.progress, "stage": item.stage}
+                    yield sse_event({"type": "progress", "data": last_progress})
+                    await asyncio.sleep(0)
+            elif kind == "keepalive":
+                yield sse_event({"type": "progress", "data": last_progress})
                 await asyncio.sleep(0)
+            elif kind == "result":
+                result = item
+            elif kind == "error":
+                raise item  # type: ignore[misc]
 
-        result = await handler
+        if result is None:
+            raise RuntimeError("Workflow completed without a result")
 
         # Persist to DB
         try:
             async with AsyncSessionLocal() as db:
-                await _persist_requirements(
+                await persist_requirements(
                     db, project_id, result.get("requirements_flat", [])
                 )
                 # Also persist gaps as project metadata
-                await _persist_gaps(db, project_id, result.get("gaps", []))
+                await persist_gaps(db, project_id, result.get("gaps", []))
         except Exception as exc:
             logger.warning("Failed to persist requirements: %s", exc)
 
-        yield _sse({"type": "result", "data": result})
+        meta = result.get("metadata", {})
+        logger.info(
+            "Faza2 requirements extraction DONE — project=%s features=%s requirements=%s gaps=%s",
+            project_id,
+            meta.get("total_features", "?"),
+            meta.get("total_requirements", "?"),
+            len(result.get("gaps", [])),
+        )
+        yield sse_event({"type": "result", "data": result})
 
     except Exception as exc:
+        logger.error("Faza2 requirements extraction FAILED — project=%s error=%s", project_id, exc)
         logger.exception("Requirements extraction failed")
-        yield _sse({"type": "error", "data": {"message": str(exc)}})
+        yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
-        yield "data: [DONE]\n\n"
-
-
-async def _persist_requirements(db: AsyncSession, project_id: str, flat_reqs: List[Dict]):
-    """
-    Persist extracted requirements to DB.
-    Wipes existing requirements for this project first (full re-extract).
-    """
-    # Delete existing requirements for this project
-    await db.execute(
-        delete(Requirement).where(Requirement.project_id == project_id)
-    )
-    await db.flush()
-
-    # Insert new requirements
-    for req_data in flat_reqs:
-        req = Requirement(
-            id=req_data["id"],
-            project_id=project_id,
-            parent_id=req_data.get("parent_id"),
-            level=req_data.get("level", "functional_req"),
-            external_id=req_data.get("external_id"),
-            title=req_data["title"],
-            description=req_data.get("description", ""),
-            source_type=req_data.get("source_type", "implicit"),
-            source_references=None,
-            taxonomy=req_data.get("taxonomy"),
-            completeness_score=req_data.get("completeness_score"),
-            confidence=req_data.get("confidence"),
-            human_reviewed=False,
-            needs_review=req_data.get("needs_review", False),
-            review_reason=req_data.get("review_reason"),
-        )
-        db.add(req)
-
-    await db.commit()
-    logger.info("project=%s — persisted %d requirements", project_id, len(flat_reqs))
-
-
-async def _persist_gaps(db: AsyncSession, project_id: str, gaps: List[Dict]):
-    """Persist gaps as a JSON field on the Project (reuse context_stats or add new col)."""
-    from app.db.models import Project
-    project = await db.get(Project, project_id)
-    if project:
-        # Store gaps alongside existing context_stats
-        existing_stats = json.loads(project.context_stats or "{}") if project.context_stats else {}
-        existing_stats["requirement_gaps"] = gaps
-        project.context_stats = json.dumps(existing_stats, ensure_ascii=False)
-        await db.commit()
+        yield SSE_DONE
 
 
 # ─── List Requirements (Hierarchical) ────────────────────────────────────────
@@ -254,7 +229,17 @@ async def requirements_stats(
     rows = (await db.execute(stmt)).scalars().all()
 
     if not rows:
-        return {"project_id": project_id, "has_requirements": False}
+        return {
+            "project_id": project_id,
+            "has_requirements": False,
+            "total": 0,
+            "by_level": {},
+            "by_source_type": {},
+            "avg_confidence": None,
+            "min_confidence": None,
+            "needs_review_count": 0,
+            "human_reviewed_count": 0,
+        }
 
     by_level = {}
     by_source = {}
@@ -293,15 +278,11 @@ async def requirements_gaps(
     db: AsyncSession = Depends(get_db),
 ):
     """Return identified requirement gaps for this project."""
-    from app.db.models import Project
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
 
-    stats = json.loads(project.context_stats or "{}") if project.context_stats else {}
-    gaps = stats.get("requirement_gaps", [])
-
-    return {"project_id": project_id, "gaps": gaps}
+    return {"project_id": project_id, "gaps": project.requirement_gaps or []}
 
 
 # ─── Human Review: Update Requirement ────────────────────────────────────────
@@ -326,10 +307,6 @@ async def update_requirement(
         raise HTTPException(404, "Requirement not found")
 
     update_data = body.model_dump(exclude_none=True)
-
-    # Handle taxonomy as JSON
-    if "taxonomy" in update_data:
-        update_data["taxonomy"] = json.dumps(update_data["taxonomy"])
 
     for key, value in update_data.items():
         setattr(req, key, value)
@@ -375,7 +352,7 @@ def _req_to_dict(r: Requirement) -> Dict[str, Any]:
         "title": r.title,
         "description": r.description,
         "source_type": r.source_type,
-        "taxonomy": json.loads(r.taxonomy) if r.taxonomy else None,
+        "taxonomy": r.taxonomy,
         "completeness_score": r.completeness_score,
         "confidence": r.confidence,
         "human_reviewed": r.human_reviewed,
@@ -386,5 +363,3 @@ def _req_to_dict(r: Requirement) -> Dict[str, Any]:
     }
 
 
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

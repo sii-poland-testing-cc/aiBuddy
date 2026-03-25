@@ -12,7 +12,6 @@ for fast in-memory reads on the same server instance.
 """
 
 import asyncio
-import json
 import logging
 import shutil
 from datetime import datetime, timezone
@@ -24,6 +23,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.context_builder_workflow import ContextBuilderWorkflow, ProgressEvent
+from app.api.sse import SSE_DONE, sse_event
+from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
@@ -35,7 +36,20 @@ logger = logging.getLogger("ai_buddy.context")
 router = APIRouter()
 _context_builder = ContextBuilder()
 
-# Write-through in-memory cache: { project_id: { mind_map, glossary, stats } }
+# Write-through in-memory cache: { project_id: { mind_map, glossary, stats, ... } }
+#
+# WHY: mind map + glossary payloads can be large (hundreds of nodes); caching
+# avoids re-parsing JSON from the DB column on every GET request.
+#
+# MULTI-WORKER NOTE: this dict lives in a single process. In Gunicorn multi-worker
+# deployments each worker has its own independent cache. A build on worker A warms
+# A's cache only; other workers cold-miss and fall through to DB until they serve
+# their first warm-through request. Correctness is unaffected (DB is authoritative),
+# but the cache yields no latency benefit on a fresh worker restart.
+#
+# LOOKUP ORDER:
+#   context_status() → DB-first (must check Chroma for live rag_ready; cache can be stale)
+#   get_mindmap() / get_glossary() → cache-first (JSON payload; DB is the fallback)
 _context_store: dict = {}
 
 UPLOAD_ROOT = Path(settings.UPLOAD_DIR)
@@ -111,6 +125,7 @@ async def rebuild_from_existing(
     )
 
 
+
 async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
     # ── Rebuild: wipe existing Chroma collection + clear cache ────────────────
     if mode == "rebuild":
@@ -119,23 +134,31 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
 
     llm = get_llm()
     workflow = ContextBuilderWorkflow(llm=llm, timeout=settings.M1_WORKFLOW_TIMEOUT_SECONDS)
+    logger.info("M1 context build STARTED — project=%s mode=%s files=%s", project_id, mode, [Path(p).name for p in file_paths])
+
+    # Track last known stage for keepalive messages
+    last_progress = {"message": "Processing…", "progress": 0.05, "stage": "parse"}
+    result = None
 
     try:
         handler = workflow.run(project_id=project_id, file_paths=file_paths)
 
-        async for ev in handler.stream_events():
-            if isinstance(ev, ProgressEvent):
-                yield _sse({
-                    "type": "progress",
-                    "data": {
-                        "message": ev.message,
-                        "progress": ev.progress,
-                        "stage": ev.stage,
-                    },
-                })
+        async for kind, item in stream_with_keepalive(handler):
+            if kind == "event":
+                if isinstance(item, ProgressEvent):
+                    last_progress = {"message": item.message, "progress": item.progress, "stage": item.stage}
+                    yield sse_event({"type": "progress", "data": last_progress})
+                    await asyncio.sleep(0)
+            elif kind == "keepalive":
+                yield sse_event({"type": "progress", "data": last_progress})
                 await asyncio.sleep(0)
+            elif kind == "result":
+                result = item
+            elif kind == "error":
+                raise item  # type: ignore[misc]
 
-        result = await handler
+        if result is None:
+            raise RuntimeError("Workflow completed without a result")
 
         # ── New filenames from this build ─────────────────────────────────────
         new_filenames = [Path(p).name for p in file_paths]
@@ -151,10 +174,10 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
                         project = await db.get(Project, project_id)
                         if project and project.context_built_at:
                             existing = {
-                                "mind_map": json.loads(project.mind_map) if project.mind_map else {"nodes": [], "edges": []},
-                                "glossary": json.loads(project.glossary) if project.glossary else [],
+                                "mind_map": project.mind_map or {"nodes": [], "edges": []},
+                                "glossary": project.glossary or [],
                             }
-                            existing_files = json.loads(project.context_files) if project.context_files else []
+                            existing_files = project.context_files or []
                 except Exception:
                     pass
             else:
@@ -174,11 +197,11 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
             async with AsyncSessionLocal() as db:
                 project = await db.get(Project, project_id)
                 if project:
-                    project.mind_map = json.dumps(result["mind_map"], ensure_ascii=False)
-                    project.glossary = json.dumps(result["glossary"], ensure_ascii=False)
-                    project.context_stats = json.dumps(result["stats"], ensure_ascii=False)
+                    project.mind_map = result["mind_map"]
+                    project.glossary = result["glossary"]
+                    project.context_stats = result["stats"]
                     project.context_built_at = built_at
-                    project.context_files = json.dumps(merged_files)
+                    project.context_files = merged_files
                     await db.commit()
                 else:
                     logger.warning(
@@ -196,12 +219,22 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
             "context_files": merged_files,
         }
 
-        yield _sse({"type": "result", "data": result})
+        stats = result.get("stats", {})
+        logger.info(
+            "M1 context build DONE — project=%s entities=%s relations=%s terms=%s files=%s",
+            project_id,
+            stats.get("entity_count", "?"),
+            stats.get("relation_count", "?"),
+            stats.get("term_count", "?"),
+            merged_files,
+        )
+        yield sse_event({"type": "result", "data": result})
 
     except Exception as exc:
-        yield _sse({"type": "error", "data": {"message": str(exc)}})
+        logger.error("M1 context build FAILED — project=%s error=%s", project_id, exc)
+        yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
-        yield "data: [DONE]\n\n"
+        yield SSE_DONE
 
 
 # ── Merge helpers ─────────────────────────────────────────────────────────────
@@ -246,13 +279,13 @@ async def context_status(project_id: str, db: AsyncSession = Depends(get_db)):
         # Crucially this prevents M2 test-file uploads (which write to the same
         # Chroma collection) from falsely advertising rag_ready=True.
         rag_ready = await _context_builder.is_indexed(project_id)
-        stats = json.loads(project.context_stats) if project.context_stats else None
+        stats = project.context_stats
         built_at = (
             project.context_built_at.isoformat()
             if isinstance(project.context_built_at, datetime)
             else str(project.context_built_at)
         )
-        files = json.loads(project.context_files) if project.context_files else []
+        files = project.context_files or []
         return {
             "project_id": project_id,
             "rag_ready": rag_ready,
@@ -295,16 +328,7 @@ async def get_mindmap(project_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Mind map not available.")
 
     # Warm the cache for subsequent requests
-    _context_store[project_id] = {
-        "mind_map": json.loads(project.mind_map),
-        "glossary": json.loads(project.glossary) if project.glossary else [],
-        "stats": json.loads(project.context_stats) if project.context_stats else {},
-        "context_built_at": (
-            project.context_built_at.isoformat()
-            if isinstance(project.context_built_at, datetime)
-            else str(project.context_built_at)
-        ),
-    }
+    _context_store[project_id] = _load_project_artefacts(project)
     return _context_store[project_id]["mind_map"]
 
 
@@ -324,20 +348,21 @@ async def get_glossary(project_id: str, db: AsyncSession = Depends(get_db)):
     if not project.glossary:
         raise HTTPException(404, "Glossary not available.")
 
-    _context_store[project_id] = {
-        "mind_map": json.loads(project.mind_map) if project.mind_map else {"nodes": [], "edges": []},
-        "glossary": json.loads(project.glossary),
-        "stats": json.loads(project.context_stats) if project.context_stats else {},
+    _context_store[project_id] = _load_project_artefacts(project)
+    return _context_store[project_id]["glossary"]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _load_project_artefacts(project: Project) -> dict:
+    """Build a _context_store entry from a Project ORM row (no DB calls)."""
+    return {
+        "mind_map": project.mind_map or {"nodes": [], "edges": []},
+        "glossary": project.glossary or [],
+        "stats": project.context_stats or {},
         "context_built_at": (
             project.context_built_at.isoformat()
             if isinstance(project.context_built_at, datetime)
             else str(project.context_built_at)
         ),
     }
-    return _context_store[project_id]["glossary"]
-
-
-# ── Helper ────────────────────────────────────────────────────────────────────
-
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

@@ -72,8 +72,8 @@ M1 builds a per-project RAG knowledge base from documentation (.docx/.pdf). M2 a
 
 ### Pipeline
 ```
-Parse → Embed → Extract → Assemble
-StartEvent → ParsedDocsEvent → EmbeddedEvent → ExtractedEvent → StopEvent
+Parse → Embed → Extract → Review → Assemble
+StartEvent → ParsedDocsEvent → EmbeddedEvent → ExtractedEvent → ReviewedEvent → StopEvent
 ```
 
 ### Outputs (all three built in one run)
@@ -89,7 +89,8 @@ StartEvent → ParsedDocsEvent → EmbeddedEvent → ExtractedEvent → StopEven
 
 ### API endpoints
 ```
-POST /api/context/{project_id}/build?mode=append|rebuild  — upload .docx/.pdf, SSE stream M1 pipeline
+POST /api/context/{project_id}/build?mode=append|rebuild           — upload .docx/.pdf, SSE stream M1 pipeline
+POST /api/context/{project_id}/rebuild-existing?mode=append|rebuild — re-run M1 on docs already on disk (no upload)
 GET  /api/context/{project_id}/status    — {rag_ready, artefacts_ready, stats, context_built_at, document_count, context_files}
 GET  /api/context/{project_id}/mindmap   — {nodes: [...], edges: [...]}
 GET  /api/context/{project_id}/glossary  — [{term, definition, ...}]
@@ -101,7 +102,7 @@ GET  /api/context/{project_id}/glossary  — [{term, definition, ...}]
 
 ### SSE event format
 ```json
-{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "parse|embed|extract|assemble"}}
+{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "parse|embed|extract|review|assemble"}}
 {"type": "result",   "data": {"project_id": "...", "rag_ready": true, "mind_map": {...}, "glossary": [...], "stats": {...}}}
 {"type": "error",    "data": {"message": "string"}}
 ```
@@ -272,7 +273,7 @@ Controlled by `LLM_PROVIDER` env var. Logic in `backend/app/core/llm.py`.
 - **Write**: `await ctx.store.set("key", value)`
 - **Read**: `value = await ctx.store.get("key")`
 
-Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_builder_workflow.py`.
+Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_builder_workflow.py`, `requirements_workflow.py`.
 
 ---
 
@@ -282,7 +283,7 @@ Applies to all workflows: `audit_workflow.py`, `optimize_workflow.py`, `context_
 - `backend/app/main.py` — FastAPI app, CORS, route registration, `init_db()` in lifespan
 - `backend/app/core/config.py` — Pydantic settings (all env vars)
 - `backend/app/core/llm.py` — LLM provider factory (`get_llm()`)
-- `backend/app/agents/context_builder_workflow.py` — M1: parse → embed → extract → assemble
+- `backend/app/agents/context_builder_workflow.py` — M1: parse → embed → extract → review → assemble; reflection loop (producer-critic-refine) up to `REFLECTION_MAX_ITERATIONS`
 - `backend/app/agents/audit_workflow.py` — M2 Tier 1: parse → analyse (RAG + req extraction) → report
 - `backend/app/agents/optimize_workflow.py` — M2 Tier 2: prepare → deduplicate → tag
 - `backend/app/parsers/document_parser.py` — .docx and .pdf parser
@@ -308,7 +309,7 @@ alembic stamp head            # mark existing DB as current (first run on existi
 alembic check                 # verify models and DB are in sync
 ```
 
-- `projects` — id, name, description, created_at, mind_map, glossary, context_stats, context_built_at, context_files, settings
+- `projects` — id, name, description, created_at, mind_map, glossary, context_stats, context_built_at, context_files, settings, requirement_gaps
 - `project_files` — id, project_id, filename, file_path, size_bytes, indexed, uploaded_at, last_used_in_audit_id, source_type
 - `audit_snapshots` — id, project_id, created_at, files_used (JSON), summary (JSON), requirements_uncovered (JSON), recommendations (JSON), diff (JSON)
 - `requirements`, `requirement_tc_mappings`, `coverage_scores` — Faza 2/5+6 tables (see requirements_models.py)
@@ -388,27 +389,30 @@ Long-running SSE operations (M1 context build, requirements extraction, mapping)
 - `backend/tests/test_m1_m2_integration.py` — full M1→M2 integration: audit trigger, RAG chat, term explanation, requirement coverage, snapshot persistence (saved, diff, max-5)
 - `backend/tests/test_snapshots.py` — 11 tests: snapshots list/trend/latest/delete endpoints + 4 audit-selection tests (new files, used files, URL sources, chat auto-select)
 - `backend/tests/test_rag_ready_isolation.py` — 4 regression tests: `rag_ready` must be False when only M2 files indexed (no M1 build); mindmap/glossary 404 before M1; `rag_ready` becomes True after M1 runs on top of M2 files; fresh project baseline
+- `backend/tests/test_reflection.py` — 15 tests: M1 review step (no-llm passthrough, disabled via `REFLECTION_MAX_ITERATIONS=0`, approved first pass, refines on issues, max-iterations cap, critic/refine failure graceful fallback); Faza 2 review step (same 7 patterns + combined_context passed to critic + rule-based post-processing always runs)
 
 ### Frontend tests (Vitest)
 ```bash
 cd frontend && npm test
 ```
-205 tests across 15 files:
-- `frontend/tests/TopBar.test.tsx` — 9 tests: renders, project id, RAG indicator, panel toggle, back navigation
-- `frontend/tests/ModeInputBox.test.tsx` — 17 tests: mode pills, locked pills, file chips, placeholder, send/stop, artifact chips, attach button
-- `frontend/tests/MindMapModal.test.tsx` — 26 tests: visibility, toolbar, close/Escape, node rendering, search dimming, match count, tooltip show/hide, cluster collapse, `layoutModalNodes` unit tests; **cycle-safety tests** (direct cycle e1↔e2, longer cycle e1→e2→e3→e1, LLM-style numeric IDs)
-- `frontend/tests/UtilityPanel.test.tsx` — 35 tests: panel open/close, mode-specific card content, source tabs, heatmap, tier selector, snapshot rows, ↗ opens audit modal, × closes modal
+248 tests across 17 files:
+- `frontend/tests/TopBar.test.tsx` — 11 tests: renders, project id, RAG indicator, panel toggle, back navigation
+- `frontend/tests/ModeInputBox.test.tsx` — 19 tests: mode pills, locked pills, file chips, placeholder, send/stop, artifact chips, attach button
+- `frontend/tests/MindMapModal.test.tsx` — 21 tests: visibility, toolbar, close/Escape, node rendering, search dimming, match count, tooltip show/hide, cluster collapse; **cycle-safety tests** (direct cycle e1↔e2, longer cycle e1→e2→e3→e1, LLM-style numeric IDs)
+- `frontend/tests/UtilityPanel.test.tsx` — 37 tests: panel open/close, mode-specific card content, source tabs, heatmap, tier selector, snapshot rows, ↗ opens audit modal, × closes modal
 - `frontend/tests/RequirementsView.test.tsx` — 36 tests: header stats, empty state, error, loading skeletons, module groups, search/filter, card badges, mark-reviewed, group collapse
 - `frontend/tests/ProjectPage.test.tsx` — 13 tests: page renders for each mode, hook wiring
+- `frontend/tests/ProjectList.test.tsx` — 8 tests: list renders, project creation, empty state, navigation
+- `frontend/tests/ProjectSettingsPage.test.tsx` — 11 tests: loading state, form renders, save, error state, back navigation
 - `frontend/tests/MindMap.test.tsx` — 9 tests: renders, nodes (rect), edges (bezier path), labels, empty state, arrow marker, reset button
+- `frontend/tests/mindMapLayout.test.ts` — 13 tests: `layoutModalNodes` unit tests including cycle-safety (direct cycle, longer cycle, LLM-style numeric IDs)
 - `frontend/tests/Glossary.test.tsx` — 10 tests: renders, filter, empty state, term click callback, hover border
-- `frontend/tests/MessageList.test.tsx` — 3 tests: renders, Powiązane terminy chips, term click fires callback
+- `frontend/tests/MessageList.test.tsx` — 5 tests: renders, Powiązane terminy chips, term click fires callback
 - `frontend/tests/parseRelatedTerms.test.ts` — 3 tests: known terms matched, unknown terms plain, comma splitting
-- `frontend/tests/AuditFileSelector.test.tsx` — 4 tests: new files checked, used files unchecked+muted, URL source always-checked/disabled, onSelectionChange called correctly
 - `frontend/tests/AuditHistory.test.tsx` — 5 tests: empty state, snapshot rows rendered, latest highlight, coverage badge colors, trend chart requires ≥2 snapshots
 - `frontend/tests/useRequirements.test.ts` — 8 tests: fetch, extract SSE, patch optimistic update; **re-mount after navigation** (isExtracting context true→false triggers fetchAll)
 - `frontend/tests/useAuditPipeline.test.ts` — 12 tests: fresh project (extract+map+send), sequential order, status messages, skip-when-done, guards (isExtracting/isMappingRunning), fetch failure resilience, send arguments
-- `frontend/tests/useAIBuddyChat.test.ts` — 13 tests: localStorage load/save/clear, status message exclusion, per-project isolation, projectId change re-load
+- `frontend/tests/useAIBuddyChat.test.ts` — 27 tests: localStorage load/save/clear, status message exclusion, per-project isolation, projectId change re-load; **send() SSE streaming** (user msg, assistant msg, error event, network failure, empty guard)
 - `frontend/tests/setup.ts` — `@testing-library/jest-dom` setup
 - `frontend/vitest.config.ts` — jsdom environment, `@vitejs/plugin-react`, `@` alias
 
@@ -441,6 +445,9 @@ cd frontend && npm test
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/ai_buddy.db` | |
 | `MAX_UPLOAD_MB` | `50` | |
 | `ALLOWED_EXTENSIONS` | `.xlsx .csv .json .pdf .feature .txt .md .docx` | |
+| `M1_WORKFLOW_TIMEOUT_SECONDS` | `1800` | M1 build timeout; increase for large corpora |
+| `REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS` | `1800` | Faza 2 extraction timeout; reflection adds multiple LLM calls |
+| `REFLECTION_MAX_ITERATIONS` | `2` | Producer-critic-refine cycles in M1 and Faza 2 workflows; `0` = disabled |
 
 ---
 
@@ -485,14 +492,14 @@ M1: Context Builder  ──→  Faza 2: Requirements Extraction
 ```
 Faza 2: Requirements Reconstruction
   POST /api/requirements/{project_id}/extract  (SSE)
-  Workflow: Extract → Validate → Persist
+  Workflow: Extract → Review → Persist
   Input:  M1 RAG context (multiple queries)
   Output: Hierarchical requirements registry in DB
   Tables: requirements (hierarchical, with confidence + human_reviewed)
 
 Faza 5+6: Semantic Mapping & Coverage Scoring
   POST /api/mapping/{project_id}/run  (SSE)
-  Workflow: LoadData → CoarseMatch → FineMatch → Score → Persist
+  Workflow: LoadData → CoarseMatch → FineMatch → Score → Assemble
   Input:  requirements (from Faza 2 DB) + test files (uploaded)
   Output: requirement↔TC mappings + multi-dimensional scores
   Tables: requirement_tc_mappings, coverage_scores
@@ -501,7 +508,7 @@ Faza 5+6: Semantic Mapping & Coverage Scoring
 ### Key Files (Faza 2/5/6)
 
 - `backend/app/db/requirements_models.py` — `Requirement`, `RequirementTCMapping`, `CoverageScore` ORM models (share `Base` with `models.py`)
-- `backend/app/agents/requirements_workflow.py` — Faza 2: LlamaIndex Workflow (Extract → Validate → Persist)
+- `backend/app/agents/requirements_workflow.py` — Faza 2: LlamaIndex Workflow (Extract → Review → Persist); reflection loop with critic checking missing/duplicate/hallucinated requirements; rule-based post-processing always runs after reflection
 - `backend/app/agents/mapping_workflow.py` — Faza 5+6: LlamaIndex Workflow (Load → CoarseMatch → FineMatch → Score → Persist)
 - `backend/app/agents/audit_workflow_integration.py` — Bridge: audit uses Faza 5+6 scores → Faza 2 registry → legacy extraction (3-tier priority)
 - `backend/app/api/routes/requirements.py` — Faza 2 API: SSE extract, CRUD, stats, gaps, human review
@@ -577,7 +584,7 @@ When `compute_registry_coverage()` runs during an M2 audit:
 
 Three levels, merged:
 - **Level 0 — Pattern**: TC text contains requirement ID literally (e.g. "FR-017"). Confidence: 0.95
-- **Level 1 — Embedding**: cosine similarity > 0.58 between requirement and TC embeddings. Confident > 0.78, ambiguous 0.58–0.78
+- **Level 1 — Embedding**: cosine similarity > 0.65 between requirement and TC embeddings. Confident > 0.78, ambiguous 0.65–0.78
 - **Level 2 — LLM**: evaluates ambiguous pairs. Returns COVERS/PARTIAL/NO + coverage_aspects
 
 ### Scoring Model (Faza 6)
@@ -615,7 +622,7 @@ DELETE /api/mapping/{project_id}                   — wipe mappings + scores
 ### SSE Event Format (same as M1/M2)
 
 ```json
-{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "extract|validate|persist|load|coarse|fine|score"}}
+{"type": "progress", "data": {"message": "string", "progress": 0.0–1.0, "stage": "extract|review|persist|load|coarse|fine|score"}}
 {"type": "result",   "data": { ... }}
 {"type": "error",    "data": {"message": "string"}}
 ```

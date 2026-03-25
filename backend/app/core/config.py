@@ -37,6 +37,23 @@ class Settings(BaseSettings):
     # M1 workflow timeout (seconds); large corpora with many batches need more time
     M1_WORKFLOW_TIMEOUT_SECONDS: int = 1800
 
+    # M2 workflow timeout (seconds; audit + optimize); increase for large test suites
+    M2_WORKFLOW_TIMEOUT_SECONDS: int = 300
+
+    # Faza 2 requirements workflow timeout (seconds); reflection adds multiple LLM calls
+    REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS: int = 1800
+
+    # M1/Faza2 reflection: max producer→critic→refine cycles (0 = disabled)
+    REFLECTION_MAX_ITERATIONS: int = 2
+
+    # Max concurrent LLM calls across all workflows (prevents API rate limiting)
+    LLM_CONCURRENT_CALLS: int = 4
+
+    # M1 context extraction tuning
+    M1_BATCH_CHARS: int = 12_000       # max characters per extraction batch
+    M1_BATCH_OVERLAP: int = 1_800      # overlap between consecutive batches
+    M1_GLOSSARY_TERMS_PER_GROUP: int = 15  # phase-2 glossary: term definitions per LLM call
+
     # File uploads
     UPLOAD_DIR: str = "./data/uploads"
     MAX_UPLOAD_MB: int = 50

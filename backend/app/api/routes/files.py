@@ -186,6 +186,7 @@ async def get_audit_selection(project_id: str, db: AsyncSession = Depends(get_db
         snap_dates = {s.id: s.created_at.isoformat() for s in snaps}
 
     def _selected(f: ProjectFile) -> bool:
+        # Same policy as audit_file_filter() in app/db/queries.py — keep in sync.
         if f.source_type != "file":
             return True
         return f.last_used_in_audit_id is None

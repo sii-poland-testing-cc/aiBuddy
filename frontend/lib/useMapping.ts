@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useContext } from "react";
 import { ProjectOperationsContext } from "./ProjectOperationsContext";
+import { consumeSSE } from "./sseStream";
 
 const OP_TYPE = "mapping" as const;
 
@@ -44,35 +45,19 @@ export function useMapping(projectId: string, onComplete?: () => void) {
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       if (!res.body) throw new Error("No response body");
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") break;
-          try {
-            const ev = JSON.parse(payload);
-            if (ev.type === "progress") {
-              setProgress(ev.data as MappingProgress);
-              ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
-            } else if (ev.type === "result") {
-              setLastRunAt(new Date().toISOString());
-              onComplete?.();
-            } else if (ev.type === "error") {
-              const errMsg = ev.data?.message ?? "Mapowanie nie powiodło się.";
-              setError(errMsg);
-              ops?.updateOp(projectId, OP_TYPE, { error: errMsg });
-            }
-          } catch {
-            // malformed line — skip
-          }
+      await consumeSSE(res.body, (ev) => {
+        if (ev.type === "progress") {
+          setProgress(ev.data as MappingProgress);
+          ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
+        } else if (ev.type === "result") {
+          setLastRunAt(new Date().toISOString());
+          onComplete?.();
+        } else if (ev.type === "error") {
+          const errMsg = ev.data?.message ?? "Mapowanie nie powiodło się.";
+          setError(errMsg);
+          ops?.updateOp(projectId, OP_TYPE, { error: errMsg });
         }
-      }
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const errMsg = msg.includes("Server error") || msg.includes("No response")

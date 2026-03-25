@@ -5,8 +5,10 @@ import { useParams, useSearchParams } from "next/navigation";
 import TopBar from "@/components/TopBar";
 import MessageList from "@/components/MessageList";
 import ModeInputBox from "@/components/ModeInputBox";
-import UtilityPanel, { PanelFile, AuditSnapshot } from "@/components/UtilityPanel";
-import MindMapModal, { layoutModalNodes } from "@/components/MindMapModal";
+import UtilityPanel from "@/components/UtilityPanel";
+import { ProgressBar } from "@/components/ProgressBar";
+import MindMapModal from "@/components/MindMapModal";
+import { layoutModalNodes } from "@/lib/mindMapLayout";
 import { useAIBuddyChat } from "@/lib/useAIBuddyChat";
 import { useAuditPipeline } from "@/lib/useAuditPipeline";
 import { useContextBuilder } from "@/lib/useContextBuilder";
@@ -15,9 +17,9 @@ import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useHeatmap } from "@/lib/useHeatmap";
 import { useMapping } from "@/lib/useMapping";
 import { useRequirements } from "@/lib/useRequirements";
+import { useSnapshots } from "@/lib/useSnapshots";
+import { usePanelFiles } from "@/lib/usePanelFiles";
 import RequirementsView from "@/components/RequirementsView";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 type Mode = "context" | "requirements" | "audit";
 type Tier = "audit" | "optimize" | "regenerate" | "rag_chat";
@@ -26,72 +28,6 @@ type BuildMode = "append" | "rebuild";
 interface AttachedFile {
   name: string;
   path: string;  // full server-side path returned by uploadFiles
-}
-
-// ── Snapshot fetching ──────────────────────────────────────────────────────────
-
-function useSnapshots(projectId: string, latestSnapshotId?: string) {
-  const [snapshots, setSnapshots] = useState<AuditSnapshot[]>([]);
-
-  const fetchSnapshots = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/snapshots/${projectId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setSnapshots(
-          data.map((s: any) => ({
-            id: s.id,
-            created_at: s.created_at,
-            summary: typeof s.summary === "string" ? JSON.parse(s.summary) : s.summary,
-            diff: typeof s.diff === "string" ? JSON.parse(s.diff) : s.diff,
-            requirements_uncovered: Array.isArray(s.requirements_uncovered) ? s.requirements_uncovered : [],
-            recommendations: Array.isArray(s.recommendations) ? s.recommendations : [],
-            files_used: Array.isArray(s.files_used) ? s.files_used : [],
-          }))
-        );
-      }
-    } catch {
-      /* backend offline */
-    }
-  }, [projectId]);
-
-  useEffect(() => { fetchSnapshots(); }, [fetchSnapshots]);
-  // Re-fetch when a new audit completes
-  useEffect(() => { if (latestSnapshotId) fetchSnapshots(); }, [latestSnapshotId, fetchSnapshots]);
-
-  return snapshots;
-}
-
-// ── Panel file fetching ────────────────────────────────────────────────────────
-
-function usePanelFiles(projectId: string, refreshKey: number): [PanelFile[], (fp: string, checked: boolean) => void] {
-  const [panelFiles, setPanelFiles] = useState<PanelFile[]>([]);
-
-  useEffect(() => {
-    fetch(`${API_BASE}/api/files/${projectId}/audit-selection`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data: any[]) => {
-        setPanelFiles(
-          data.map((f) => ({
-            id: f.id,
-            filename: f.filename,
-            file_path: f.file_path,
-            source_type: f.source_type as PanelFile["source_type"],
-            selected: f.selected,
-            isNew: f.last_used_in_audit_id === null,
-          }))
-        );
-      })
-      .catch(() => {});
-  }, [projectId, refreshKey]);
-
-  const handleFileToggle = useCallback((filePath: string, checked: boolean) => {
-    setPanelFiles((prev) =>
-      prev.map((f) => (f.file_path === filePath ? { ...f, selected: checked } : f))
-    );
-  }, []);
-
-  return [panelFiles, handleFileToggle];
 }
 
 // ── Unified Project Page ───────────────────────────────────────────────────────
@@ -128,9 +64,10 @@ export default function ProjectPage() {
   const {
     result: ctxResult, status: contextStatus,
     isBuilding, buildContext, fetchStatus,
+    statusError: contextStatusError, clearStatusError: clearContextStatusError,
   } = useContextBuilder(projectId);
 
-  const { files: rawFiles, uploading, uploadFiles } = useProjectFiles(projectId);
+  const { uploadFiles } = useProjectFiles(projectId);
   const { heatmap, retry: retryHeatmap } = useHeatmap(projectId);
   const {
     isRunning: isMappingRunning,
@@ -141,7 +78,7 @@ export default function ProjectPage() {
   const {
     requirements, stats: reqStats, loading: reqLoading, error: reqError,
     isExtracting, extractionProgress,
-    extractRequirements, patchRequirement, refresh: refreshRequirements,
+    extractRequirements, patchRequirement,
   } = useRequirements(projectId);
 
   const snapshots = useSnapshots(projectId, latestSnapshotId);
@@ -320,61 +257,40 @@ export default function ProjectPage() {
         {/* ── Chat column ──────────────────────────────────────────────────── */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
 
-          {/* Extraction progress bar (requirements mode) */}
-          {isExtracting && extractionProgress && (
+          {/* Progress bars */}
+          <ProgressBar
+            visible={isExtracting && !!extractionProgress}
+            progress={extractionProgress?.progress}
+            message={extractionProgress?.message}
+          />
+          <ProgressBar
+            visible={isBuilding}
+            message="Budowanie kontekstu…"
+          />
+          <ProgressBar
+            visible={!!(progress && isLoading)}
+            progress={progress?.progress}
+            message={progress?.message}
+          />
+
+          {/* Context status error banner (backend offline on mount) */}
+          {contextStatusError && (
             <div
-              className="flex-shrink-0 border-b border-buddy-border bg-buddy-surface flex items-center gap-3"
-              style={{ padding: "8px 48px" }}
+              className="flex-shrink-0 border-b border-buddy-border flex items-center gap-2"
+              style={{ padding: "8px 48px", fontSize: 12, background: "rgba(200,144,42,0.08)", color: "#c8902a" }}
             >
-              <div className="flex-1 bg-buddy-elevated rounded-full overflow-hidden" style={{ height: 4 }}>
-                <div
-                  className="h-full bg-buddy-gold transition-all duration-300 rounded-full"
-                  style={{ width: `${Math.round((extractionProgress.progress ?? 0) * 100)}%` }}
-                />
-              </div>
-              <span className="text-buddy-text-dim" style={{ fontSize: 11, flexShrink: 0 }}>
-                {extractionProgress.message}
-              </span>
+              <span>⚠ {contextStatusError}</span>
+              <button
+                onClick={clearContextStatusError}
+                className="ml-auto hover:opacity-70 transition-opacity"
+                style={{ fontSize: 14 }}
+              >
+                ✕
+              </button>
             </div>
           )}
 
-          {/* Build progress bar (context mode) */}
-          {isBuilding && (
-            <div
-              className="flex-shrink-0 border-b border-buddy-border bg-buddy-surface flex items-center gap-3"
-              style={{ padding: "8px 48px" }}
-            >
-              <div className="flex-1 bg-buddy-elevated rounded-full overflow-hidden" style={{ height: 4 }}>
-                <div
-                  className="h-full bg-buddy-gold transition-all duration-300 rounded-full"
-                  style={{ width: "60%" }}
-                />
-              </div>
-              <span className="text-buddy-text-dim" style={{ fontSize: 11, flexShrink: 0 }}>
-                Budowanie kontekstu…
-              </span>
-            </div>
-          )}
-
-          {/* Progress bar (chat) */}
-          {progress && isLoading && (
-            <div
-              className="flex-shrink-0 border-b border-buddy-border bg-buddy-surface flex items-center gap-3"
-              style={{ padding: "8px 48px" }}
-            >
-              <div className="flex-1 bg-buddy-elevated rounded-full overflow-hidden" style={{ height: 4 }}>
-                <div
-                  className="h-full bg-buddy-gold transition-all duration-300 rounded-full"
-                  style={{ width: `${Math.round((progress.progress ?? 0) * 100)}%` }}
-                />
-              </div>
-              <span className="text-buddy-text-dim" style={{ fontSize: 11, flexShrink: 0 }}>
-                {progress.message}
-              </span>
-            </div>
-          )}
-
-          {/* Error banner */}
+          {/* Chat error banner */}
           {chatError && (
             <div
               className="flex-shrink-0 border-b border-buddy-border bg-red-900/10 text-red-400 flex items-center gap-2"
@@ -446,6 +362,7 @@ export default function ProjectPage() {
           buildMode={buildMode}
           onBuildModeChange={setBuildMode}
           onBuild={handleBuild}
+          isBuildRunning={isBuilding}
           heatmapData={heatmap}
           lastMappingDate={lastMappingDate}
           isMappingRunning={isMappingRunning}

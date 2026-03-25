@@ -31,7 +31,9 @@ from llama_index.core.workflow import (
 )
 
 from app.core.config import settings
+from app.parsers.test_case_parser import parse_test_file
 from app.rag.context_builder import ContextBuilder
+from app.utils.json_utils import parse_json_object
 
 
 # ─── Events ──────────────────────────────────────────────────────────────────
@@ -85,7 +87,7 @@ class OptimizeWorkflow(Workflow):
         # The audit report only stores flagged subsets, not all cases.
         all_cases: List[Dict] = []
         for path in file_paths:
-            all_cases.extend(await self._parse_file(path))
+            all_cases.extend(await parse_test_file(path))
 
         ctx.write_event_to_stream(
             OptimizeProgressEvent(
@@ -189,44 +191,6 @@ class OptimizeWorkflow(Workflow):
         }
         return StopEvent(result=result)
 
-    # ── Private: file parsing (mirrors AuditWorkflow) ─────────────────────────
-
-    async def _parse_file(self, path: str) -> List[Dict]:
-        ext = path.rsplit(".", 1)[-1].lower()
-        if ext in ("xlsx", "csv"):
-            return await self._parse_spreadsheet(path)
-        if ext == "json":
-            return await self._parse_json(path)
-        if ext == "feature":
-            return await self._parse_gherkin(path)
-        return []
-
-    async def _parse_spreadsheet(self, path: str) -> List[Dict]:
-        import pandas as pd
-        df = pd.read_excel(path) if path.endswith(".xlsx") else pd.read_csv(path)
-        return df.to_dict(orient="records")
-
-    async def _parse_json(self, path: str) -> List[Dict]:
-        with open(path) as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else [data]
-
-    async def _parse_gherkin(self, path: str) -> List[Dict]:
-        cases = []
-        with open(path) as f:
-            scenario, steps = None, []
-            for line in f:
-                line = line.strip()
-                if line.startswith("Scenario"):
-                    if scenario:
-                        cases.append({"name": scenario, "steps": steps, "tags": []})
-                    scenario, steps = line.split(":", 1)[1].strip(), []
-                elif line.startswith(("Given", "When", "Then", "And")):
-                    steps.append(line)
-            if scenario:
-                cases.append({"name": scenario, "steps": steps, "tags": []})
-        return cases
-
     # ── Private: tagging ──────────────────────────────────────────────────────
 
     async def _assign_tags(
@@ -275,7 +239,7 @@ class OptimizeWorkflow(Workflow):
 
         try:
             response = await self.llm.acomplete(prompt, max_tokens=200)
-            parsed = json.loads(str(response))
+            parsed = parse_json_object(str(response).strip())
             return {
                 "tags": parsed.get("tags", []),
                 "priority": parsed.get("priority", "P3"),

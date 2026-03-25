@@ -65,18 +65,21 @@ function renderContent(text: string) {
   });
 }
 
-const RELATED_MARKER = "**Powiązane terminy**";
+// Matches "**Powiązane terminy**" with optional capital T and optional trailing
+// colon/dash — handles the most likely LLM formatting drift.
+const RELATED_MARKER_RE = /\*\*Powiązane [Tt]erminy\*\*\s*[—–:-]?/;
 
 function renderAssistantContent(
   text: string,
   glossary: GlossaryTerm[],
   onTermClick?: (term: GlossaryTerm) => void,
 ) {
-  const markerIdx = text.indexOf(RELATED_MARKER);
-  if (markerIdx === -1) return renderContent(text);
+  const match = RELATED_MARKER_RE.exec(text);
+  if (!match) return renderContent(text);
 
+  const markerIdx = match.index;
   const before = text.slice(0, markerIdx);
-  const afterMarker = text.slice(markerIdx + RELATED_MARKER.length);
+  const afterMarker = text.slice(markerIdx + match[0].length);
   const firstNewline = afterMarker.indexOf("\n");
   const termsLine = (firstNewline === -1 ? afterMarker : afterMarker.slice(0, firstNewline))
     .replace(/^\s*[—–-]\s*/, "").trim();

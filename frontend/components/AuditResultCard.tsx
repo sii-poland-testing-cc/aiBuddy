@@ -2,14 +2,9 @@
 
 import { useState } from "react";
 import type { AuditData, ChatSource } from "@/lib/useAIBuddyChat";
+import { coverageColor } from "@/lib/coverageColor";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-export function coverageColor(pct: number) {
-  if (pct >= 80) return "#4a9e6b";
-  if (pct >= 50) return "#f0c060";
-  return "#c0504a";
-}
+export { coverageColor };
 
 export function generateAuditMarkdown(data: AuditData, sources?: ChatSource[]): string {
   const { summary, uncovered, recommendations, duplicates } = data;
@@ -103,7 +98,7 @@ export function DiffBadge({ diff }: { diff: AuditData["diff"] }) {
     );
   }
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 20, fontSize: 11, fontWeight: 700, fontFamily: "monospace", background: "rgba(192,80,74,0.2)", color: "#c0504a" }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 20, fontSize: 11, fontWeight: 700, fontFamily: "monospace", background: "rgba(192,80,74,0.2)", color: "#c85a3a" }}>
       ▼ {delta.toFixed(1)}%
     </span>
   );
@@ -161,8 +156,8 @@ const TD_STYLE: React.CSSProperties = {
 function AuditTableView({ data, sources }: { data: AuditData; sources?: ChatSource[] }) {
   const { summary, uncovered, recommendations, duplicates } = data;
   const covColor = coverageColor(summary.coverage_pct);
-  const dupColor = summary.duplicates_found > 0 ? "#f0c060" : "#4a9e6b";
-  const untagColor = summary.untagged_cases > 0 ? "#f0c060" : "#4a9e6b";
+  const dupColor = summary.duplicates_found > 0 ? "#c8902a" : "#4a9e6b";
+  const untagColor = summary.untagged_cases > 0 ? "#c8902a" : "#4a9e6b";
 
   return (
     <>
@@ -219,7 +214,7 @@ function AuditTableView({ data, sources }: { data: AuditData; sources?: ChatSour
                     <td style={{ ...TD_STYLE, color: "#6a5f50", width: 28 }}>{i + 1}</td>
                     <td style={{ ...TD_STYLE, fontFamily: "monospace", fontSize: 11 }}>{d.tc_a}</td>
                     <td style={{ ...TD_STYLE, fontFamily: "monospace", fontSize: 11 }}>{d.tc_b}</td>
-                    <td style={{ ...TD_STYLE, textAlign: "right", fontFamily: "monospace", color: "#f0c060" }}>{sim}</td>
+                    <td style={{ ...TD_STYLE, textAlign: "right", fontFamily: "monospace", color: "#c8902a" }}>{sim}</td>
                   </tr>
                 );
               })}
@@ -262,8 +257,8 @@ export function AuditResultCard({ data, sources, onClose }: { data: AuditData; s
   const { summary, uncovered, recommendations, diff } = data;
 
   const covColor = coverageColor(summary.coverage_pct);
-  const dupColor = summary.duplicates_found > 0 ? "#f0c060" : "#4a9e6b";
-  const untagColor = summary.untagged_cases > 0 ? "#f0c060" : "#4a9e6b";
+  const dupColor = summary.duplicates_found > 0 ? "#c8902a" : "#4a9e6b";
+  const untagColor = summary.untagged_cases > 0 ? "#c8902a" : "#4a9e6b";
 
   const btnBase: React.CSSProperties = {
     display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -276,10 +271,10 @@ export function AuditResultCard({ data, sources, onClose }: { data: AuditData; s
 
       {/* Title row */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ color: "#f0c060" }}>
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ color: "#c8902a" }}>
           <circle cx="8" cy="8" r="6" /><path d="M5 8l2 2 4-4" />
         </svg>
-        <span style={{ fontSize: 11, fontWeight: 700, color: "#f0c060", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#c8902a", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Audit Summary
         </span>
         <DiffBadge diff={diff} />
@@ -287,14 +282,14 @@ export function AuditResultCard({ data, sources, onClose }: { data: AuditData; s
         <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
           <button
             onClick={() => setView("card")}
-            style={{ ...btnBase, background: view === "card" ? "rgba(200,144,42,0.18)" : "transparent", color: view === "card" ? "#f0c060" : "#6a5f50", borderColor: view === "card" ? "rgba(200,144,42,0.4)" : "#3a342c" }}
+            style={{ ...btnBase, background: view === "card" ? "rgba(200,144,42,0.18)" : "transparent", color: view === "card" ? "#c8902a" : "#6a5f50", borderColor: view === "card" ? "rgba(200,144,42,0.4)" : "#3a342c" }}
             title="Widok karty"
           >
             ▦
           </button>
           <button
             onClick={() => setView("table")}
-            style={{ ...btnBase, background: view === "table" ? "rgba(200,144,42,0.18)" : "transparent", color: view === "table" ? "#f0c060" : "#6a5f50", borderColor: view === "table" ? "rgba(200,144,42,0.4)" : "#3a342c" }}
+            style={{ ...btnBase, background: view === "table" ? "rgba(200,144,42,0.18)" : "transparent", color: view === "table" ? "#c8902a" : "#6a5f50", borderColor: view === "table" ? "rgba(200,144,42,0.4)" : "#3a342c" }}
             title="Widok tabeli"
           >
             ☰

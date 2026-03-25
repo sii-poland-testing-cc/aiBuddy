@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import dagre from "dagre";
 
 export interface MindMapNode {
@@ -62,6 +62,7 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
   const [zoom, setZoom]           = useState(1);
   const [isPanning, setIsPanning] = useState(false);
   const panStart                  = useRef({ x: 0, y: 0 });
+  const svgRef                    = useRef<SVGSVGElement>(null);
 
   const { positions, width, height } = useMemo(
     () => computeLayout(nodes, edges),
@@ -87,16 +88,25 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
 
   const handleMouseUp = () => setIsPanning(false);
 
-  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+  // Non-passive wheel listener so e.preventDefault() actually prevents page scroll
+  const handleWheel = useCallback((e: WheelEvent) => {
     if (!e.ctrlKey) return;
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.1 : 0.1;
     setZoom((z) => Math.min(2.0, Math.max(0.5, z + delta)));
-  };
+  }, []);
+
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
 
   return (
     <div className="relative w-full h-full">
       <svg
+        ref={svgRef}
         width="100%"
         height="100%"
         viewBox={`0 0 ${viewW} ${viewH}`}
@@ -105,7 +115,6 @@ export default function MindMap({ nodes, edges }: MindMapProps) {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
         role="img"
         aria-label="Mapa myśli projektu"
       >

@@ -24,33 +24,9 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
 
 from app.core.config import settings as cfg
+from app.core.llm import get_embed_model
 
 logger = logging.getLogger("ai_buddy")
-
-
-_embed_model_singleton = None
-
-
-def _build_embed_model():
-    """Return embed model based on LLM_PROVIDER. Cached as a module-level singleton."""
-    global _embed_model_singleton
-    if _embed_model_singleton is not None:
-        return _embed_model_singleton
-
-    if cfg.LLM_PROVIDER.lower() == "bedrock":
-        from llama_index.embeddings.bedrock import BedrockEmbedding
-        _embed_model_singleton = BedrockEmbedding(
-            model_name=cfg.BEDROCK_EMBED_MODEL_ID,
-            region_name=cfg.AWS_REGION,
-        )
-    else:
-        # Anthropic (or any non-Bedrock provider) → local multilingual model, no API key needed
-        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-        logger.info("Loading HuggingFace embedding model '%s' (first load only)…", cfg.EMBED_MODEL_NAME)
-        _embed_model_singleton = HuggingFaceEmbedding(model_name=cfg.EMBED_MODEL_NAME)
-        logger.info("Embedding model loaded and cached.")
-
-    return _embed_model_singleton
 
 
 class ContextBuilder:
@@ -60,11 +36,13 @@ class ContextBuilder:
     Usage:
         builder = ContextBuilder()
         await builder.index_files(project_id="proj_1", file_paths=[...])
+        text, sources = await builder.build_with_sources(project_id="proj_1", query="coverage gaps")
+        # or, if sources are not needed:
         context = await builder.build(project_id="proj_1", query="coverage gaps")
     """
 
     def __init__(self):
-        self._embed_model = _build_embed_model()
+        self._embed_model = get_embed_model()
         Settings.embed_model = self._embed_model
         Settings.node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=64)
 
@@ -163,9 +141,6 @@ class ContextBuilder:
 
         collection = self._get_collection(project_id)
 
-        from llama_index.vector_stores.chroma import ChromaVectorStore
-        from llama_index.core import VectorStoreIndex, StorageContext
-
         vector_store = ChromaVectorStore(chroma_collection=collection)
         storage_ctx = StorageContext.from_defaults(vector_store=vector_store)
         VectorStoreIndex.from_documents(llama_docs, storage_context=storage_ctx)
@@ -184,14 +159,16 @@ class ContextBuilder:
 
     def delete_collection(self, project_id: str) -> None:
         """Delete the Chroma collection for a project (used by rebuild mode)."""
-        safe_id = project_id.replace("-", "_")
         try:
-            self._chroma_client.delete_collection(f"project_{safe_id}")
+            self._chroma_client.delete_collection(self._collection_name(project_id))
         except Exception:
             pass  # collection may not exist yet
 
     # ── Private ───────────────────────────────────────────────────────────────
 
+    def _collection_name(self, project_id: str) -> str:
+        """Canonical Chroma collection name for a project."""
+        return f"project_{project_id.replace('-', '_')}"
+
     def _get_collection(self, project_id: str):
-        safe_id = project_id.replace("-", "_")
-        return self._chroma_client.get_or_create_collection(f"project_{safe_id}")
+        return self._chroma_client.get_or_create_collection(self._collection_name(project_id))

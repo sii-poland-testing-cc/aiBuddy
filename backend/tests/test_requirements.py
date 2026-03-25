@@ -6,9 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _create_project(app_client, name: str = "req-test-project") -> str:
@@ -85,26 +82,18 @@ def _mock_llm_for_requirements():
         },
     })
 
-    validation_response = json.dumps({
-        "validated_requirements": [],
-        "duplicates": [],
-        "additional_gaps": [],
-        "overall_assessment": {
-            "completeness_rating": "high",
-            "testability_rating": "high",
-            "recommendation": "Requirements look good.",
-        },
-    })
+    # Critic returns APPROVED so no refine call is triggered
+    approved_response = json.dumps({"verdict": "APPROVED"})
 
     call_count = 0
 
-    async def _side_effect(prompt):
+    async def _side_effect(prompt, **kwargs):
         nonlocal call_count
         call_count += 1
-        # First call = extraction, subsequent calls = validation
+        # First call = extraction, subsequent calls = reflection critic/refine
         if call_count == 1:
             return extraction_response
-        return validation_response
+        return approved_response
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side_effect)
@@ -155,7 +144,6 @@ def _run_extraction(app_client, project_id: str) -> dict:
 
 # ─── Tests ────────────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 def test_requirements_extraction_mock(app_client):
     """
     POST /api/requirements/{project_id}/extract with mocked LLM should:
@@ -185,7 +173,6 @@ def test_requirements_extraction_mock(app_client):
     assert data["total"] > 0, "GET returned no requirements after extraction"
 
 
-@pytest.mark.asyncio
 def test_requirements_persist_and_list(app_client):
     """
     After extraction, both list endpoints should return non-empty results.
@@ -213,7 +200,6 @@ def test_requirements_persist_and_list(app_client):
         assert "level" in item
 
 
-@pytest.mark.asyncio
 def test_requirements_stats(app_client):
     """
     GET /api/requirements/{project_id}/stats should return statistics
@@ -235,7 +221,6 @@ def test_requirements_stats(app_client):
     assert isinstance(data["by_source_type"], dict)
 
 
-@pytest.mark.asyncio
 def test_requirements_human_review(app_client):
     """
     PATCH /api/requirements/{project_id}/{req_id} should update human_reviewed flag.
