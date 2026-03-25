@@ -49,7 +49,7 @@ export default function TopBar({ projectId, onTogglePanel, panelOpen, ragReady }
     setDropdownOpen(false);
     setCreating(false);
     setNewName("");
-    if (id !== projectId) router.push(`/chat/${encodeURIComponent(id)}`);
+    if (id !== projectId) router.push(`/project/${encodeURIComponent(id)}`);
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -63,7 +63,7 @@ export default function TopBar({ projectId, onTogglePanel, panelOpen, ragReady }
       setDropdownOpen(false);
       setCreating(false);
       setNewName("");
-      router.push(`/chat/${encodeURIComponent(project.project_id)}`);
+      router.push(`/project/${encodeURIComponent(project.project_id)}`);
     }
   };
 
