@@ -23,6 +23,38 @@ class JiraClient:
         self._auth = (user_email, api_key) if user_email else None
         self._headers: dict = {} if self._auth else {"Authorization": f"Bearer {api_key}"}
 
+    async def test_connection(self) -> dict:
+        """Test connectivity to Jira. Returns {ok, status_code, detail}."""
+        if not self.base_url.startswith(("http://", "https://")):
+            return {"ok": False, "status_code": None, "detail": "Nieprawidłowy adres — URL musi zaczynać się od http:// lub https://"}
+
+        url = f"{self.base_url}/rest/api/2/project?maxResults=1"
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                resp = await client.get(url, auth=self._auth, headers=self._headers)
+
+            if resp.status_code == 401:
+                return {"ok": False, "status_code": resp.status_code, "detail": "Nieautoryzowany. Sprawdź dane dostępowe i scope (wymagany: read:jira-work)."}
+            if resp.status_code == 403:
+                return {"ok": False, "status_code": resp.status_code, "detail": "Brak uprawnień. Sprawdź czy token ma scope read:jira-work."}
+            if resp.status_code == 404:
+                return {"ok": False, "status_code": resp.status_code, "detail": "Nie znaleziono endpointu. Sprawdź adres serwera Jira."}
+            if not resp.is_success:
+                return {"ok": False, "status_code": resp.status_code, "detail": f"Błąd serwera Jira: {resp.status_code}"}
+
+            projects = resp.json()
+            count = len(projects) if isinstance(projects, list) else 0
+            return {"ok": True, "status_code": resp.status_code, "detail": f"Połączono. Dostępne projekty: {count}"}
+
+        except httpx.ConnectError:
+            return {"ok": False, "status_code": None, "detail": "Nie można nawiązać połączenia. Sprawdź adres serwera."}
+        except httpx.TimeoutException:
+            return {"ok": False, "status_code": None, "detail": "Przekroczono czas połączenia (8s)."}
+        except httpx.InvalidURL as exc:
+            return {"ok": False, "status_code": None, "detail": f"Nieprawidłowy adres URL: {exc}. Sprawdzany URL: {url!r}"}
+        except Exception as exc:
+            return {"ok": False, "status_code": None, "detail": str(exc)}
+
     async def get_issue(self, key: str) -> Optional[dict]:
         """Fetch a single issue. Returns None on 404."""
         url = f"{self.base_url}/rest/api/2/issue/{key}"
