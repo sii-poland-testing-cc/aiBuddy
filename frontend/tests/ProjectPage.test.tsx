@@ -133,7 +133,11 @@ vi.mock("@/components/UtilityPanel", () => ({
 
 vi.mock("@/components/MindMapModal", () => ({
   default: () => null,
+}));
+
+vi.mock("@/lib/mindMapLayout", () => ({
   layoutModalNodes: () => [],
+  isNodeVisible: () => true,
 }));
 
 vi.mock("@/components/MessageList", () => ({
