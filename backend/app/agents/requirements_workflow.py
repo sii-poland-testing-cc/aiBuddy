@@ -49,6 +49,9 @@ EXTRACT_REQUIREMENTS_PROMPT = """You are a senior QA architect performing requir
 Your task: Extract the 20 most important testable requirements from the documentation below.
 Build a hierarchical structure: Features → Functional Requirements → Acceptance Criteria.
 
+The documentation spans multiple source files. Each chunk is prefixed with [Source: filename — section]
+to indicate its origin. Synthesise requirements across ALL sources — do not focus on a single document.
+
 Rules:
 1. Prefer explicit requirements (FR-001, REQ-*, SHALL/MUST). Include implicit ones only if clearly testable.
 2. Limit to max 20 functional requirements total across all features.
@@ -59,6 +62,7 @@ Rules:
    - level: "feature" | "functional_req" | "acceptance_criterion"
    - parent_feature: which feature this belongs to (use feature title)
    - source_type: "formal" if has an explicit ID, "implicit" if inferred from text
+   - source_references: list of source filenames where this requirement was found (e.g. ["srs.docx"])
    - taxonomy: {module, risk_level, business_domain}
    - testability: "high" | "medium" | "low" — can this be directly tested?
    - confidence: 0.0–1.0 — how certain are you this is a real requirement?
@@ -82,6 +86,7 @@ Return ONLY valid JSON — no preamble, no markdown fences:
           "description": "Requirement description (max 200 chars)",
           "level": "functional_req",
           "source_type": "formal",
+          "source_references": ["srs.docx"],
           "taxonomy": {
             "module": "payments",
             "risk_level": "high|medium|low",
@@ -179,10 +184,18 @@ async def _guarded(sem: asyncio.Semaphore, coro):
 # Fixed RAG queries that provide broad coverage regardless of user_message.
 # The caller appends a user_message-derived query when present.
 _RAG_QUERIES: List[str] = [
-    "functional requirements specifications features",
-    "business rules constraints validations",
-    "acceptance criteria user stories scenarios",
-    "non-functional requirements performance security",
+    "functional requirements specifications features FR-",
+    "business rules constraints validations domain rules",
+    "acceptance criteria user stories scenarios given when then",
+    "non-functional requirements performance security scalability",
+    "system requirements interface integration API endpoints",
+    "data requirements entities models attributes schema",
+    "user roles permissions access control authorization",
+    "error handling exceptions failure modes edge cases",
+    "compliance regulatory audit trail logging requirements",
+    "workflow process state machine transitions lifecycle",
+    "reporting analytics metrics dashboard requirements",
+    "configuration settings administration maintenance",
 ]
 
 
@@ -238,34 +251,66 @@ class RequirementsWorkflow(Workflow):
     async def _build_rag_context(
         self, ctx: Context, project_id: str, user_message: str
     ) -> tuple:
-        """Fan out across _RAG_QUERIES (+ optional user_message query) and return
-        (deduplicated combined_context, unique_sources)."""
+        """Fan out across _RAG_QUERIES (+ optional user_message query) concurrently and
+        return (deduplicated combined_context_with_breadcrumbs, unique_sources)."""
         queries = list(_RAG_QUERIES)
         if user_message:
             queries.append(f"{user_message} requirements")
 
-        all_context_parts: List[str] = []
-        all_sources: List[Dict] = []
+        ctx.write_event_to_stream(RequirementsProgressEvent(
+            message=f"Querying knowledge base ({len(queries)} queries in parallel)…",
+            progress=0.08, stage="extract"
+        ))
+
+        # Concurrent fan-out — all queries fire simultaneously
+        node_lists: List[List] = await asyncio.gather(
+            *[self.context_builder.retrieve_nodes(project_id, q, top_k=settings.RAG_TOP_K)
+              for q in queries],
+            return_exceptions=False,
+        )
+
+        # Merge and deduplicate nodes; add [Source: filename — heading] breadcrumbs
+        seen_chunks: set = set()
         seen_filenames: set = set()
+        all_parts: List[str] = []
+        all_sources: List[Dict] = []
 
-        for i, query in enumerate(queries):
-            ctx.write_event_to_stream(RequirementsProgressEvent(
-                message=f"Querying knowledge base ({i + 1}/{len(queries)})…",
-                progress=0.05 + 0.15 * ((i + 1) / len(queries)),
-                stage="extract"
-            ))
-            context_text, sources = await self.context_builder.build_with_sources(
-                project_id, query=query, top_k=8
+        for nodes in node_lists:
+            for node in nodes:
+                chunk_key = node.get_content()[:200].strip().lower()
+                if chunk_key in seen_chunks:
+                    continue
+                seen_chunks.add(chunk_key)
+
+                meta = node.metadata or {}
+                filename = meta.get("filename", "unknown")
+                heading = meta.get("first_heading", "")
+                breadcrumb = f"[Source: {filename}" + (f" — {heading}" if heading else "") + "]"
+                all_parts.append(f"{breadcrumb}\n{node.get_content()}")
+
+                if filename not in seen_filenames:
+                    seen_filenames.add(filename)
+                    all_sources.append({
+                        "filename": filename,
+                        "excerpt": node.get_content()[:200].strip(),
+                    })
+
+        ctx.write_event_to_stream(RequirementsProgressEvent(
+            message=f"Retrieved {len(all_parts)} unique chunks from {len(all_sources)} document(s)…",
+            progress=0.20, stage="extract"
+        ))
+
+        # Check coverage — warn if indexed docs are not all represented in retrieved chunks
+        indexed_filenames = self.context_builder.get_indexed_filenames(project_id)
+        missing = [f for f in indexed_filenames if f not in seen_filenames]
+        if missing:
+            logger.warning(
+                "Project %s: %d indexed document(s) not retrieved in any query chunk: %s",
+                project_id, len(missing), missing,
             )
-            all_context_parts.append(context_text)
-            for s in sources:
-                if s["filename"] not in seen_filenames:
-                    seen_filenames.add(s["filename"])
-                    all_sources.append(s)
 
-        combined = "\n\n---\n\n".join(all_context_parts)
-        # Deduplicate chunks across queries; cap at 30K chars
-        combined = self._deduplicate_context(combined, max_chars=30000)
+        combined = "\n\n---\n\n".join(all_parts)
+        combined = self._deduplicate_context(combined, max_chars=settings.RAG_MAX_CONTEXT_CHARS)
         return combined, all_sources
 
     # ── Step 1: Extract ──────────────────────────────────────────────────────
@@ -807,6 +852,7 @@ No markdown fences."""
             "title": req.get("title", ""),
             "description": req.get("description", ""),
             "source_type": req.get("source_type", "implicit"),
+            "source_references": req.get("source_references", []),
             "taxonomy": req.get("taxonomy", {}),
             "confidence": confidence,
             "completeness_score": req.get("completeness_score"),

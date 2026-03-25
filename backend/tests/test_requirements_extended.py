@@ -40,8 +40,10 @@ def _run_extraction(app_client, project_id: str, mock_llm=None) -> dict:
     with patch("app.api.routes.requirements.get_llm", return_value=mock_llm), \
          patch("app.agents.requirements_workflow.ContextBuilder.is_indexed",
                new_callable=AsyncMock, return_value=True), \
-         patch("app.agents.requirements_workflow.ContextBuilder.build_with_sources",
-               new_callable=AsyncMock, return_value=("Docs with FR-001 FR-002.", [])):
+         patch("app.agents.requirements_workflow.ContextBuilder.retrieve_nodes",
+               new_callable=AsyncMock, return_value=[]), \
+         patch("app.agents.requirements_workflow.ContextBuilder.get_indexed_filenames",
+               return_value=[]):
         r = app_client.post(f"/api/requirements/{project_id}/extract", json={"message": ""})
     assert r.status_code == 200
     for line in r.text.splitlines():
@@ -276,8 +278,10 @@ async def test_workflow_mock_mode():
 
     with patch("app.agents.requirements_workflow.ContextBuilder.is_indexed",
                new_callable=AsyncMock, return_value=True), \
-         patch("app.agents.requirements_workflow.ContextBuilder.build_with_sources",
-               new_callable=AsyncMock, return_value=("Mock docs.", [])):
+         patch("app.agents.requirements_workflow.ContextBuilder.retrieve_nodes",
+               new_callable=AsyncMock, return_value=[]), \
+         patch("app.agents.requirements_workflow.ContextBuilder.get_indexed_filenames",
+               return_value=[]):
         wf = RequirementsWorkflow(llm=None, timeout=30)
         handler = wf.run(project_id="unit-test", user_message="")
         async for _ in handler.stream_events():
