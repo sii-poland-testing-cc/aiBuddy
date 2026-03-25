@@ -6,7 +6,7 @@ import TopBar from "@/components/TopBar";
 import MessageList from "@/components/MessageList";
 import ModeInputBox from "@/components/ModeInputBox";
 import UtilityPanel from "@/components/UtilityPanel";
-import type { PanelFile, AuditSnapshot } from "@/lib/types";
+import type { PanelFile } from "@/lib/types";
 import MindMapModal, { layoutModalNodes } from "@/components/MindMapModal";
 import { useAIBuddyChat } from "@/lib/useAIBuddyChat";
 import { useAuditPipeline } from "@/lib/useAuditPipeline";
@@ -16,6 +16,7 @@ import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useHeatmap } from "@/lib/useHeatmap";
 import { useMapping } from "@/lib/useMapping";
 import { useRequirements } from "@/lib/useRequirements";
+import { useSnapshots } from "@/lib/useSnapshots";
 import RequirementsView from "@/components/RequirementsView";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -27,40 +28,6 @@ type BuildMode = "append" | "rebuild";
 interface AttachedFile {
   name: string;
   path: string;  // full server-side path returned by uploadFiles
-}
-
-// ── Snapshot fetching ──────────────────────────────────────────────────────────
-
-function useSnapshots(projectId: string, latestSnapshotId?: string) {
-  const [snapshots, setSnapshots] = useState<AuditSnapshot[]>([]);
-
-  const fetchSnapshots = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/snapshots/${projectId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setSnapshots(
-          data.map((s: any) => ({
-            id: s.id,
-            created_at: s.created_at,
-            summary: typeof s.summary === "string" ? JSON.parse(s.summary) : s.summary,
-            diff: typeof s.diff === "string" ? JSON.parse(s.diff) : s.diff,
-            requirements_uncovered: Array.isArray(s.requirements_uncovered) ? s.requirements_uncovered : [],
-            recommendations: Array.isArray(s.recommendations) ? s.recommendations : [],
-            files_used: Array.isArray(s.files_used) ? s.files_used : [],
-          }))
-        );
-      }
-    } catch {
-      /* backend offline */
-    }
-  }, [projectId]);
-
-  useEffect(() => { fetchSnapshots(); }, [fetchSnapshots]);
-  // Re-fetch when a new audit completes
-  useEffect(() => { if (latestSnapshotId) fetchSnapshots(); }, [latestSnapshotId, fetchSnapshots]);
-
-  return snapshots;
 }
 
 // ── Panel file fetching ────────────────────────────────────────────────────────
