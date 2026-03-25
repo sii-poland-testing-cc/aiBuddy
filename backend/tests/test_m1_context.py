@@ -209,8 +209,9 @@ def test_artefacts_persisted_to_db(app_client):
     assert proj_r.status_code in (200, 201)
     project_id = proj_r.json()["project_id"]
 
-    # 2. Run the full M1 build
-    with fixture.open("rb") as fh:
+    # 2. Run the full M1 build with a mocked LLM (no real API calls)
+    with patch("app.api.routes.context.get_llm", return_value=_make_context_mock_llm()), \
+         fixture.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (fixture.name, fh,
@@ -254,6 +255,38 @@ def test_artefacts_persisted_to_db(app_client):
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _SYNTHETIC = Path(__file__).parent / "fixtures" / "synthetic_docs"
 
+import json as _json
+
+_MOCK_ENTITIES = _json.dumps({
+    "entities": [
+        {"id": "e1", "name": "Test Case", "type": "data", "description": "A test scenario"},
+        {"id": "e2", "name": "Defect",    "type": "data", "description": "A software defect"},
+    ],
+    "relations": [{"source": "e1", "target": "e2", "label": "reveals"}],
+})
+_MOCK_GLOSSARY = _json.dumps([
+    {"term": "Test Case", "definition": "Conditions to verify behaviour.", "related_terms": [], "source": "docs"},
+    {"term": "Defect",    "definition": "Deviation from expected behaviour.", "related_terms": [], "source": "docs"},
+])
+_MOCK_APPROVED = _json.dumps({"verdict": "APPROVED"})
+
+
+def _make_context_mock_llm():
+    """Return a mock LLM that returns deterministic responses for M1 extraction calls."""
+    mock = MagicMock()
+
+    async def _side(prompt, **kwargs):
+        if "entities and their relationships" in prompt:
+            return _MOCK_ENTITIES
+        if "domain-specific term" in prompt:  # _enumerate_term_names (phase 1)
+            return _json.dumps(["Test Case", "Defect", "QA Engineer", "Test Suite", "Coverage"])
+        if "Write glossary definitions" in prompt:  # _define_term_group (phase 2)
+            return _MOCK_GLOSSARY
+        return _MOCK_APPROVED  # review / refine
+
+    mock.acomplete = AsyncMock(side_effect=_side)
+    return mock
+
 
 def _build(client, project_id: str, filename: str, mode: str = "append") -> None:
     """POST a single .docx to /build and consume the SSE response."""
@@ -262,7 +295,8 @@ def _build(client, project_id: str, filename: str, mode: str = "append") -> None
     url = f"/api/context/{project_id}/build"
     if mode != "append":
         url += f"?mode={mode}"
-    with path.open("rb") as fh:
+    with patch("app.api.routes.context.get_llm", return_value=_make_context_mock_llm()), \
+         path.open("rb") as fh:
         r = client.post(url, files={"files": (filename, fh, _DOCX_MIME)})
     assert r.status_code == 200, f"Build failed ({mode}): {r.text[:300]}"
 
@@ -273,41 +307,61 @@ def _glossary(client, project_id: str) -> list:
     return r.json()
 
 
-_EXTRA_TERMS = [
-    {"term": "Payment Gateway", "definition": "External payment processor.", "related_terms": [], "source": "synthetic"},
-    {"term": "Transaction Ledger", "definition": "Ledger of all payment transactions.", "related_terms": [], "source": "synthetic"},
-]
-
-
 def test_append_mode_merges_artefacts(app_client):
     """
     Appending a second document merges its glossary with the first:
       - no duplicate terms
       - merged term count > either file built alone
 
-    Note: the mock LLM (used when no real API key is present) returns the
-    same 6 fixed terms for every document, so two extra domain-specific terms
-    are injected into the cache after build 1 to guarantee the merge produces
-    a glossary larger than any single build.  With a real LLM these extra terms
-    would emerge naturally from srs_payment_module.docx content.
+    Build 1 uses the standard mock (5 terms).  Build 2 uses an extended mock
+    that adds 2 unique terms absent from build 1, so the merged glossary is 7
+    terms — strictly more than either single build.
     """
-    import app.api.routes.context as ctx_module
+    def _make_extended_mock_llm():
+        """Standard mock plus 2 extra terms unique to the second document."""
+        mock = MagicMock()
+        extended_terms = ["Test Case", "Defect", "QA Engineer", "Test Suite", "Coverage",
+                          "Payment Gateway", "Transaction Ledger"]
+        extended_glossary = _json.dumps([
+            {"term": "Test Case",          "definition": "Conditions to verify behaviour.", "related_terms": [], "source": "docs"},
+            {"term": "Defect",             "definition": "Deviation from expected behaviour.", "related_terms": [], "source": "docs"},
+            {"term": "QA Engineer",        "definition": "Quality assurance specialist.", "related_terms": [], "source": "docs"},
+            {"term": "Test Suite",         "definition": "Collection of test cases.", "related_terms": [], "source": "docs"},
+            {"term": "Coverage",           "definition": "Fraction of requirements exercised.", "related_terms": [], "source": "docs"},
+            {"term": "Payment Gateway",    "definition": "External payment processor.", "related_terms": [], "source": "docs"},
+            {"term": "Transaction Ledger", "definition": "Ledger of all payment transactions.", "related_terms": [], "source": "docs"},
+        ])
+
+        async def _side(prompt, **kwargs):
+            if "entities and their relationships" in prompt:
+                return _MOCK_ENTITIES
+            if "domain-specific term" in prompt:
+                return _json.dumps(extended_terms)
+            if "Write glossary definitions" in prompt:
+                return extended_glossary
+            return _MOCK_APPROVED
+
+        mock.acomplete = AsyncMock(side_effect=_side)
+        return mock
 
     r = app_client.post("/api/projects/", json={"name": "append-merge-test"})
     assert r.status_code in (200, 201)
     pid = r.json()["project_id"]
 
-    # Build 1: srs_payment_module.docx
+    # Build 1: srs_payment_module.docx — standard mock (5 terms)
     _build(app_client, pid, "srs_payment_module.docx")
     n_srs = len(_glossary(app_client, pid))
 
-    # Inject 2 terms absent from the mock glossary (simulate real LLM output)
-    ctx_module._context_store[pid]["glossary"] = (
-        ctx_module._context_store[pid]["glossary"] + _EXTRA_TERMS
-    )
-
-    # Build 2: qa_process.docx (append) — must merge with the 2 injected terms
-    _build(app_client, pid, "qa_process.docx", mode="append")
+    # Build 2: qa_process.docx (append) — extended mock adds 2 unique extra terms
+    path = _SYNTHETIC / "qa_process.docx"
+    assert path.exists()
+    with patch("app.api.routes.context.get_llm", return_value=_make_extended_mock_llm()), \
+         path.open("rb") as fh:
+        r2 = app_client.post(
+            f"/api/context/{pid}/build",
+            files={"files": ("qa_process.docx", fh, _DOCX_MIME)},
+        )
+    assert r2.status_code == 200, f"Build 2 failed: {r2.text[:300]}"
     merged = _glossary(app_client, pid)
 
     # No duplicate terms (case-insensitive)
@@ -315,9 +369,7 @@ def test_append_mode_merges_artefacts(app_client):
     assert len(set(lowered)) == len(merged), "Merged glossary contains duplicate terms"
 
     # Merged count strictly greater than either file alone
-    n_qa = n_srs  # mock always returns the same count; real LLM may differ
     assert len(merged) > n_srs, f"Expected merged ({len(merged)}) > srs alone ({n_srs})"
-    assert len(merged) > n_qa, f"Expected merged ({len(merged)}) > qa alone ({n_qa})"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -392,7 +444,6 @@ def test_audit_snapshot_table_exists(app_client):
     app_client triggers lifespan → init_db() which must create audit_snapshots.
     Verify the model class and that all JSON fields round-trip correctly.
     """
-    import json
     from app.db.models import AuditSnapshot
 
     assert AuditSnapshot.__tablename__ == "audit_snapshots"
@@ -420,19 +471,19 @@ def test_audit_snapshot_table_exists(app_client):
     snap = AuditSnapshot(
         id=snap_id,
         project_id="test-project-id",
-        files_used=json.dumps(["file1.xlsx"]),
-        summary=json.dumps(summary_data),
-        requirements_uncovered=json.dumps(uncovered),
-        recommendations=json.dumps(recs),
-        diff=json.dumps(diff_data),
+        files_used=["file1.xlsx"],
+        summary=summary_data,
+        requirements_uncovered=uncovered,
+        recommendations=recs,
+        diff=diff_data,
     )
 
-    # All JSON fields round-trip correctly
-    assert json.loads(snap.summary)["coverage_pct"] == 33.3        # type: ignore[arg-type]
-    assert json.loads(snap.requirements_uncovered) == uncovered     # type: ignore[arg-type]
-    assert json.loads(snap.recommendations) == recs                 # type: ignore[arg-type]
-    assert json.loads(snap.diff)["coverage_delta"] == 12.5          # type: ignore[arg-type]
-    assert json.loads(snap.files_used) == ["file1.xlsx"]            # type: ignore[arg-type]
+    # All JSON fields are stored as Python objects (JsonType handles serialization at DB boundary)
+    assert snap.summary["coverage_pct"] == 33.3             # type: ignore[index]
+    assert snap.requirements_uncovered == uncovered          # type: ignore[comparison-overlap]
+    assert snap.recommendations == recs                      # type: ignore[comparison-overlap]
+    assert snap.diff["coverage_delta"] == 12.5               # type: ignore[index]
+    assert snap.files_used == ["file1.xlsx"]                 # type: ignore[comparison-overlap]
 
     # id matches what we passed
     assert snap.id == snap_id
@@ -440,19 +491,20 @@ def test_audit_snapshot_table_exists(app_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AuditWorkflow._extract_requirements
+# audit_workflow_integration — coverage helpers
+# (previously tested via AuditWorkflow._requirements_in_tests / _extract_requirements,
+#  now tested at their live home in the integration module)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_requirements_in_tests_pattern_match():
     """Pattern matching covers requirements mentioned in test case fields."""
-    from app.agents.audit_workflow import AuditWorkflow
+    from app.agents.audit_workflow_integration import _match_requirements_to_tests
 
     cases = [{"name": "Test FR-002 card schemes", "tags": ""}]
     known_reqs = ["FR-001", "FR-002", "FR-003"]
 
-    wf = AuditWorkflow(llm=None, timeout=30)
-    result = await wf._requirements_in_tests(cases, known_reqs)
+    result = await _match_requirements_to_tests(cases, known_reqs, [], llm=None)
 
     assert "FR-002" in result
     assert "FR-001" not in result
@@ -462,11 +514,11 @@ async def test_requirements_in_tests_pattern_match():
 @pytest.mark.asyncio
 async def test_extract_requirements_returns_list():
     """
-    _extract_requirements with llm=None returns the mock list.
+    _legacy_extract with llm=None returns the mock list.
     With a real-ish mock LLM, it parses JSON and returns a list of strings.
     """
     from unittest.mock import AsyncMock, MagicMock
-    from app.agents.audit_workflow import AuditWorkflow
+    from app.agents.audit_workflow_integration import _legacy_extract
 
     rag_context = (
         "FR-001: The system shall support Visa payments.\n"
@@ -474,19 +526,88 @@ async def test_extract_requirements_returns_list():
         "FR-003: The capture window is 7 days by default.\n"
     )
 
-    # 1. llm=None → mock list
-    wf_no_llm = AuditWorkflow(llm=None, timeout=30)
-    result = await wf_no_llm._extract_requirements(rag_context)
+    # 1. llm=None → empty list (no phantom IDs)
+    result = await _legacy_extract(rag_context, llm=None)
     assert isinstance(result, list), "Expected a list"
-    assert len(result) > 0, "Expected non-empty list when llm=None"
-    assert all(isinstance(r, str) for r in result), "All items must be strings"
+    assert result == [], "Expected empty list when no LLM available"
 
     # 2. With a mock LLM that returns a JSON array
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["FR-001", "FR-002", "FR-003"]')
-    wf_with_llm = AuditWorkflow(llm=mock_llm, timeout=30)
-    result2 = await wf_with_llm._extract_requirements(rag_context)
+    result2 = await _legacy_extract(rag_context, llm=mock_llm)
     assert isinstance(result2, list)
     assert all(isinstance(r, str) for r in result2)
     assert "FR-001" in result2
     assert "FR-003" in result2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _merge_mind_maps + _merge_glossaries  (pure-function unit tests)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_merge_mind_maps_deduplicates_nodes_by_id():
+    from app.api.routes.context import _merge_mind_maps
+
+    existing = {"nodes": [{"id": "A", "label": "A"}], "edges": []}
+    new      = {"nodes": [{"id": "A", "label": "A-new"}, {"id": "B", "label": "B"}], "edges": []}
+    result = _merge_mind_maps(existing, new)
+
+    ids = [n["id"] for n in result["nodes"]]
+    assert ids.count("A") == 1, "Duplicate node A must appear exactly once"
+    assert "B" in ids
+    # existing wins on duplicate (existing processed first)
+    assert next(n for n in result["nodes"] if n["id"] == "A")["label"] == "A"
+
+
+def test_merge_mind_maps_deduplicates_edges_by_source_target():
+    from app.api.routes.context import _merge_mind_maps
+
+    e1 = {"source": "A", "target": "B"}
+    existing = {"nodes": [], "edges": [e1]}
+    new      = {"nodes": [], "edges": [{"source": "A", "target": "B"}, {"source": "B", "target": "C"}]}
+    result = _merge_mind_maps(existing, new)
+
+    keys = [(e["source"], e["target"]) for e in result["edges"]]
+    assert keys.count(("A", "B")) == 1
+    assert ("B", "C") in keys
+
+
+def test_merge_mind_maps_empty_inputs():
+    from app.api.routes.context import _merge_mind_maps
+
+    assert _merge_mind_maps({}, {}) == {"nodes": [], "edges": []}
+    assert _merge_mind_maps({"nodes": [{"id": "X"}], "edges": []}, {}) == {
+        "nodes": [{"id": "X"}], "edges": []
+    }
+
+
+def test_merge_glossaries_new_wins_on_duplicate_term():
+    from app.api.routes.context import _merge_glossaries
+
+    existing = [{"term": "Auth", "definition": "old"}]
+    new      = [{"term": "auth", "definition": "new"}, {"term": "Token", "definition": "JWT"}]
+    result = _merge_glossaries(existing, new)
+
+    terms = {t["term"].lower(): t for t in result}
+    assert terms["auth"]["definition"] == "new", "New entry must win on duplicate term"
+    assert "token" in terms
+
+
+def test_merge_glossaries_case_insensitive_dedup():
+    from app.api.routes.context import _merge_glossaries
+
+    existing = [{"term": "SMOKE TEST", "definition": "a"}]
+    new      = [{"term": "smoke test", "definition": "b"}]
+    result = _merge_glossaries(existing, new)
+
+    assert len(result) == 1, "Case-insensitive duplicate should produce one entry"
+    assert result[0]["definition"] == "b"
+
+
+def test_merge_glossaries_empty_inputs():
+    from app.api.routes.context import _merge_glossaries
+
+    assert _merge_glossaries([], []) == []
+    assert _merge_glossaries([{"term": "T", "definition": "d"}], []) == [
+        {"term": "T", "definition": "d"}
+    ]

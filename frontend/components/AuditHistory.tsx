@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   LineChart,
   Line,
@@ -9,6 +9,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+
+import { coverageColor } from "../lib/coverageColor";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -60,11 +62,6 @@ function formatDate(iso: string): string {
   return `${day} ${month} ${hh}:${mm}`;
 }
 
-function coverageColor(pct: number): string {
-  if (pct >= 80) return "#4a9e6b";
-  if (pct >= 50) return "#c8902a";
-  return "#c85a3a";
-}
 
 function DiffBadge({ delta }: { delta: number }) {
   if (delta > 0)
@@ -284,7 +281,7 @@ export default function AuditHistory({
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [trend, setTrend] = useState<TrendData | null>(null);
 
-  const fetchData = () => {
+  const fetchData = useCallback(() => {
     fetch(`${API_BASE}/api/snapshots/${projectId}`)
       .then((r) => r.json())
       .then((data: Snapshot[]) => setSnapshots(data))
@@ -294,12 +291,11 @@ export default function AuditHistory({
       .then((r) => r.json())
       .then((data: TrendData) => setTrend(data))
       .catch(() => {});
-  };
+  }, [projectId]);
 
   useEffect(() => {
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, latestSnapshotId]);
+  }, [fetchData, latestSnapshotId]);
 
   const handleDelete = async (id: string) => {
     await fetch(`${API_BASE}/api/snapshots/${projectId}/${id}`, {

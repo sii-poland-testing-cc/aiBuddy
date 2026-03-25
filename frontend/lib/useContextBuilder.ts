@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useContext } from "react";
 import { ProjectOperationsContext } from "./ProjectOperationsContext";
+import { consumeSSE } from "./sseStream";
 
 const OP_TYPE = "contextBuild" as const;
 
@@ -56,9 +57,10 @@ export function useContextBuilder(projectId: string) {
   const [localStage, setStage]     = useState<string | null>(null);
   const [localProgress, setProgress] = useState(0);
   const [log, setLog]         = useState<string[]>([]);
-  const [result, setResult]   = useState<ContextResult | null>(null);
-  const [status, setStatus]   = useState<ContextStatus | null>(null);
-  const [localError, setError]     = useState<string | null>(null);
+  const [result, setResult]       = useState<ContextResult | null>(null);
+  const [status, setStatus]       = useState<ContextStatus | null>(null);
+  const [localError, setError]    = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   // Context wins (survives navigation), local is fallback
   const ctxOp = ops?.getOp(projectId, OP_TYPE);
@@ -72,9 +74,12 @@ export function useContextBuilder(projectId: string) {
       const res = await fetch(
         `${API_BASE}/api/context/${encodeURIComponent(projectId)}/status`
       );
-      if (res.ok) setStatus(await res.json());
+      if (res.ok) {
+        setStatus(await res.json());
+        setStatusError(null);
+      }
     } catch {
-      /* backend offline — fail silently */
+      setStatusError("Nie można połączyć z serwerem. Sprawdź czy backend jest uruchomiony.");
     }
   }, [projectId]);
 
@@ -103,6 +108,7 @@ export function useContextBuilder(projectId: string) {
   }, [projectId]);
 
   const buildContext = useCallback(async (files: File[], mode: "append" | "rebuild" = "append") => {
+    if (isBuilding) return;
     setIsBuilding(true);
     setLog([]);
     setStage("parse");
@@ -129,40 +135,26 @@ export function useContextBuilder(projectId: string) {
       if (!res.ok) throw new Error(`Server error ${res.status}: ${await res.text()}`);
       if (!res.body) throw new Error("No response body");
 
-      const reader  = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") break;
-          try {
-            const ev = JSON.parse(payload);
-            if (ev.type === "progress") {
-              setStage(ev.data.stage);
-              setProgress(ev.data.progress);
-              setLog((prev) => [...prev, ev.data.message]);
-              ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
-            } else if (ev.type === "result") {
-              setResult(ev.data as ContextResult);
-              setStatus({
-                project_id: ev.data.project_id,
-                rag_ready: ev.data.rag_ready,
-                artefacts_ready: true,
-                stats: ev.data.stats,
-                context_built_at: new Date().toISOString(),
-              });
-            } else if (ev.type === "error") {
-              setError(ev.data.message);
-              ops?.updateOp(projectId, OP_TYPE, { error: ev.data.message });
-            }
-          } catch { /* malformed line */ }
+      await consumeSSE(res.body, (ev) => {
+        if (ev.type === "progress") {
+          setStage(ev.data.stage);
+          setProgress(ev.data.progress);
+          setLog((prev) => [...prev, ev.data.message]);
+          ops?.updateOp(projectId, OP_TYPE, { progress: ev.data.progress, stage: ev.data.stage, message: ev.data.message });
+        } else if (ev.type === "result") {
+          setResult(ev.data as ContextResult);
+          setStatus({
+            project_id: ev.data.project_id,
+            rag_ready: ev.data.rag_ready,
+            artefacts_ready: true,
+            stats: ev.data.stats,
+            context_built_at: new Date().toISOString(),
+          });
+        } else if (ev.type === "error") {
+          setError(ev.data.message);
+          ops?.updateOp(projectId, OP_TYPE, { error: ev.data.message });
         }
-      }
+      });
       // Refresh status to pick up context_files and document_count
       await fetchStatus();
     } catch (err: any) {
@@ -173,11 +165,13 @@ export function useContextBuilder(projectId: string) {
       }
     } finally {
       setIsBuilding(false);
-      ops?.updateOp(projectId, OP_TYPE, { isRunning: false });
+      setProgress(0);
+      setStage(null);
+      ops?.updateOp(projectId, OP_TYPE, { isRunning: false, progress: 0, stage: null });
     }
   // fetchStatus is stable (useCallback with [projectId]); ops is stable (context)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, ops]);
+  }, [projectId, ops, isBuilding]);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
@@ -187,5 +181,5 @@ export function useContextBuilder(projectId: string) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.artefacts_ready]);
 
-  return { isBuilding, stage, progress, log, result, status, error, buildContext, fetchStatus, retry: fetchStatus, clearError: () => { setError(null); ops?.updateOp(projectId, OP_TYPE, { error: null }); } };
+  return { isBuilding, stage, progress, log, result, status, error, statusError, buildContext, fetchStatus, retry: fetchStatus, clearError: () => { setError(null); ops?.updateOp(projectId, OP_TYPE, { error: null }); }, clearStatusError: () => setStatusError(null) };
 }

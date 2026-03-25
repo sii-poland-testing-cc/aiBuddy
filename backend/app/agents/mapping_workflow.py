@@ -2,7 +2,7 @@
 Faza 5+6: Semantic Mapping & Coverage Scoring Workflow
 =======================================================
 Pipeline:
-  Start → LoadData → CoarseMatch → FineMatch → Score → Persist → Stop
+  Start → LoadData → CoarseMatch → FineMatch → Score → Assemble → Stop
 
 Connects Faza 2 (Requirements Registry) with parsed test cases.
 Produces:
@@ -32,19 +32,44 @@ from llama_index.core.workflow import (
     step,
 )
 
+from app.core.config import settings
+from app.db.engine import AsyncSessionLocal
+from app.db.models import ProjectFile
+from app.db.requirements_models import Requirement
 from app.rag.context_builder import ContextBuilder
+from app.utils.json_utils import strip_fences
+from app.parsers.test_case_parser import build_tc_text, parse_test_file
+from sqlalchemy import select
 
 logger = logging.getLogger("ai_buddy.mapping")
 
+# ─── Module-level helpers ────────────────────────────────────────────────────
 
-def _strip_fences(text: str) -> str:
-    import re
-    text = re.sub(r"^```[a-z]*\s*", "", text.strip())
-    text = re.sub(r"\s*```$", "", text)
-    for i, ch in enumerate(text):
-        if ch in ("{", "["):
-            return text[i:]
-    return text
+def _total_from_components(score: Dict) -> float:
+    """Compute total coverage score from individual components (capped 0–100)."""
+    return min(100, max(0, round(
+        score["base_coverage"]
+        + score["depth_coverage"]
+        + score["quality_weight"]
+        + score["confidence_penalty"]
+        + score["crossref_bonus"],
+        1,
+    )))
+
+
+# ─── Constants ────────────────────────────────────────────────────────────────
+
+_MATCH_PATTERN_CONFIDENCE = 0.95
+_MATCH_CONFIDENT_THRESHOLD = 0.78
+_MATCH_AMBIGUOUS_THRESHOLD = 0.65
+_LLM_FINE_MATCH_BATCH_SIZE = 10
+
+# Scoring weight caps (must match CLAUDE.md scoring model)
+_SCORE_BASE_MAX = 40.0
+_SCORE_DEPTH_MAX = 30.0
+_SCORE_QUALITY_MAX = 20.0
+_SCORE_PENALTY_MAX = -10.0
+_SCORE_CROSSREF_MAX = 10.0
 
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
@@ -99,11 +124,10 @@ Return ONLY valid JSON:
 class MappingProgressEvent(Event):
     message: str
     progress: float   # 0.0–1.0
-    stage: str        # "load" | "coarse" | "fine" | "score" | "persist"
+    stage: str        # "load" | "coarse" | "fine" | "score" | "assemble"
 
 
 class DataLoadedEvent(Event):
-    requirements: List[Dict]
     test_cases: List[Dict]
     source_files: List[str]
 
@@ -112,22 +136,18 @@ class CoarseMatchedEvent(Event):
     """After embedding-based coarse matching."""
     matches: List[Dict]        # high-confidence matches (auto-accept)
     ambiguous: List[Dict]      # need LLM fine matching (0.4–0.8 similarity)
-    requirements: List[Dict]
     test_cases: List[Dict]
 
 
 class FineMatchedEvent(Event):
     """After LLM-confirmed fine matching."""
     all_mappings: List[Dict]   # final mappings with confidence + aspects
-    requirements: List[Dict]
-    test_cases: List[Dict]
 
 
 class ScoredEvent(Event):
     """After multi-dimensional scoring."""
     scores: List[Dict]         # per-requirement CoverageScore data
     mappings: List[Dict]
-    requirements: List[Dict]
 
 
 # ─── Workflow ─────────────────────────────────────────────────────────────────
@@ -168,12 +188,13 @@ class MappingWorkflow(Workflow):
 
         # Load requirements from Faza 2 registry
         requirements = await self._load_requirements(project_id)
+        await ctx.store.set("requirements", requirements)
         if not requirements:
             ctx.write_event_to_stream(MappingProgressEvent(
                 message="⚠ No requirements found — run Faza 2 (Extract Requirements) first",
                 progress=0.1, stage="load"
             ))
-            return DataLoadedEvent(requirements=[], test_cases=[], source_files=[])
+            return DataLoadedEvent(test_cases=[], source_files=[])
 
         ctx.write_event_to_stream(MappingProgressEvent(
             message=f"✓ Loaded {len(requirements)} requirements",
@@ -191,7 +212,7 @@ class MappingWorkflow(Workflow):
 
         test_cases = []
         for path in file_paths:
-            cases = await self._parse_file(path)
+            cases = await parse_test_file(path)
             source = Path(path).name
             for tc in cases:
                 tc["_source_file"] = source
@@ -204,7 +225,6 @@ class MappingWorkflow(Workflow):
         ))
 
         return DataLoadedEvent(
-            requirements=requirements,
             test_cases=test_cases,
             source_files=file_paths,
         )
@@ -213,12 +233,12 @@ class MappingWorkflow(Workflow):
 
     @step
     async def coarse_match(self, ctx: Context, ev: DataLoadedEvent) -> CoarseMatchedEvent:
-        reqs = ev.requirements
+        reqs: List[Dict] = await ctx.store.get("requirements")
         cases = ev.test_cases
 
         if not reqs or not cases:
             return CoarseMatchedEvent(
-                matches=[], ambiguous=[], requirements=reqs, test_cases=cases
+                matches=[], ambiguous=[], test_cases=cases
             )
 
         ctx.write_event_to_stream(MappingProgressEvent(
@@ -248,7 +268,7 @@ class MappingWorkflow(Workflow):
                 [self._req_to_text(r) for r in unmatched_reqs]
             )
             tc_embeddings = await self._embed_items(
-                [self._tc_to_text(tc) for tc in cases]
+                [build_tc_text(tc) or "" for tc in cases]
             )
 
             embedding_matches, embedding_ambiguous = self._similarity_match(
@@ -267,7 +287,6 @@ class MappingWorkflow(Workflow):
         return CoarseMatchedEvent(
             matches=all_matches,
             ambiguous=embedding_ambiguous,
-            requirements=reqs,
             test_cases=cases,
         )
 
@@ -275,6 +294,7 @@ class MappingWorkflow(Workflow):
 
     @step
     async def fine_match(self, ctx: Context, ev: CoarseMatchedEvent) -> FineMatchedEvent:
+        reqs: List[Dict] = await ctx.store.get("requirements")
         confirmed = list(ev.matches)
         ambiguous = ev.ambiguous
 
@@ -285,22 +305,16 @@ class MappingWorkflow(Workflow):
                     m["mapping_confidence"] = max(0.4, m.get("mapping_confidence", 0.5) - 0.1)
                     m["mapping_method"] = "embedding"
                 confirmed.extend(ambiguous)
-            return FineMatchedEvent(
-                all_mappings=confirmed,
-                requirements=ev.requirements,
-                test_cases=ev.test_cases,
-            )
+            return FineMatchedEvent(all_mappings=confirmed)
 
         ctx.write_event_to_stream(MappingProgressEvent(
             message=f"LLM evaluating {len(ambiguous)} ambiguous mapping(s)…",
             progress=0.50, stage="fine"
         ))
 
-        # Batch LLM calls (max 10 pairs per call to stay within context)
-        batch_size = 10
-        for i in range(0, len(ambiguous), batch_size):
-            batch = ambiguous[i:i + batch_size]
-            results = await self._llm_fine_match(batch, ev.requirements, ev.test_cases)
+        for i in range(0, len(ambiguous), _LLM_FINE_MATCH_BATCH_SIZE):
+            batch = ambiguous[i:i + _LLM_FINE_MATCH_BATCH_SIZE]
+            results = await self._llm_fine_match(batch, reqs)
 
             for pair, result in zip(batch, results):
                 verdict = result.get("verdict", "NO")
@@ -313,9 +327,9 @@ class MappingWorkflow(Workflow):
                     confirmed.append(pair)
                 # NO verdict → pair is dropped (not a real mapping)
 
-            progress = 0.50 + 0.20 * ((i + batch_size) / max(len(ambiguous), 1))
+            progress = 0.50 + 0.20 * ((i + _LLM_FINE_MATCH_BATCH_SIZE) / max(len(ambiguous), 1))
             ctx.write_event_to_stream(MappingProgressEvent(
-                message=f"LLM evaluated {min(i + batch_size, len(ambiguous))}/{len(ambiguous)} pairs…",
+                message=f"LLM evaluated {min(i + _LLM_FINE_MATCH_BATCH_SIZE, len(ambiguous))}/{len(ambiguous)} pairs…",
                 progress=min(progress, 0.70), stage="fine"
             ))
 
@@ -324,21 +338,17 @@ class MappingWorkflow(Workflow):
             progress=0.72, stage="fine"
         ))
 
-        return FineMatchedEvent(
-            all_mappings=confirmed,
-            requirements=ev.requirements,
-            test_cases=ev.test_cases,
-        )
+        return FineMatchedEvent(all_mappings=confirmed)
 
     # ── Step 4: Coverage Scoring ─────────────────────────────────────────────
 
     @step
     async def score(self, ctx: Context, ev: FineMatchedEvent) -> ScoredEvent:
-        reqs = ev.requirements
+        reqs: List[Dict] = await ctx.store.get("requirements")
         mappings = ev.all_mappings
 
         if not reqs:
-            return ScoredEvent(scores=[], mappings=mappings, requirements=reqs)
+            return ScoredEvent(scores=[], mappings=mappings)
 
         ctx.write_event_to_stream(MappingProgressEvent(
             message="Computing multi-dimensional coverage scores…",
@@ -379,30 +389,24 @@ class MappingWorkflow(Workflow):
                     score["coverage_aspects_present"] = depth.get("aspects_present", [])
                     score["coverage_aspects_missing"] = depth.get("aspects_missing", [])
                     # Recompute total
-                    score["total_score"] = min(100, max(0,
-                        score["base_coverage"]
-                        + score["depth_coverage"]
-                        + score["quality_weight"]
-                        + score["confidence_penalty"]
-                        + score["crossref_bonus"]
-                    ))
+                    score["total_score"] = _total_from_components(score)
 
         ctx.write_event_to_stream(MappingProgressEvent(
             message="✓ Scoring complete",
             progress=0.88, stage="score"
         ))
 
-        return ScoredEvent(scores=scores, mappings=mappings, requirements=reqs)
+        return ScoredEvent(scores=scores, mappings=mappings)
 
-    # ── Step 5: Persist & Assemble ───────────────────────────────────────────
+    # ── Step 5: Assemble & Persist ───────────────────────────────────────────
 
     @step
-    async def persist(self, ctx: Context, ev: ScoredEvent) -> StopEvent:
+    async def assemble(self, ctx: Context, ev: ScoredEvent) -> StopEvent:
         project_id = await ctx.store.get("project_id")
 
         ctx.write_event_to_stream(MappingProgressEvent(
             message="Persisting mappings and scores…",
-            progress=0.90, stage="persist"
+            progress=0.90, stage="assemble"
         ))
 
         # Build summary
@@ -440,13 +444,15 @@ class MappingWorkflow(Workflow):
 
         ctx.write_event_to_stream(MappingProgressEvent(
             message="✅ Mapping & scoring complete!",
-            progress=1.0, stage="persist"
+            progress=1.0, stage="assemble"
         ))
+
+        clean_scores = [{k: v for k, v in s.items() if k != "_has_aspects"} for s in scores]
 
         return StopEvent(result={
             "project_id": project_id,
             "mappings": [self._clean_mapping(m) for m in mappings],
-            "scores": scores,
+            "scores": clean_scores,
             "summary": {
                 "total_requirements": total_count,
                 "covered_requirements": covered_count,
@@ -484,7 +490,7 @@ class MappingWorkflow(Workflow):
                         "requirement_title": req["title"],
                         "tc_identifier": tc["_identifier"],
                         "tc_source_file": tc["_source_file"],
-                        "mapping_confidence": 0.95,
+                        "mapping_confidence": _MATCH_PATTERN_CONFIDENCE,
                         "mapping_method": "pattern",
                         "coverage_aspects": ["happy_path"],  # assume at least happy path
                         "aspects_missing": [],
@@ -499,19 +505,25 @@ class MappingWorkflow(Workflow):
         req_embeddings: List[List[float]],
         cases: List[Dict],
         tc_embeddings: List[List[float]],
-        threshold_confident: float = 0.78,
-        threshold_ambiguous: float = 0.58,
     ) -> Tuple[List[Dict], List[Dict]]:
         """
         Level 1: Cosine similarity between requirement and TC embeddings.
         Returns (confident_matches, ambiguous_matches).
+        O(n²) — warn when the pair count is large.
         """
         import numpy as np
+
+        pair_count = len(reqs) * len(cases)
+        if pair_count > 5000:
+            logger.warning(
+                "Similarity matching: %d req × %d TC = %d pairs — may be slow",
+                len(reqs), len(cases), pair_count,
+            )
 
         confident = []
         ambiguous = []
 
-        for ri, (req, req_emb) in enumerate(zip(reqs, req_embeddings)):
+        for req, req_emb in zip(reqs, req_embeddings):
             if not req_emb:
                 continue
             req_vec = np.array(req_emb)
@@ -519,7 +531,7 @@ class MappingWorkflow(Workflow):
             if req_norm == 0:
                 continue
 
-            for ti, (tc, tc_emb) in enumerate(zip(cases, tc_embeddings)):
+            for tc, tc_emb in zip(cases, tc_embeddings):
                 if not tc_emb:
                     continue
                 tc_vec = np.array(tc_emb)
@@ -529,7 +541,7 @@ class MappingWorkflow(Workflow):
 
                 sim = float(np.dot(req_vec, tc_vec) / (req_norm * tc_norm))
 
-                if sim >= threshold_confident:
+                if sim >= _MATCH_CONFIDENT_THRESHOLD:
                     confident.append({
                         "requirement_id": req["id"],
                         "requirement_ext_id": req.get("external_id"),
@@ -542,7 +554,7 @@ class MappingWorkflow(Workflow):
                         "coverage_aspects": [],
                         "aspects_missing": [],
                     })
-                elif sim >= threshold_ambiguous:
+                elif sim >= _MATCH_AMBIGUOUS_THRESHOLD:
                     ambiguous.append({
                         "requirement_id": req["id"],
                         "requirement_ext_id": req.get("external_id"),
@@ -550,7 +562,7 @@ class MappingWorkflow(Workflow):
                         "requirement_description": req.get("description", "")[:200],
                         "tc_identifier": tc["_identifier"],
                         "tc_source_file": tc["_source_file"],
-                        "tc_text": self._tc_to_text(tc)[:300],
+                        "tc_text": (build_tc_text(tc) or "")[:300],
                         "mapping_confidence": round(sim, 2),
                         "mapping_method": "embedding",
                         "similarity": round(sim, 4),
@@ -560,15 +572,15 @@ class MappingWorkflow(Workflow):
 
         logger.info(
             "Embedding similarity: %d confident (>%.2f), %d ambiguous (%.2f–%.2f)",
-            len(confident), threshold_confident,
-            len(ambiguous), threshold_ambiguous, threshold_confident,
+            len(confident), _MATCH_CONFIDENT_THRESHOLD,
+            len(ambiguous), _MATCH_AMBIGUOUS_THRESHOLD, _MATCH_CONFIDENT_THRESHOLD,
         )
         return confident, ambiguous
 
     # ── LLM Fine Matching ────────────────────────────────────────────────────
 
     async def _llm_fine_match(
-        self, pairs: List[Dict], reqs: List[Dict], cases: List[Dict]
+        self, pairs: List[Dict], reqs: List[Dict]
     ) -> List[Dict]:
         """LLM-evaluate ambiguous (requirement, TC) pairs."""
         if not self.llm:
@@ -591,7 +603,7 @@ class MappingWorkflow(Workflow):
 
         try:
             response = await self.llm.acomplete(prompt)
-            raw = _strip_fences(str(response).strip())
+            raw = strip_fences(str(response).strip())
             results = json.loads(raw)
             if isinstance(results, list) and len(results) == len(pairs):
                 return results
@@ -619,7 +631,7 @@ class MappingWorkflow(Workflow):
         n_mappings = len(mappings)
         has_mappings = n_mappings > 0
 
-        # ── Base Coverage (0–40) ──
+        # ── Base Coverage (0–_SCORE_BASE_MAX) ──
         if not has_mappings:
             base = 0.0
         elif n_mappings == 1:
@@ -627,7 +639,7 @@ class MappingWorkflow(Workflow):
         elif n_mappings <= 3:
             base = 35.0
         else:
-            base = 40.0
+            base = _SCORE_BASE_MAX
 
         # Check if any mapping has known coverage_aspects
         all_aspects = set()
@@ -643,9 +655,9 @@ class MappingWorkflow(Workflow):
             if "happy_path" in all_aspects:
                 base = max(base, 30.0)
             if "negative" in all_aspects:
-                base = min(base + 5, 40.0)
+                base = min(base + 5, _SCORE_BASE_MAX)
 
-        # ── Depth Coverage (0–30) — set later by LLM, estimate for now ──
+        # ── Depth Coverage (0–_SCORE_DEPTH_MAX) — set later by LLM, estimate for now ──
         if has_aspects:
             depth_points = {
                 "negative": 8, "boundary": 8,
@@ -653,30 +665,30 @@ class MappingWorkflow(Workflow):
                 "performance": 2, "security": 2,
             }
             depth = sum(depth_points.get(a, 0) for a in all_aspects)
-            depth = min(depth, 30.0)
+            depth = min(depth, _SCORE_DEPTH_MAX)
         else:
             # No aspect info — rough estimate from mapping count
             depth = min(n_mappings * 5, 15.0) if has_mappings else 0.0
 
-        # ── Quality Weight (0–20) ──
+        # ── Quality Weight (0–_SCORE_QUALITY_MAX) ──
         if has_mappings:
             avg_confidence = sum(m.get("mapping_confidence", 0.5) for m in mappings) / n_mappings
-            quality = round(avg_confidence * 20, 1)
+            quality = round(avg_confidence * _SCORE_QUALITY_MAX, 1)
         else:
             quality = 0.0
             avg_confidence = 0.0
 
-        # ── Confidence Penalty (-10–0) ──
+        # ── Confidence Penalty (_SCORE_PENALTY_MAX–0) ──
         req_confidence = req.get("confidence", 0.5)
         if req_confidence < 0.7:
-            penalty = round(-10.0 * (0.7 - req_confidence) / 0.7, 1)
+            penalty = round(_SCORE_PENALTY_MAX * (0.7 - req_confidence) / 0.7, 1)
         else:
             penalty = 0.0
 
-        # ── Cross-reference Bonus (0–10) ──
+        # ── Cross-reference Bonus (0–_SCORE_CROSSREF_MAX) ──
         source_files = {m.get("tc_source_file", "") for m in mappings}
         if len(source_files) >= 3:
-            crossref = 10.0
+            crossref = _SCORE_CROSSREF_MAX
         elif len(source_files) == 2:
             crossref = 7.0
         elif len(source_files) == 1 and has_mappings:
@@ -684,7 +696,13 @@ class MappingWorkflow(Workflow):
         else:
             crossref = 0.0
 
-        total = min(100, max(0, round(base + depth + quality + penalty + crossref, 1)))
+        total = _total_from_components({
+            "base_coverage": round(base, 1),
+            "depth_coverage": round(depth, 1),
+            "quality_weight": round(quality, 1),
+            "confidence_penalty": round(penalty, 1),
+            "crossref_bonus": round(crossref, 1),
+        })
 
         # Determine review needs
         needs_review = False
@@ -719,13 +737,13 @@ class MappingWorkflow(Workflow):
     async def _llm_depth_assessment(
         self, reqs_with_mappings: List[Tuple[Dict, List[Dict]]]
     ) -> List[Dict]:
-        """LLM assesses coverage depth for requirements that have mappings."""
+        """LLM assesses coverage depth for requirements that have mappings (concurrent)."""
         if not self.llm:
             return []
 
-        results = []
-        # Process in small batches to manage context window
-        for req, mappings in reqs_with_mappings[:20]:  # cap at 20
+        sem = asyncio.Semaphore(settings.LLM_CONCURRENT_CALLS)
+
+        async def _assess_one(req: Dict, mappings: List[Dict]) -> Optional[Dict]:
             tc_list = "\n".join(
                 f"  - {m.get('tc_identifier', '?')} (confidence: {m.get('mapping_confidence', 0):.2f})"
                 for m in mappings[:10]
@@ -736,35 +754,33 @@ class MappingWorkflow(Workflow):
                 req_desc=req.get("description", "")[:300],
                 tc_list=tc_list,
             )
-
             try:
-                response = await self.llm.acomplete(prompt)
-                raw = _strip_fences(str(response).strip())
+                async with sem:
+                    response = await self.llm.acomplete(prompt)
+                raw = strip_fences(str(response).strip())
                 data = json.loads(raw)
-
                 depth_map = {"high": 25, "medium": 15, "low": 8}
-                depth_score = depth_map.get(data.get("depth_rating", "low"), 8)
-
-                results.append({
+                return {
                     "requirement_id": req["id"],
                     "aspects_present": data.get("aspects_present", []),
                     "aspects_missing": data.get("aspects_missing", []),
-                    "depth_score": depth_score,
+                    "depth_score": depth_map.get(data.get("depth_rating", "low"), 8),
                     "recommendation": data.get("recommendation", ""),
-                })
+                }
             except Exception as e:
                 logger.warning("Depth assessment failed for %s: %s", req["id"][:8], e)
+                return None
 
-        return results
+        raw_results = await asyncio.gather(*[
+            _assess_one(req, mappings)
+            for req, mappings in reqs_with_mappings[:20]  # cap at 20
+        ])
+        return [r for r in raw_results if r is not None]
 
     # ── Data Loading ─────────────────────────────────────────────────────────
 
     async def _load_requirements(self, project_id: str) -> List[Dict]:
         """Load requirements from Faza 2 DB registry."""
-        from app.db.engine import AsyncSessionLocal
-        from app.db.requirements_models import Requirement
-        from sqlalchemy import select
-
         try:
             async with AsyncSessionLocal() as db:
                 stmt = (
@@ -782,7 +798,7 @@ class MappingWorkflow(Workflow):
                         "description": r.description or "",
                         "level": r.level,
                         "confidence": r.confidence or 0.5,
-                        "taxonomy": json.loads(r.taxonomy) if r.taxonomy else {},
+                        "taxonomy": r.taxonomy or {},
                         "needs_review": r.needs_review,
                     }
                     for r in rows
@@ -792,11 +808,8 @@ class MappingWorkflow(Workflow):
             return []
 
     async def _auto_load_files(self, project_id: str) -> List[str]:
-        """Auto-load uploaded test files from DB (same logic as chat.py)."""
-        from app.db.engine import AsyncSessionLocal
-        from app.db.models import ProjectFile
-        from sqlalchemy import select
-
+        """Auto-load all uploaded test files for this project from DB.
+        Loads ALL files (not filtered by last_used_in_audit_id) — mapping needs full coverage."""
         try:
             async with AsyncSessionLocal() as db:
                 stmt = select(ProjectFile.file_path).where(
@@ -811,6 +824,9 @@ class MappingWorkflow(Workflow):
 
     async def _embed_items(self, texts: List[str]) -> List[List[float]]:
         """Embed a list of texts using the app embed model."""
+        if self._embed_model is None:
+            logger.warning("Embed model not available — returning empty embeddings")
+            return [[] for _ in texts]
         results = []
         for i in range(0, len(texts), 50):
             batch = texts[i:i + 50]
@@ -838,54 +854,9 @@ class MappingWorkflow(Workflow):
         return ". ".join(p for p in parts if p)
 
     @staticmethod
-    def _tc_to_text(tc: Dict) -> str:
-        """Build searchable text from a test case."""
-        title = str(tc.get("title") or tc.get("name") or "").strip()
-        steps = str(tc.get("steps") or tc.get("test_steps") or "").strip()
-        expected = str(tc.get("expected_result") or tc.get("assertions") or "").strip()
-        return f"{title}. {title}. {steps}. {expected}"
-
-    @staticmethod
     def _clean_mapping(m: Dict) -> Dict:
         """Remove internal fields before returning to API."""
         return {k: v for k, v in m.items() if not k.startswith("_") and k not in (
             "requirement_description", "tc_text", "similarity"
         )}
 
-    # ── File parsing (reused from AuditWorkflow) ──────────────────────────────
-
-    async def _parse_file(self, path: str) -> List[Dict]:
-        ext = path.rsplit(".", 1)[-1].lower()
-        if ext in ("xlsx", "csv"):
-            return await self._parse_spreadsheet(path)
-        elif ext == "json":
-            return await self._parse_json(path)
-        elif ext == "feature":
-            return await self._parse_gherkin(path)
-        return []
-
-    async def _parse_spreadsheet(self, path: str) -> List[Dict]:
-        import pandas as pd
-        df = pd.read_excel(path) if path.endswith(".xlsx") else pd.read_csv(path)
-        return df.to_dict(orient="records")
-
-    async def _parse_json(self, path: str) -> List[Dict]:
-        with open(path) as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else [data]
-
-    async def _parse_gherkin(self, path: str) -> List[Dict]:
-        cases = []
-        with open(path) as f:
-            scenario, steps = None, []
-            for line in f:
-                line = line.strip()
-                if line.startswith("Scenario"):
-                    if scenario:
-                        cases.append({"name": scenario, "steps": steps, "tags": []})
-                    scenario, steps = line.split(":", 1)[1].strip(), []
-                elif line.startswith(("Given", "When", "Then", "And")):
-                    steps.append(line)
-            if scenario:
-                cases.append({"name": scenario, "steps": steps, "tags": []})
-        return cases

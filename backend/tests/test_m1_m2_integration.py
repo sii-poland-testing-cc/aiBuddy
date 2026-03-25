@@ -271,6 +271,42 @@ def test_chat_triggers_audit_when_project_has_files(app_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shared mock LLM for M1 context builds (avoids real API calls in tests)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from unittest.mock import AsyncMock, MagicMock, patch as _patch
+
+
+def _make_m1_mock_llm():
+    _entities = json.dumps({
+        "entities": [
+            {"id": "e1", "name": "PayFlow",     "type": "system", "description": "Payment processing system"},
+            {"id": "e2", "name": "Chargeback",  "type": "process","description": "Transaction reversal process"},
+            {"id": "e3", "name": "Test Case",   "type": "data",   "description": "A test scenario"},
+        ],
+        "relations": [{"source": "e3", "target": "e1", "label": "validates"}],
+    })
+    _glossary = json.dumps([
+        {"term": "Chargeback",  "definition": "Reversal of a payment transaction.", "related_terms": ["Dispute"], "source": "docs"},
+        {"term": "Test Case",   "definition": "Conditions to verify behaviour.",    "related_terms": [],          "source": "docs"},
+    ])
+    _approved = json.dumps({"verdict": "APPROVED"})
+    mock = MagicMock()
+
+    async def _side(prompt, **kwargs):
+        if "entities and their relationships" in prompt:
+            return _entities
+        if "domain-specific term" in prompt:  # _enumerate_term_names (phase 1)
+            return json.dumps(["Test Case", "Defect", "QA Engineer", "Test Suite"])
+        if "Write glossary definitions" in prompt:  # _define_term_group (phase 2)
+            return _glossary
+        return _approved
+
+    mock.acomplete = AsyncMock(side_effect=_side)
+    return mock
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pytest: RAG chat uses indexed context, not generic LLM knowledge
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -296,8 +332,9 @@ def test_context_chat_uses_rag(app_client):
     assert r.status_code in (200, 201)
     project_id = r.json()["project_id"]
 
-    # 2. Build M1 context (indexes document into Chroma)
-    with docx_path.open("rb") as fh:
+    # 2. Build M1 context (indexes document into Chroma) — mock LLM for extraction
+    with _patch("app.api.routes.context.get_llm", return_value=_make_m1_mock_llm()), \
+         docx_path.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (docx_path.name, fh, _DOCX_MIME)},
@@ -314,7 +351,7 @@ def test_context_chat_uses_rag(app_client):
         return_value="A Chargeback is a reversal of a transaction as defined in the documentation."
     )
 
-    with patch("app.api.routes.chat.get_llm", return_value=mock_llm):
+    with _patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
             json={"project_id": project_id, "message": "What is a Chargeback?", "file_paths": []},
@@ -385,7 +422,8 @@ def test_term_explanation_uses_rag(app_client):
     assert r.status_code in (200, 201)
     project_id = r.json()["project_id"]
 
-    with docx_path.open("rb") as fh:
+    with _patch("app.api.routes.context.get_llm", return_value=_make_m1_mock_llm()), \
+         docx_path.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (docx_path.name, fh, _DOCX_MIME)},
@@ -492,7 +530,8 @@ def test_coverage_reflects_requirement_gaps(app_client):
     assert r.status_code in (200, 201)
     project_id = r.json()["project_id"]
 
-    with docx_path.open("rb") as fh:
+    with _patch("app.api.routes.context.get_llm", return_value=_make_m1_mock_llm()), \
+         docx_path.open("rb") as fh:
         build_r = app_client.post(
             f"/api/context/{project_id}/build",
             files={"files": (docx_path.name, fh, _DOCX_MIME)},
@@ -531,7 +570,7 @@ def test_coverage_reflects_requirement_gaps(app_client):
     )
 
     with patch(
-             "app.agents.audit_workflow_integration.compute_registry_coverage",
+             "app.agents.audit_workflow.compute_registry_coverage",
              AsyncMock(return_value=FAKE_COVERAGE_RESULT),
          ), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
@@ -574,7 +613,7 @@ def test_coverage_zero_without_m1_context(app_client):
     """
     Without M1 context (no docs indexed), coverage_pct must be 0.0
     and recommendations must include a hint to run Context Builder.
-    _extract_requirements is patched to return [] (simulates empty RAG context).
+    compute_registry_coverage is patched to return empty (simulates no context/registry).
     """
     from pathlib import Path
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -613,7 +652,7 @@ def test_coverage_zero_without_m1_context(app_client):
     }
 
     with patch(
-             "app.agents.audit_workflow_integration.compute_registry_coverage",
+             "app.agents.audit_workflow.compute_registry_coverage",
              AsyncMock(return_value=EMPTY_COVERAGE_RESULT),
          ), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
@@ -736,9 +775,9 @@ def test_snapshot_saved_after_audit(app_client):
 
     snap = snapshots[0]
     assert snap.summary is not None
-    summary = json.loads(snap.summary)
+    summary = snap.summary
     assert "coverage_pct" in summary, f"summary missing coverage_pct: {summary}"
-    assert any("sample_tests.csv" in p for p in json.loads(snap.files_used or "[]"))
+    assert any("sample_tests.csv" in p for p in snap.files_used or [])
     assert snap.diff is None, "First audit must have diff=None"
 
 
@@ -768,7 +807,7 @@ def test_diff_computed_on_second_audit(app_client):
 
     newest = snapshots[0]
     assert newest.diff is not None, "Second audit must have a diff"
-    diff = json.loads(newest.diff)
+    diff = newest.diff
     assert "coverage_delta" in diff
     assert "new_covered" in diff
     assert "files_added" in diff
@@ -830,7 +869,13 @@ def test_no_false_duplicates_on_title_field(app_client):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -898,7 +943,13 @@ def test_no_false_duplicates_fr002_fr003(app_client):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -970,7 +1021,13 @@ def test_identical_tc_detected_as_certain_duplicate(app_client, tmp_path):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Add more tests."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -1093,7 +1150,13 @@ def test_report_includes_duplicate_pairs(app_client, tmp_path):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Add more tests."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",
@@ -1161,7 +1224,13 @@ def test_report_zero_duplicates_on_fr002_fr003(app_client):
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Improve coverage."]')
 
-    with patch.object(AuditWorkflow, "_extract_requirements", AsyncMock(return_value=[])), \
+    _EMPTY_COVERAGE = {
+        "requirements_from_docs": [], "requirements_covered": [],
+        "coverage_pct": 0.0, "requirements_total": 0,
+        "requirements_covered_count": 0, "requirements_uncovered": [],
+        "registry_available": False, "per_requirement_scores": [],
+    }
+    with patch("app.agents.audit_workflow.compute_registry_coverage", AsyncMock(return_value=_EMPTY_COVERAGE)), \
          patch("app.api.routes.chat.get_llm", return_value=mock_llm):
         chat_r = app_client.post(
             "/api/chat/stream",

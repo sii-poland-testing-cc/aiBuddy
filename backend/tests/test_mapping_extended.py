@@ -6,35 +6,14 @@ Run alongside existing test_mapping.py:
 """
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mapping_helpers import create_project as _create_project, upload_csv as _upload_csv, run_mapping as _run_mapping  # noqa: E501
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-SAMPLE_CSV = FIXTURES_DIR / "sample_tests.csv"
-
-
-def _create_project(app_client, name: str = "map-ext-test") -> str:
-    r = app_client.post("/api/projects/", json={"name": name})
-    assert r.status_code in (200, 201)
-    return r.json()["project_id"]
-
-
-def _upload_csv(app_client, project_id: str, name: str = "sample_tests.csv") -> str:
-    with SAMPLE_CSV.open("rb") as fh:
-        r = app_client.post(
-            f"/api/files/{project_id}/upload?source_type=file",
-            files={"files": (name, fh, "text/csv")},
-        )
-    assert r.status_code == 200
-    uploaded = r.json()
-    if isinstance(uploaded, list) and uploaded:
-        return uploaded[0].get("file_path", "")
-    return ""
 
 
 def _mock_llm_for_requirements():
@@ -69,7 +48,7 @@ def _mock_llm_for_requirements():
             "recommendation": "OK"},
     })
     call_count = 0
-    async def _side(prompt):
+    async def _side(prompt, **kwargs):
         nonlocal call_count; call_count += 1
         return extraction if call_count == 1 else validation
     m = MagicMock()
@@ -93,24 +72,9 @@ def _run_requirements(app_client, project_id: str) -> dict:
         try:
             ev = json.loads(p)
             if ev.get("type") == "result": return ev["data"]
-        except: continue
+        except (json.JSONDecodeError, KeyError): continue
     return {}
 
-
-def _run_mapping(app_client, project_id: str, file_path: str = "") -> dict:
-    with patch("app.api.routes.mapping.get_llm", return_value=None):
-        r = app_client.post(f"/api/mapping/{project_id}/run",
-                            json={"file_paths": [file_path] if file_path else []})
-    assert r.status_code == 200
-    for line in r.text.splitlines():
-        if not line.startswith("data: "): continue
-        p = line[6:].strip()
-        if p == "[DONE]": break
-        try:
-            ev = json.loads(p)
-            if ev.get("type") == "result": return ev["data"]
-        except: continue
-    return {}
 
 
 # ─── Endpoint Tests ──────────────────────────────────────────────────────────

@@ -1,28 +1,31 @@
 """
 Requirements Registry — ORM Models (Faza 2)
 =============================================
-New tables extending the existing AI Buddy schema (models.py).
-
-Add this import to your existing models.py or keep as a separate file
-and import Base from the main models module.
+Extends the core schema (models.py) with three Faza 2/5/6 tables.
+Shares the same Base; engine.py imports this module as a side-effect
+so all tables are registered with Base.metadata.
 
 Tables:
-  - requirements          — hierarchical requirement registry
-  - requirement_tc_mappings — requirement ↔ test case semantic mappings
-  - coverage_scores        — multi-dimensional scoring per requirement per snapshot
+  - requirements             — hierarchical requirement registry
+  - requirement_tc_mappings  — requirement ↔ test case semantic mappings
+  - coverage_scores          — multi-dimensional scoring per requirement
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
+_log = logging.getLogger("ai_buddy.models")
+
 from sqlalchemy import (
     Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 # Import Base from existing models to share the same metadata
 from app.db.models import Base
+from app.db.types import JsonType
 
 
 class Requirement(Base):
@@ -66,13 +69,13 @@ class Requirement(Base):
     # "implicit"      — derived from Jira stories / acceptance criteria
     # "reconstructed" — reverse-engineered from code/tests (lowest confidence)
 
-    # JSON: list of source filenames or references
-    source_references: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # e.g. '["srs_v2.docx", "PROJ-1234"]'
+    # List of source filenames or references
+    source_references: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["srs_v2.docx", "PROJ-1234"]
 
-    # Taxonomy tags (JSON)
-    taxonomy: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # e.g. '{"module": "payments", "risk_level": "high", "business_domain": "compliance"}'
+    # Taxonomy tags
+    taxonomy: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
+    # e.g. {"module": "payments", "risk_level": "high", "business_domain": "compliance"}
 
     # Quality metrics
     completeness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -161,8 +164,8 @@ class RequirementTCMapping(Base):
     # "human"     — manually confirmed by user
 
     # What aspects of the requirement does this TC cover?
-    coverage_aspects: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["happy_path", "negative", "boundary", "integration", "edge_case"]
+    coverage_aspects: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["happy_path", "negative", "boundary", "integration", "edge_case"]
 
     human_verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -216,12 +219,57 @@ class CoverageScore(Base):
 
     # Context
     matched_tc_count: Mapped[int] = mapped_column(Integer, default=0)
-    coverage_aspects_present: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["happy_path", "negative"]
-    coverage_aspects_missing: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["boundary", "edge_case", "integration"]
+    coverage_aspects_present: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["happy_path", "negative"]
+    coverage_aspects_missing: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # e.g. ["boundary", "edge_case", "integration"]
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
     )
+
+    # ── Score range validators ─────────────────────────────────────────────────
+    # Clamp on assignment; out-of-range values from the LLM are logged as warnings.
+
+    @validates("total_score")
+    def _clamp_total(self, _key: str, v: float) -> float:
+        clamped = max(0.0, min(100.0, float(v)))
+        if clamped != float(v):
+            _log.warning("total_score %s clamped to %s", v, clamped)
+        return clamped
+
+    @validates("base_coverage")
+    def _clamp_base(self, _key: str, v: float) -> float:
+        clamped = max(0.0, min(40.0, float(v)))
+        if clamped != float(v):
+            _log.warning("base_coverage %s clamped to %s", v, clamped)
+        return clamped
+
+    @validates("depth_coverage")
+    def _clamp_depth(self, _key: str, v: float) -> float:
+        clamped = max(0.0, min(30.0, float(v)))
+        if clamped != float(v):
+            _log.warning("depth_coverage %s clamped to %s", v, clamped)
+        return clamped
+
+    @validates("quality_weight")
+    def _clamp_quality(self, _key: str, v: float) -> float:
+        clamped = max(0.0, min(20.0, float(v)))
+        if clamped != float(v):
+            _log.warning("quality_weight %s clamped to %s", v, clamped)
+        return clamped
+
+    @validates("confidence_penalty")
+    def _clamp_penalty(self, _key: str, v: float) -> float:
+        clamped = max(-10.0, min(0.0, float(v)))
+        if clamped != float(v):
+            _log.warning("confidence_penalty %s clamped to %s", v, clamped)
+        return clamped
+
+    @validates("crossref_bonus")
+    def _clamp_crossref(self, _key: str, v: float) -> float:
+        clamped = max(0.0, min(10.0, float(v)))
+        if clamped != float(v):
+            _log.warning("crossref_bonus %s clamped to %s", v, clamped)
+        return clamped

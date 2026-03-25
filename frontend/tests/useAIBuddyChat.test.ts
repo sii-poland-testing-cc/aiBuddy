@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useAIBuddyChat } from "../lib/useAIBuddyChat";
+import { useAIBuddyChat, buildAuditData } from "../lib/useAIBuddyChat";
 
 // ── localStorage mock ─────────────────────────────────────────────────────────
 
@@ -217,5 +217,159 @@ describe("useAIBuddyChat — chat persistence", () => {
       expect(result.current.messages).toHaveLength(2);
       expect(result.current.messages[0].content).toBe("p2 message");
     });
+  });
+});
+
+// ── send() SSE streaming ──────────────────────────────────────────────────────
+
+describe("useAIBuddyChat — send() SSE streaming", () => {
+  beforeEach(() => {
+    Object.keys(store).forEach((k) => delete store[k]);
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  function makeSSEResponse(payloads: string[]): Response {
+    const body = payloads.map(p => `data: ${p}\n`).join("\n") + "\ndata: [DONE]\n";
+    const bytes = new TextEncoder().encode(body);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }
+
+  it("adds user message before streaming", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      makeSSEResponse([JSON.stringify({ type: "result", data: { message: "reply" } })]),
+    ));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hello"); });
+
+    expect(result.current.messages.some(m => m.role === "user" && m.content === "hello")).toBe(true);
+  });
+
+  it("appends assistant message from conversational result event", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      makeSSEResponse([JSON.stringify({ type: "result", data: { message: "Hello from AI" } })]),
+    ));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hi"); });
+
+    expect(result.current.messages.some(m => m.role === "assistant" && m.content === "Hello from AI")).toBe(true);
+  });
+
+  it("sets error state on SSE error event", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      makeSSEResponse([JSON.stringify({ type: "error", data: { message: "LLM unavailable" } })]),
+    ));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hi"); });
+
+    expect(result.current.error).toBe("LLM unavailable");
+  });
+
+  it("sets error when fetch fails (network error)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hi"); });
+
+    await waitFor(() => { expect(result.current.error).toBeTruthy(); });
+  });
+
+  it("returns early without fetching when text is empty and no files", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send(""); });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── buildAuditData ────────────────────────────────────────────────────────────
+
+describe("buildAuditData", () => {
+  const BASE_DATA = {
+    summary: {
+      coverage_pct: 75,
+      duplicates_found: 2,
+      untagged_cases: 3,
+      requirements_total: 10,
+      requirements_covered: 7,
+      requirements_uncovered: ["FR-003", "FR-009"],
+    },
+    recommendations: ["Add negative tests"],
+    duplicates: [{ tc_a: "TC-1", tc_b: "TC-2", similarity: 0.95 }],
+    next_tier: "optimize",
+  };
+
+  it("maps all summary fields correctly", () => {
+    const result = buildAuditData(BASE_DATA, null);
+    expect(result.summary.coverage_pct).toBe(75);
+    expect(result.summary.duplicates_found).toBe(2);
+    expect(result.summary.untagged_cases).toBe(3);
+    expect(result.summary.requirements_total).toBe(10);
+    expect(result.summary.requirements_covered).toBe(7);
+  });
+
+  it("maps uncovered requirements from summary.requirements_uncovered", () => {
+    const result = buildAuditData(BASE_DATA, null);
+    expect(result.uncovered).toEqual(["FR-003", "FR-009"]);
+  });
+
+  it("maps recommendations and duplicates", () => {
+    const result = buildAuditData(BASE_DATA, null);
+    expect(result.recommendations).toEqual(["Add negative tests"]);
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].tc_a).toBe("TC-1");
+  });
+
+  it("sets next_tier", () => {
+    expect(buildAuditData(BASE_DATA, null).next_tier).toBe("optimize");
+  });
+
+  it("attaches the provided diff", () => {
+    const diff = { coverage_delta: 5, new_covered: ["FR-001"] };
+    expect(buildAuditData(BASE_DATA, diff).diff).toEqual(diff);
+  });
+
+  it("diff=null means first audit (no previous snapshot)", () => {
+    expect(buildAuditData(BASE_DATA, null).diff).toBeNull();
+  });
+
+  it("diff=undefined means diff not fetched yet", () => {
+    expect(buildAuditData(BASE_DATA, undefined).diff).toBeUndefined();
+  });
+
+  it("defaults missing summary fields to 0", () => {
+    const sparse = { summary: {}, recommendations: [], duplicates: [] };
+    const result = buildAuditData(sparse, null);
+    expect(result.summary.coverage_pct).toBe(0);
+    expect(result.summary.duplicates_found).toBe(0);
+    expect(result.summary.untagged_cases).toBe(0);
+    expect(result.summary.requirements_total).toBe(0);
+    expect(result.summary.requirements_covered).toBe(0);
+  });
+
+  it("defaults missing recommendations/duplicates/uncovered to empty arrays", () => {
+    const sparse = { summary: {} };
+    const result = buildAuditData(sparse, null);
+    expect(result.recommendations).toEqual([]);
+    expect(result.duplicates).toEqual([]);
+    expect(result.uncovered).toEqual([]);
   });
 });

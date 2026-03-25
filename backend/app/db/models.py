@@ -11,8 +11,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from app.db.types import JsonType
 
 
 class Base(DeclarativeBase):
@@ -34,15 +36,18 @@ class Project(Base):
     )
 
     # M1 Context Builder artefacts — persisted after /build
-    mind_map: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    glossary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    context_stats: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    mind_map: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
+    glossary: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    context_stats: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
     context_built_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    context_files: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    context_files: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
 
-    settings: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Faza 2 requirement gaps — separate from context_stats to avoid M1 rebuild collision
+    requirement_gaps: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+
+    settings: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
     # JSON: arbitrary project-level settings object
 
     files: Mapped[List["ProjectFile"]] = relationship(
@@ -81,7 +86,7 @@ class ProjectFile(Base):
         server_default=func.now(),
     )
     last_used_in_audit_id: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True
+        String, ForeignKey("audit_snapshots.id", ondelete="SET NULL"), nullable=True
     )
     # snapshot id of the last audit that used this file
     # null = never used in any audit → default selected
@@ -104,28 +109,21 @@ class AuditSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
-    files_used: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["file1.xlsx", "jira:PROJ-1234"]
+    files_used: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # ["file1.xlsx", "jira:PROJ-1234"]
 
-    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: {coverage_pct, duplicates_found, requirements_total,
-    #        requirements_covered, untagged_cases}
+    summary: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
+    # {coverage_pct, duplicates_found, requirements_total,
+    #  requirements_covered, untagged_cases}
 
-    requirements_uncovered: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["FR-001", "FR-005", ...]
+    requirements_uncovered: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # ["FR-001", "FR-005", ...]
 
-    recommendations: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: ["recommendation 1", "recommendation 2", ...]
+    recommendations: Mapped[Optional[list]] = mapped_column(JsonType(), nullable=True)
+    # ["recommendation 1", "recommendation 2", ...]
 
-    diff: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # JSON: {
-    #   coverage_delta: +12.5,
-    #   duplicates_delta: -2,
-    #   new_covered: ["FR-003"],
-    #   newly_uncovered: ["FR-007"],
-    #   files_added: ["v17.xlsx"],
-    #   files_removed: ["v16.xlsx"]
-    # }
-    # null on first snapshot (no previous to compare against)
+    diff: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
+    # {coverage_delta, duplicates_delta, new_covered, newly_uncovered,
+    #  files_added, files_removed}; null on first snapshot
 
     project: Mapped["Project"] = relationship("Project", back_populates="snapshots")

@@ -72,10 +72,40 @@ class TestM1E2E:
 
     # ── a + b + c: build ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _make_mock_llm():
+        _entities = json.dumps({
+            "entities": [
+                {"id": "e1", "name": "Test Case",   "type": "data",    "description": "A test scenario"},
+                {"id": "e2", "name": "Defect",      "type": "data",    "description": "A software defect"},
+                {"id": "e3", "name": "QA Engineer", "type": "actor",   "description": "Quality assurance specialist"},
+            ],
+            "relations": [{"source": "e1", "target": "e2", "label": "reveals"}],
+        })
+        _glossary = json.dumps([
+            {"term": "Test Case",  "definition": "A set of conditions to verify behaviour.", "related_terms": [], "source": "docs"},
+            {"term": "Defect",     "definition": "Deviation from expected behaviour.",       "related_terms": [], "source": "docs"},
+        ])
+        _approved = json.dumps({"verdict": "APPROVED"})
+        mock = MagicMock()
+
+        async def _side(prompt, **kwargs):
+            if "entities and their relationships" in prompt:
+                return _entities
+            if "domain-specific term" in prompt:  # _enumerate_term_names (phase 1)
+                return json.dumps(["Test Case", "Defect", "QA Engineer", "Test Suite"])
+            if "Write glossary definitions" in prompt:  # _define_term_group (phase 2)
+                return _glossary
+            return _approved
+
+        mock.acomplete = AsyncMock(side_effect=_side)
+        return mock
+
     def _run_build(self) -> tuple[list[dict], dict | None]:
         """POST /build with sample_domain.docx, return (all_events, result_event_data)."""
         assert DOCX.exists(), f"Fixture missing: {DOCX}"
-        with DOCX.open("rb") as fh:
+        with patch("app.api.routes.context.get_llm", return_value=self._make_mock_llm()), \
+             DOCX.open("rb") as fh:
             r = self.client.post(
                 f"/api/context/{self.project_id}/build",
                 files={"files": (DOCX.name, fh,
@@ -90,11 +120,13 @@ class TestM1E2E:
 
     def test_a_build_returns_200_and_sse(self):
         """Build endpoint responds 200 with SSE events."""
-        r = self.client.post(
-            f"/api/context/{self.project_id}/build",
-            files={"files": (DOCX.name, DOCX.open("rb"),
-                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
-        )
+        with patch("app.api.routes.context.get_llm", return_value=self._make_mock_llm()), \
+             DOCX.open("rb") as fh:
+            r = self.client.post(
+                f"/api/context/{self.project_id}/build",
+                files={"files": (DOCX.name, fh,
+                       "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            )
         assert r.status_code == 200
         assert "text/event-stream" in r.headers.get("content-type", "")
 

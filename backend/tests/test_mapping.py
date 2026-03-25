@@ -3,37 +3,11 @@ Tests for /api/mapping endpoints (Faza 5+6).
 """
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
+from mapping_helpers import create_project as _create_project, upload_csv as _upload_csv, run_mapping as _run_mapping  # noqa: E501
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-SAMPLE_CSV = FIXTURES_DIR / "sample_tests.csv"
-
-
-def _create_project(app_client, name: str = "mapping-test-project") -> str:
-    r = app_client.post("/api/projects/", json={"name": name})
-    assert r.status_code in (200, 201)
-    return r.json()["project_id"]
-
-
-def _upload_csv(app_client, project_id: str) -> str:
-    """Upload sample_tests.csv and return the file path stored on disk."""
-    with SAMPLE_CSV.open("rb") as fh:
-        r = app_client.post(
-            f"/api/files/{project_id}/upload?source_type=file",
-            files={"files": ("sample_tests.csv", fh, "text/csv")},
-        )
-    assert r.status_code == 200, f"Upload failed: {r.text}"
-    uploaded = r.json()
-    # Return the first uploaded file path
-    if isinstance(uploaded, list) and uploaded:
-        return uploaded[0].get("file_path", "")
-    return ""
 
 
 def _mock_llm_for_requirements():
@@ -107,7 +81,7 @@ def _mock_llm_for_requirements():
 
     call_count = 0
 
-    async def _side_effect(prompt):
+    async def _side_effect(prompt, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -154,32 +128,6 @@ def _run_requirements_extraction(app_client, project_id: str) -> dict:
     return result_data
 
 
-def _run_mapping(app_client, project_id: str, file_path: str = "") -> dict:
-    """Run mapping workflow with mocked LLM."""
-    # Mapping workflow uses LLM for fine matching — no LLM means embedding-only mode
-    # which still produces results (pattern match + embedding similarity).
-    # We use no LLM mock here so the workflow runs in embedding-only mode.
-    with patch("app.api.routes.mapping.get_llm", return_value=None):
-        payload = {"file_paths": [file_path] if file_path else [], "message": ""}
-        r = app_client.post(f"/api/mapping/{project_id}/run", json=payload)
-    assert r.status_code == 200, f"Mapping run failed: {r.text}"
-
-    result_data: dict = {}
-    for line in r.text.splitlines():
-        if not line.startswith("data: "):
-            continue
-        payload_str = line[6:].strip()
-        if payload_str == "[DONE]":
-            break
-        try:
-            ev = json.loads(payload_str)
-            if ev.get("type") == "result":
-                result_data = ev["data"]
-        except json.JSONDecodeError:
-            continue
-    return result_data
-
-
 def _run_audit(app_client, project_id: str) -> dict:
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(return_value='["Add more edge case tests."]')
@@ -208,7 +156,6 @@ def _run_audit(app_client, project_id: str) -> dict:
 
 # ─── Tests ────────────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 def test_mapping_workflow_mock(app_client):
     """
     POST /api/mapping/{project_id}/run should:
@@ -237,7 +184,6 @@ def test_mapping_workflow_mock(app_client):
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 def test_coverage_scoring(app_client):
     """
     After running mapping, GET /api/mapping/{project_id}/coverage should return
@@ -266,7 +212,6 @@ def test_coverage_scoring(app_client):
         )
 
 
-@pytest.mark.asyncio
 def test_heatmap_endpoint(app_client):
     """
     GET /api/mapping/{project_id}/heatmap should return 200 with a list
@@ -285,7 +230,6 @@ def test_heatmap_endpoint(app_client):
     assert isinstance(data["modules"], list)
 
 
-@pytest.mark.asyncio
 def test_audit_uses_persisted_scores(app_client):
     """
     After running Faza 2 + mapping, an audit via /api/chat/stream should:

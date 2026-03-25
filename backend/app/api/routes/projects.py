@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
@@ -90,3 +90,25 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
         await db.commit()
 
 
+@router.get("/{project_id}/settings", response_model=Dict[str, Any])
+async def get_project_settings(project_id: str, db: AsyncSession = Depends(get_db)):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return project.settings or {}
+
+
+@router.put("/{project_id}/settings", response_model=Dict[str, Any])
+async def update_project_settings(
+    project_id: str,
+    body: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    project.name = body.get("name", project.name)
+    project.description = body.get("description", project.description)
+    project.settings = body
+    await db.commit()
+    return body
