@@ -12,6 +12,8 @@ interface AttachedFile {
 interface ModeInputBoxProps {
   activeMode: Mode;
   onModeChange: (mode: Mode) => void;
+  /** Modes that cannot be switched to (shown with a padlock icon, disabled). Planned for
+   *  scenarios where a required prerequisite (e.g. Context Builder) has not run yet. */
   lockedModes?: Mode[];
   value: string;
   onChange: (value: string) => void;

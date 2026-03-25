@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   LineChart,
   Line,
@@ -281,7 +281,7 @@ export default function AuditHistory({
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [trend, setTrend] = useState<TrendData | null>(null);
 
-  const fetchData = () => {
+  const fetchData = useCallback(() => {
     fetch(`${API_BASE}/api/snapshots/${projectId}`)
       .then((r) => r.json())
       .then((data: Snapshot[]) => setSnapshots(data))
@@ -291,12 +291,11 @@ export default function AuditHistory({
       .then((r) => r.json())
       .then((data: TrendData) => setTrend(data))
       .catch(() => {});
-  };
+  }, [projectId]);
 
   useEffect(() => {
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, latestSnapshotId]);
+  }, [fetchData, latestSnapshotId]);
 
   const handleDelete = async (id: string) => {
     await fetch(`${API_BASE}/api/snapshots/${projectId}/${id}`, {
