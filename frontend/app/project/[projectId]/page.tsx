@@ -131,7 +131,7 @@ export default function ProjectPage() {
     isBuilding, buildContext, fetchStatus,
   } = useContextBuilder(projectId);
 
-  const { files: rawFiles, uploading, uploadFiles } = useProjectFiles(projectId);
+  const { uploadFiles } = useProjectFiles(projectId);
   const { heatmap, retry: retryHeatmap } = useHeatmap(projectId);
   const {
     isRunning: isMappingRunning,
@@ -142,7 +142,7 @@ export default function ProjectPage() {
   const {
     requirements, stats: reqStats, loading: reqLoading, error: reqError,
     isExtracting, extractionProgress,
-    extractRequirements, patchRequirement, refresh: refreshRequirements,
+    extractRequirements, patchRequirement,
   } = useRequirements(projectId);
 
   const snapshots = useSnapshots(projectId, latestSnapshotId);
