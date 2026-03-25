@@ -263,6 +263,8 @@ async def test_m1_reflection_refines_on_issues():
     _NEW_ENTITY = json.dumps({"name": "Payment Gateway", "type": "system", "description": "External payment processor"})
     _NEW_TERM = json.dumps({"term": "idempotency key", "definition": "A unique key preventing duplicate ops.", "related_terms": [], "source": "uploaded documentation"})
 
+    critic_calls = []
+
     async def _side(prompt, **kwargs):
         calls.append("call")
         if "entities and their relationships" in prompt:
@@ -271,14 +273,15 @@ async def test_m1_reflection_refines_on_issues():
             return _TERM_NAMES_RESPONSE       # enumerate term names
         if "Write glossary definitions" in prompt:
             return _GLOSSARY_RESPONSE         # define term group
-        if len(calls) == 4:
-            return _NEEDS_REVISION_RESPONSE   # critic: needs revision
-        # calls 5+6: per-issue refine (missing_entity + missing_term)
-        if len(calls) == 5:
-            return _NEW_ENTITY                # _create_entity_llm for "Payment Gateway"
-        if len(calls) == 6:
-            return _NEW_TERM                  # _create_term_llm for "idempotency key"
-        return _APPROVED_RESPONSE             # critic pass 2: approved
+        if "quality review" in prompt:
+            critic_calls.append("critic")
+            # First critic pass → needs revision; second → approved
+            return _NEEDS_REVISION_RESPONSE if len(critic_calls) == 1 else _APPROVED_RESPONSE
+        if "Create a domain entity entry for" in prompt:
+            return _NEW_ENTITY                # per-issue refine: missing entity
+        if "Write a glossary entry for the term" in prompt:
+            return _NEW_TERM                  # per-issue refine: missing term
+        return _APPROVED_RESPONSE
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side)
@@ -404,9 +407,9 @@ async def test_m1_reflection_refine_failure_graceful():
             return _TERM_NAMES_RESPONSE
         if "Write glossary definitions" in prompt:
             return _GLOSSARY_RESPONSE
-        if len(calls) == 4:
+        if "quality review" in prompt:
             return _NEEDS_REVISION_RESPONSE    # critic: needs revision
-        raise RuntimeError("refine LLM failed")  # refine fails (call 5+)
+        raise RuntimeError("refine LLM failed")  # per-issue refine fails
 
     mock_llm = MagicMock()
     mock_llm.acomplete = AsyncMock(side_effect=_side)

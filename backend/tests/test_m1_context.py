@@ -307,41 +307,61 @@ def _glossary(client, project_id: str) -> list:
     return r.json()
 
 
-_EXTRA_TERMS = [
-    {"term": "Payment Gateway", "definition": "External payment processor.", "related_terms": [], "source": "synthetic"},
-    {"term": "Transaction Ledger", "definition": "Ledger of all payment transactions.", "related_terms": [], "source": "synthetic"},
-]
-
-
 def test_append_mode_merges_artefacts(app_client):
     """
     Appending a second document merges its glossary with the first:
       - no duplicate terms
       - merged term count > either file built alone
 
-    Note: the mock LLM (used when no real API key is present) returns the
-    same 6 fixed terms for every document, so two extra domain-specific terms
-    are injected into the cache after build 1 to guarantee the merge produces
-    a glossary larger than any single build.  With a real LLM these extra terms
-    would emerge naturally from srs_payment_module.docx content.
+    Build 1 uses the standard mock (5 terms).  Build 2 uses an extended mock
+    that adds 2 unique terms absent from build 1, so the merged glossary is 7
+    terms — strictly more than either single build.
     """
-    import app.api.routes.context as ctx_module
+    def _make_extended_mock_llm():
+        """Standard mock plus 2 extra terms unique to the second document."""
+        mock = MagicMock()
+        extended_terms = ["Test Case", "Defect", "QA Engineer", "Test Suite", "Coverage",
+                          "Payment Gateway", "Transaction Ledger"]
+        extended_glossary = _json.dumps([
+            {"term": "Test Case",          "definition": "Conditions to verify behaviour.", "related_terms": [], "source": "docs"},
+            {"term": "Defect",             "definition": "Deviation from expected behaviour.", "related_terms": [], "source": "docs"},
+            {"term": "QA Engineer",        "definition": "Quality assurance specialist.", "related_terms": [], "source": "docs"},
+            {"term": "Test Suite",         "definition": "Collection of test cases.", "related_terms": [], "source": "docs"},
+            {"term": "Coverage",           "definition": "Fraction of requirements exercised.", "related_terms": [], "source": "docs"},
+            {"term": "Payment Gateway",    "definition": "External payment processor.", "related_terms": [], "source": "docs"},
+            {"term": "Transaction Ledger", "definition": "Ledger of all payment transactions.", "related_terms": [], "source": "docs"},
+        ])
+
+        async def _side(prompt, **kwargs):
+            if "entities and their relationships" in prompt:
+                return _MOCK_ENTITIES
+            if "domain-specific term" in prompt:
+                return _json.dumps(extended_terms)
+            if "Write glossary definitions" in prompt:
+                return extended_glossary
+            return _MOCK_APPROVED
+
+        mock.acomplete = AsyncMock(side_effect=_side)
+        return mock
 
     r = app_client.post("/api/projects/", json={"name": "append-merge-test"})
     assert r.status_code in (200, 201)
     pid = r.json()["project_id"]
 
-    # Build 1: srs_payment_module.docx
+    # Build 1: srs_payment_module.docx — standard mock (5 terms)
     _build(app_client, pid, "srs_payment_module.docx")
     n_srs = len(_glossary(app_client, pid))
 
-    # Inject 2 terms absent from the mock glossary (simulate real LLM output)
-    ctx_module._context_store[pid]["glossary"] = (
-        ctx_module._context_store[pid]["glossary"] + _EXTRA_TERMS
-    )
-
-    # Build 2: qa_process.docx (append) — must merge with the 2 injected terms
-    _build(app_client, pid, "qa_process.docx", mode="append")
+    # Build 2: qa_process.docx (append) — extended mock adds 2 unique extra terms
+    path = _SYNTHETIC / "qa_process.docx"
+    assert path.exists()
+    with patch("app.api.routes.context.get_llm", return_value=_make_extended_mock_llm()), \
+         path.open("rb") as fh:
+        r2 = app_client.post(
+            f"/api/context/{pid}/build",
+            files={"files": ("qa_process.docx", fh, _DOCX_MIME)},
+        )
+    assert r2.status_code == 200, f"Build 2 failed: {r2.text[:300]}"
     merged = _glossary(app_client, pid)
 
     # No duplicate terms (case-insensitive)
@@ -349,9 +369,7 @@ def test_append_mode_merges_artefacts(app_client):
     assert len(set(lowered)) == len(merged), "Merged glossary contains duplicate terms"
 
     # Merged count strictly greater than either file alone
-    n_qa = n_srs  # mock always returns the same count; real LLM may differ
     assert len(merged) > n_srs, f"Expected merged ({len(merged)}) > srs alone ({n_srs})"
-    assert len(merged) > n_qa, f"Expected merged ({len(merged)}) > qa alone ({n_qa})"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

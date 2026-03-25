@@ -220,6 +220,86 @@ describe("useAIBuddyChat — chat persistence", () => {
   });
 });
 
+// ── send() SSE streaming ──────────────────────────────────────────────────────
+
+describe("useAIBuddyChat — send() SSE streaming", () => {
+  beforeEach(() => {
+    Object.keys(store).forEach((k) => delete store[k]);
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  function makeSSEResponse(payloads: string[]): Response {
+    const body = payloads.map(p => `data: ${p}\n`).join("\n") + "\ndata: [DONE]\n";
+    const bytes = new TextEncoder().encode(body);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }
+
+  it("adds user message before streaming", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      makeSSEResponse([JSON.stringify({ type: "result", data: { message: "reply" } })]),
+    ));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hello"); });
+
+    expect(result.current.messages.some(m => m.role === "user" && m.content === "hello")).toBe(true);
+  });
+
+  it("appends assistant message from conversational result event", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      makeSSEResponse([JSON.stringify({ type: "result", data: { message: "Hello from AI" } })]),
+    ));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hi"); });
+
+    expect(result.current.messages.some(m => m.role === "assistant" && m.content === "Hello from AI")).toBe(true);
+  });
+
+  it("sets error state on SSE error event", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      makeSSEResponse([JSON.stringify({ type: "error", data: { message: "LLM unavailable" } })]),
+    ));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hi"); });
+
+    expect(result.current.error).toBe("LLM unavailable");
+  });
+
+  it("sets error when fetch fails (network error)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send("hi"); });
+
+    await waitFor(() => { expect(result.current.error).toBeTruthy(); });
+  });
+
+  it("returns early without fetching when text is empty and no files", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useAIBuddyChat({ projectId: "p1" }));
+
+    await act(async () => { await result.current.send(""); });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 // ── buildAuditData ────────────────────────────────────────────────────────────
 
 describe("buildAuditData", () => {

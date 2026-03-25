@@ -123,6 +123,20 @@ async def test_latest_returns_newest(app_client):
 
 
 @pytest.mark.asyncio
+async def test_first_snapshot_has_null_diff(app_client):
+    """The first snapshot for a project has diff=null (no previous snapshot to compare)."""
+    project_id = str(uuid.uuid4())
+    snap = _make_snapshot(project_id)
+    await _insert_snapshots([snap], project_id=project_id)
+
+    resp = app_client.get(f"/api/snapshots/{project_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["diff"] is None, "First snapshot must have diff=null"
+
+
+@pytest.mark.asyncio
 async def test_latest_404_when_empty(app_client):
     """GET /api/snapshots/{project_id}/latest returns 404 for unknown project."""
     project_id = str(uuid.uuid4())
@@ -255,12 +269,12 @@ def test_audit_selection_url_always_selected(app_client):
     assert item["selected"] is True, "URL source must stay selected regardless of audit history"
 
 
-def test_chat_auto_selects_new_files_only(app_client):
+@pytest.mark.asyncio
+async def test_chat_auto_selects_new_files_only(app_client):
     """
     When file_paths is empty, the chat endpoint must only include files that
     haven't been used before (last_used_in_audit_id is None).
     """
-    import asyncio
     from app.db.engine import AsyncSessionLocal
     from app.db.models import AuditSnapshot
     from sqlalchemy import select as sa_select
@@ -280,13 +294,11 @@ def test_chat_auto_selects_new_files_only(app_client):
     snapshot_id = result.get("snapshot_id")
     assert snapshot_id, "snapshot_id missing from second audit result"
 
-    async def _query_snap():
-        async with AsyncSessionLocal() as db:
-            return (await db.execute(
-                sa_select(AuditSnapshot).where(AuditSnapshot.id == snapshot_id)
-            )).scalars().first()
+    async with AsyncSessionLocal() as db:
+        snap = (await db.execute(
+            sa_select(AuditSnapshot).where(AuditSnapshot.id == snapshot_id)
+        )).scalars().first()
 
-    snap = asyncio.get_event_loop().run_until_complete(_query_snap())
     assert snap is not None
     files_used = snap.files_used or []
     assert any("file_v2.csv" in p for p in files_used), \

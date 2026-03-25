@@ -24,8 +24,22 @@ const HEATMAP: HeatmapRow[] = [
 ];
 
 const SNAPSHOTS: AuditSnapshot[] = [
-  { id: "s1", created_at: "2026-03-18T14:00:00Z", summary: { coverage_pct: 71 }, diff: { coverage_delta: 8 } },
-  { id: "s2", created_at: "2026-03-10T10:00:00Z", summary: { coverage_pct: 58 }, diff: null },
+  {
+    id: "s1", created_at: "2026-03-18T14:00:00Z",
+    summary: { coverage_pct: 71, duplicates_found: 1, requirements_total: 10, requirements_covered: 7 },
+    diff: { coverage_delta: 8 },
+    requirements_uncovered: ["FR-005"],
+    recommendations: ["Add boundary tests"],
+    files_used: ["/uploads/p1/suite.xlsx"],
+  },
+  {
+    id: "s2", created_at: "2026-03-10T10:00:00Z",
+    summary: { coverage_pct: 58, duplicates_found: 0, requirements_total: 10, requirements_covered: 5 },
+    diff: null,
+    requirements_uncovered: ["FR-003", "FR-005", "FR-009"],
+    recommendations: [],
+    files_used: ["/uploads/p1/suite.xlsx"],
+  },
 ];
 
 /** Snapshot with full audit data for modal tests */

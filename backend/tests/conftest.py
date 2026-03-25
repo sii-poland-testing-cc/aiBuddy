@@ -13,7 +13,15 @@ os.environ["CHROMA_PERSIST_DIR"] = os.path.join(_TEST_TMP, "chroma")
 os.environ["UPLOAD_DIR"] = os.path.join(_TEST_TMP, "uploads")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TEST_TMP}/test.db"
 
+import shutil
 import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_tmp():
+    """Remove the shared temp directory after the entire test session."""
+    yield
+    shutil.rmtree(_TEST_TMP, ignore_errors=True)
 
 
 @pytest.fixture
