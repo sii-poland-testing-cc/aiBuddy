@@ -125,14 +125,26 @@ describe("ModeInputBox", () => {
 
   // ── Send / Stop ─────────────────────────────────────────────────────────────
 
-  it("send button is disabled when value is empty", () => {
-    renderBox({ value: "" });
+  it("send button is disabled when value is empty and no files attached", () => {
+    renderBox({ value: "", attachedFiles: [] });
     expect(screen.getByTestId("send-btn")).toBeDisabled();
   });
 
   it("send button is enabled when value is non-empty", () => {
     renderBox({ value: "some text" });
     expect(screen.getByTestId("send-btn")).not.toBeDisabled();
+  });
+
+  it("send button is enabled when files are attached even with empty text", () => {
+    renderBox({ value: "", attachedFiles: [{ name: "suite.xlsx" }] });
+    expect(screen.getByTestId("send-btn")).not.toBeDisabled();
+  });
+
+  it("Enter key sends when files are attached but text is empty", async () => {
+    const onSend = vi.fn();
+    renderBox({ value: "", attachedFiles: [{ name: "suite.xlsx" }], onSend });
+    await userEvent.type(screen.getByRole("textbox"), "{Enter}");
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 
   it("clicking send calls onSend", async () => {

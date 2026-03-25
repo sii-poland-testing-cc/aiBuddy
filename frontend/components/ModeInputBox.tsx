@@ -63,10 +63,12 @@ export default function ModeInputBox({
     resizeTextarea();
   }, [value, resizeTextarea]);
 
+  const canSend = !!value.trim() || attachedFiles.length > 0;
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!loading && value.trim()) onSend();
+      if (!loading && canSend) onSend();
     }
   };
 
@@ -227,7 +229,7 @@ export default function ModeInputBox({
               <button
                 data-testid="send-btn"
                 onClick={onSend}
-                disabled={!value.trim()}
+                disabled={!canSend}
                 className="bg-buddy-gold text-buddy-surface font-bold hover:bg-buddy-gold-light disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
                 style={{ padding: "5px 14px", borderRadius: 6, fontSize: 12 }}
               >
