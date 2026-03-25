@@ -89,7 +89,8 @@ StartEvent → ParsedDocsEvent → EmbeddedEvent → ExtractedEvent → Reviewed
 
 ### API endpoints
 ```
-POST /api/context/{project_id}/build?mode=append|rebuild  — upload .docx/.pdf, SSE stream M1 pipeline
+POST /api/context/{project_id}/build?mode=append|rebuild           — upload .docx/.pdf, SSE stream M1 pipeline
+POST /api/context/{project_id}/rebuild-existing?mode=append|rebuild — re-run M1 on docs already on disk (no upload)
 GET  /api/context/{project_id}/status    — {rag_ready, artefacts_ready, stats, context_built_at, document_count, context_files}
 GET  /api/context/{project_id}/mindmap   — {nodes: [...], edges: [...]}
 GET  /api/context/{project_id}/glossary  — [{term, definition, ...}]
@@ -308,7 +309,7 @@ alembic stamp head            # mark existing DB as current (first run on existi
 alembic check                 # verify models and DB are in sync
 ```
 
-- `projects` — id, name, description, created_at, mind_map, glossary, context_stats, context_built_at, context_files, settings
+- `projects` — id, name, description, created_at, mind_map, glossary, context_stats, context_built_at, context_files, settings, requirement_gaps
 - `project_files` — id, project_id, filename, file_path, size_bytes, indexed, uploaded_at, last_used_in_audit_id, source_type
 - `audit_snapshots` — id, project_id, created_at, files_used (JSON), summary (JSON), requirements_uncovered (JSON), recommendations (JSON), diff (JSON)
 - `requirements`, `requirement_tc_mappings`, `coverage_scores` — Faza 2/5+6 tables (see requirements_models.py)
@@ -394,22 +395,24 @@ Long-running SSE operations (M1 context build, requirements extraction, mapping)
 ```bash
 cd frontend && npm test
 ```
-205 tests across 15 files:
-- `frontend/tests/TopBar.test.tsx` — 9 tests: renders, project id, RAG indicator, panel toggle, back navigation
-- `frontend/tests/ModeInputBox.test.tsx` — 17 tests: mode pills, locked pills, file chips, placeholder, send/stop, artifact chips, attach button
-- `frontend/tests/MindMapModal.test.tsx` — 26 tests: visibility, toolbar, close/Escape, node rendering, search dimming, match count, tooltip show/hide, cluster collapse, `layoutModalNodes` unit tests; **cycle-safety tests** (direct cycle e1↔e2, longer cycle e1→e2→e3→e1, LLM-style numeric IDs)
-- `frontend/tests/UtilityPanel.test.tsx` — 35 tests: panel open/close, mode-specific card content, source tabs, heatmap, tier selector, snapshot rows, ↗ opens audit modal, × closes modal
+248 tests across 17 files:
+- `frontend/tests/TopBar.test.tsx` — 11 tests: renders, project id, RAG indicator, panel toggle, back navigation
+- `frontend/tests/ModeInputBox.test.tsx` — 19 tests: mode pills, locked pills, file chips, placeholder, send/stop, artifact chips, attach button
+- `frontend/tests/MindMapModal.test.tsx` — 21 tests: visibility, toolbar, close/Escape, node rendering, search dimming, match count, tooltip show/hide, cluster collapse; **cycle-safety tests** (direct cycle e1↔e2, longer cycle e1→e2→e3→e1, LLM-style numeric IDs)
+- `frontend/tests/UtilityPanel.test.tsx` — 37 tests: panel open/close, mode-specific card content, source tabs, heatmap, tier selector, snapshot rows, ↗ opens audit modal, × closes modal
 - `frontend/tests/RequirementsView.test.tsx` — 36 tests: header stats, empty state, error, loading skeletons, module groups, search/filter, card badges, mark-reviewed, group collapse
 - `frontend/tests/ProjectPage.test.tsx` — 13 tests: page renders for each mode, hook wiring
+- `frontend/tests/ProjectList.test.tsx` — 8 tests: list renders, project creation, empty state, navigation
+- `frontend/tests/ProjectSettingsPage.test.tsx` — 11 tests: loading state, form renders, save, error state, back navigation
 - `frontend/tests/MindMap.test.tsx` — 9 tests: renders, nodes (rect), edges (bezier path), labels, empty state, arrow marker, reset button
+- `frontend/tests/mindMapLayout.test.ts` — 13 tests: `layoutModalNodes` unit tests including cycle-safety (direct cycle, longer cycle, LLM-style numeric IDs)
 - `frontend/tests/Glossary.test.tsx` — 10 tests: renders, filter, empty state, term click callback, hover border
-- `frontend/tests/MessageList.test.tsx` — 3 tests: renders, Powiązane terminy chips, term click fires callback
+- `frontend/tests/MessageList.test.tsx` — 5 tests: renders, Powiązane terminy chips, term click fires callback
 - `frontend/tests/parseRelatedTerms.test.ts` — 3 tests: known terms matched, unknown terms plain, comma splitting
-- `frontend/tests/AuditFileSelector.test.tsx` — 4 tests: new files checked, used files unchecked+muted, URL source always-checked/disabled, onSelectionChange called correctly
 - `frontend/tests/AuditHistory.test.tsx` — 5 tests: empty state, snapshot rows rendered, latest highlight, coverage badge colors, trend chart requires ≥2 snapshots
 - `frontend/tests/useRequirements.test.ts` — 8 tests: fetch, extract SSE, patch optimistic update; **re-mount after navigation** (isExtracting context true→false triggers fetchAll)
 - `frontend/tests/useAuditPipeline.test.ts` — 12 tests: fresh project (extract+map+send), sequential order, status messages, skip-when-done, guards (isExtracting/isMappingRunning), fetch failure resilience, send arguments
-- `frontend/tests/useAIBuddyChat.test.ts` — 13 tests: localStorage load/save/clear, status message exclusion, per-project isolation, projectId change re-load
+- `frontend/tests/useAIBuddyChat.test.ts` — 27 tests: localStorage load/save/clear, status message exclusion, per-project isolation, projectId change re-load; **send() SSE streaming** (user msg, assistant msg, error event, network failure, empty guard)
 - `frontend/tests/setup.ts` — `@testing-library/jest-dom` setup
 - `frontend/vitest.config.ts` — jsdom environment, `@vitejs/plugin-react`, `@` alias
 
@@ -496,7 +499,7 @@ Faza 2: Requirements Reconstruction
 
 Faza 5+6: Semantic Mapping & Coverage Scoring
   POST /api/mapping/{project_id}/run  (SSE)
-  Workflow: LoadData → CoarseMatch → FineMatch → Score → Persist
+  Workflow: LoadData → CoarseMatch → FineMatch → Score → Assemble
   Input:  requirements (from Faza 2 DB) + test files (uploaded)
   Output: requirement↔TC mappings + multi-dimensional scores
   Tables: requirement_tc_mappings, coverage_scores
