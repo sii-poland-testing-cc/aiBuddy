@@ -56,9 +56,10 @@ export function useContextBuilder(projectId: string) {
   const [localStage, setStage]     = useState<string | null>(null);
   const [localProgress, setProgress] = useState(0);
   const [log, setLog]         = useState<string[]>([]);
-  const [result, setResult]   = useState<ContextResult | null>(null);
-  const [status, setStatus]   = useState<ContextStatus | null>(null);
-  const [localError, setError]     = useState<string | null>(null);
+  const [result, setResult]       = useState<ContextResult | null>(null);
+  const [status, setStatus]       = useState<ContextStatus | null>(null);
+  const [localError, setError]    = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   // Context wins (survives navigation), local is fallback
   const ctxOp = ops?.getOp(projectId, OP_TYPE);
@@ -72,9 +73,12 @@ export function useContextBuilder(projectId: string) {
       const res = await fetch(
         `${API_BASE}/api/context/${encodeURIComponent(projectId)}/status`
       );
-      if (res.ok) setStatus(await res.json());
+      if (res.ok) {
+        setStatus(await res.json());
+        setStatusError(null);
+      }
     } catch {
-      /* backend offline — fail silently */
+      setStatusError("Nie można połączyć z serwerem. Sprawdź czy backend jest uruchomiony.");
     }
   }, [projectId]);
 
@@ -187,5 +191,5 @@ export function useContextBuilder(projectId: string) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.artefacts_ready]);
 
-  return { isBuilding, stage, progress, log, result, status, error, buildContext, fetchStatus, retry: fetchStatus, clearError: () => { setError(null); ops?.updateOp(projectId, OP_TYPE, { error: null }); } };
+  return { isBuilding, stage, progress, log, result, status, error, statusError, buildContext, fetchStatus, retry: fetchStatus, clearError: () => { setError(null); ops?.updateOp(projectId, OP_TYPE, { error: null }); }, clearStatusError: () => setStatusError(null) };
 }

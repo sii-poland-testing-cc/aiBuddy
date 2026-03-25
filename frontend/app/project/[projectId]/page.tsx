@@ -63,6 +63,7 @@ export default function ProjectPage() {
   const {
     result: ctxResult, status: contextStatus,
     isBuilding, buildContext, fetchStatus,
+    statusError: contextStatusError, clearStatusError: clearContextStatusError,
   } = useContextBuilder(projectId);
 
   const { uploadFiles } = useProjectFiles(projectId);
@@ -271,7 +272,24 @@ export default function ProjectPage() {
             message={progress?.message}
           />
 
-          {/* Error banner */}
+          {/* Context status error banner (backend offline on mount) */}
+          {contextStatusError && (
+            <div
+              className="flex-shrink-0 border-b border-buddy-border flex items-center gap-2"
+              style={{ padding: "8px 48px", fontSize: 12, background: "rgba(200,144,42,0.08)", color: "#c8902a" }}
+            >
+              <span>⚠ {contextStatusError}</span>
+              <button
+                onClick={clearContextStatusError}
+                className="ml-auto hover:opacity-70 transition-opacity"
+                style={{ fontSize: 14 }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Chat error banner */}
           {chatError && (
             <div
               className="flex-shrink-0 border-b border-buddy-border bg-red-900/10 text-red-400 flex items-center gap-2"
