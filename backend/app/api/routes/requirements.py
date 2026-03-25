@@ -15,12 +15,12 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.requirements_workflow import RequirementsWorkflow, RequirementsProgressEvent
@@ -29,7 +29,9 @@ from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
-from app.db.requirements_models import CoverageScore, Requirement, RequirementTCMapping
+from app.db.models import Project
+from app.db.requirements_models import Requirement
+from app.services.requirements import persist_gaps, persist_requirements
 
 logger = logging.getLogger("ai_buddy.requirements_api")
 
@@ -110,11 +112,11 @@ async def _run_extraction(project_id: str, user_message: str):
         # Persist to DB
         try:
             async with AsyncSessionLocal() as db:
-                await _persist_requirements(
+                await persist_requirements(
                     db, project_id, result.get("requirements_flat", [])
                 )
                 # Also persist gaps as project metadata
-                await _persist_gaps(db, project_id, result.get("gaps", []))
+                await persist_gaps(db, project_id, result.get("gaps", []))
         except Exception as exc:
             logger.warning("Failed to persist requirements: %s", exc)
 
@@ -134,54 +136,6 @@ async def _run_extraction(project_id: str, user_message: str):
         yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
         yield SSE_DONE
-
-
-async def _persist_requirements(db: AsyncSession, project_id: str, flat_reqs: List[Dict]):
-    """
-    Persist extracted requirements to DB.
-    Wipes existing requirements for this project first (full re-extract).
-    """
-    # Delete existing requirements for this project
-    await db.execute(
-        delete(Requirement).where(Requirement.project_id == project_id)
-    )
-    await db.flush()
-
-    # Insert new requirements
-    for req_data in flat_reqs:
-        req = Requirement(
-            id=req_data["id"],
-            project_id=project_id,
-            parent_id=req_data.get("parent_id"),
-            level=req_data.get("level", "functional_req"),
-            external_id=req_data.get("external_id"),
-            title=req_data["title"],
-            description=req_data.get("description", ""),
-            source_type=req_data.get("source_type", "implicit"),
-            source_references=None,
-            taxonomy=req_data.get("taxonomy"),
-            completeness_score=req_data.get("completeness_score"),
-            confidence=req_data.get("confidence"),
-            human_reviewed=False,
-            needs_review=req_data.get("needs_review", False),
-            review_reason=req_data.get("review_reason"),
-        )
-        db.add(req)
-
-    await db.commit()
-    logger.info("project=%s — persisted %d requirements", project_id, len(flat_reqs))
-
-
-async def _persist_gaps(db: AsyncSession, project_id: str, gaps: List[Dict]):
-    """Persist gaps as a JSON field on the Project (reuse context_stats or add new col)."""
-    from app.db.models import Project
-    project = await db.get(Project, project_id)
-    if project:
-        # Store gaps alongside existing context_stats
-        existing_stats = json.loads(project.context_stats or "{}") if project.context_stats else {}
-        existing_stats["requirement_gaps"] = gaps
-        project.context_stats = json.dumps(existing_stats, ensure_ascii=False)
-        await db.commit()
 
 
 # ─── List Requirements (Hierarchical) ────────────────────────────────────────
@@ -276,7 +230,17 @@ async def requirements_stats(
     rows = (await db.execute(stmt)).scalars().all()
 
     if not rows:
-        return {"project_id": project_id, "has_requirements": False}
+        return {
+            "project_id": project_id,
+            "has_requirements": False,
+            "total": 0,
+            "by_level": {},
+            "by_source_type": {},
+            "avg_confidence": None,
+            "min_confidence": None,
+            "needs_review_count": 0,
+            "human_reviewed_count": 0,
+        }
 
     by_level = {}
     by_source = {}
@@ -315,7 +279,6 @@ async def requirements_gaps(
     db: AsyncSession = Depends(get_db),
 ):
     """Return identified requirement gaps for this project."""
-    from app.db.models import Project
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")

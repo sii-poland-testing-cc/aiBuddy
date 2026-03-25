@@ -25,10 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.mapping_workflow import MappingWorkflow, MappingProgressEvent
 from app.api.sse import SSE_DONE, sse_event
 from app.api.streaming import stream_with_keepalive
+from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
 from app.db.models import ProjectFile
 from app.db.requirements_models import CoverageScore, Requirement, RequirementTCMapping
+from app.services.mapping import persist_mappings, persist_scores
 
 logger = logging.getLogger("ai_buddy.mapping_api")
 
@@ -65,7 +67,7 @@ async def run_mapping(project_id: str, req: RunMappingRequest = RunMappingReques
 
 async def _run_mapping(project_id: str, file_paths: List[str], user_message: str):
     llm = get_llm()
-    workflow = MappingWorkflow(llm=llm, timeout=300)
+    workflow = MappingWorkflow(llm=llm, timeout=settings.M2_WORKFLOW_TIMEOUT_SECONDS)
 
     try:
         handler = workflow.run(
@@ -99,8 +101,8 @@ async def _run_mapping(project_id: str, file_paths: List[str], user_message: str
             result = {}
         try:
             async with AsyncSessionLocal() as db:
-                await _persist_mappings(db, project_id, result.get("mappings", []))
-                await _persist_scores(db, project_id, result.get("scores", []))
+                await persist_mappings(db, project_id, result.get("mappings", []))
+                await persist_scores(db, project_id, result.get("scores", []))
         except Exception as exc:
             logger.warning("Failed to persist mappings/scores: %s", exc)
 
@@ -111,58 +113,6 @@ async def _run_mapping(project_id: str, file_paths: List[str], user_message: str
         yield sse_event({"type": "error", "data": {"message": str(exc)}})
     finally:
         yield SSE_DONE
-
-
-async def _persist_mappings(db: AsyncSession, project_id: str, mappings: List[Dict]):
-    """Persist mapping results. Wipes previous mappings for this project."""
-    await db.execute(
-        delete(RequirementTCMapping).where(RequirementTCMapping.project_id == project_id)
-    )
-    await db.flush()
-
-    for m in mappings:
-        row = RequirementTCMapping(
-            project_id=project_id,
-            requirement_id=m["requirement_id"],
-            tc_source_file=m.get("tc_source_file", "unknown"),
-            tc_identifier=m.get("tc_identifier", "unknown"),
-            mapping_confidence=m.get("mapping_confidence", 0.5),
-            mapping_method=m.get("mapping_method", "embedding"),
-            coverage_aspects=json.dumps(m.get("coverage_aspects", [])),
-            human_verified=False,
-        )
-        db.add(row)
-
-    await db.commit()
-    logger.info("project=%s — persisted %d mappings", project_id, len(mappings))
-
-
-async def _persist_scores(db: AsyncSession, project_id: str, scores: List[Dict]):
-    """Persist coverage scores. Wipes previous scores for this project (no snapshot link in MVP)."""
-    await db.execute(
-        delete(CoverageScore).where(CoverageScore.project_id == project_id)
-    )
-    await db.flush()
-
-    for s in scores:
-        row = CoverageScore(
-            project_id=project_id,
-            requirement_id=s["requirement_id"],
-            snapshot_id=None,  # linked to audit snapshot in future
-            total_score=s.get("total_score", 0),
-            base_coverage=s.get("base_coverage", 0),
-            depth_coverage=s.get("depth_coverage", 0),
-            quality_weight=s.get("quality_weight", 0),
-            confidence_penalty=s.get("confidence_penalty", 0),
-            crossref_bonus=s.get("crossref_bonus", 0),
-            matched_tc_count=s.get("matched_tc_count", 0),
-            coverage_aspects_present=json.dumps(s.get("coverage_aspects_present", [])),
-            coverage_aspects_missing=json.dumps(s.get("coverage_aspects_missing", [])),
-        )
-        db.add(row)
-
-    await db.commit()
-    logger.info("project=%s — persisted %d coverage scores", project_id, len(scores))
 
 
 # ─── Staleness check ─────────────────────────────────────────────────────────
@@ -247,7 +197,7 @@ async def coverage_scores(
     if sort_by == "total_score":
         col = CoverageScore.total_score.asc() if order == "asc" else CoverageScore.total_score.desc()
     else:
-        col = CoverageScore.requirement_id.asc()
+        col = CoverageScore.requirement_id.asc() if order == "asc" else CoverageScore.requirement_id.desc()
     stmt = stmt.order_by(col)
 
     rows = (await db.execute(stmt)).scalars().all()
@@ -290,7 +240,23 @@ async def coverage_summary(
     rows = (await db.execute(stmt)).scalars().all()
 
     if not rows:
-        return {"project_id": project_id, "has_scores": False}
+        return {
+            "project_id": project_id,
+            "has_scores": False,
+            "total_requirements": 0,
+            "covered_requirements": 0,
+            "uncovered_requirements": 0,
+            "coverage_pct": 0.0,
+            "avg_score": 0.0,
+            "min_score": 0.0,
+            "max_score": 0.0,
+            "distribution": {
+                "green_80_100": 0,
+                "yellow_60_79": 0,
+                "orange_30_59": 0,
+                "red_0_29": 0,
+            },
+        }
 
     scores = [r.total_score for r in rows]
     covered = sum(1 for s in scores if s > 0)
