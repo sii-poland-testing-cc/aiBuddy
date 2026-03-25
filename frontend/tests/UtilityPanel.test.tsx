@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import UtilityPanel, { PanelFile, AuditSnapshot } from "../components/UtilityPanel";
+import UtilityPanel from "../components/UtilityPanel";
+import type { PanelFile, AuditSnapshot } from "../lib/types";
 import type { HeatmapRow } from "../lib/useHeatmap";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
