@@ -55,6 +55,30 @@ describe("MessageList", () => {
     expect(handler).toHaveBeenCalledWith(GLOSSARY[0]);
   });
 
+  it("detects marker with capital T (Powiązane Terminy)", () => {
+    const handler = vi.fn();
+    const msg: ChatMessage = {
+      id: "3", role: "assistant",
+      content: "**Powiązane Terminy** — Settlement",
+      timestamp: new Date(),
+    };
+    render(
+      <MessageList messages={[msg]} isLoading={false} onTermClick={handler} glossary={GLOSSARY} />,
+    );
+    // Settlement should be rendered as a chip
+    expect(screen.getByText("Settlement")).toBeTruthy();
+  });
+
+  it("detects marker followed by colon (Powiązane terminy:)", () => {
+    const msg: ChatMessage = {
+      id: "4", role: "assistant",
+      content: "**Powiązane terminy:** Settlement",
+      timestamp: new Date(),
+    };
+    render(<MessageList messages={[msg]} isLoading={false} glossary={GLOSSARY} />);
+    expect(screen.getByText("Settlement")).toBeTruthy();
+  });
+
   it("test_unknown_terms_not_clickable", () => {
     const { container } = render(
       <MessageList
