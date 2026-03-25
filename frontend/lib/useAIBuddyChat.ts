@@ -239,7 +239,36 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Pure function: maps a raw audit result payload + fetched diff into an
+ * `AuditData` shape.  Exported for unit testing.
+ */
+export function buildAuditData(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: Record<string, any>,
+  diff: AuditData["diff"]
+): AuditData {
+  const { summary, recommendations, next_tier } = data;
+  const uncovered: string[] = summary.requirements_uncovered ?? [];
+  return {
+    summary: {
+      coverage_pct: summary.coverage_pct ?? 0,
+      duplicates_found: summary.duplicates_found ?? 0,
+      similar_pairs_found: summary.similar_pairs_found,
+      untagged_cases: summary.untagged_cases ?? 0,
+      requirements_total: summary.requirements_total ?? 0,
+      requirements_covered: summary.requirements_covered ?? 0,
+    },
+    uncovered,
+    recommendations: recommendations ?? [],
+    duplicates: data.duplicates ?? [],
+    next_tier,
+    diff,
+  };
+}
+
 async function formatResult(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: Record<string, any>,
   projectId: string,
   apiBase: string
@@ -248,8 +277,7 @@ async function formatResult(
   if (data?.message && !data?.summary) return { content: data.message };
   if (!data?.summary) return { content: JSON.stringify(data, null, 2) };
 
-  const { summary, recommendations, next_tier, rag_sources } = data;
-  const uncovered: string[] = summary.requirements_uncovered ?? [];
+  const { summary, rag_sources } = data;
 
   // Short intro sentence shown above the card
   const reqPart = summary.requirements_total > 0
@@ -271,27 +299,11 @@ async function formatResult(
     }
   }
 
-  const auditData: AuditData = {
-    summary: {
-      coverage_pct: summary.coverage_pct ?? 0,
-      duplicates_found: summary.duplicates_found ?? 0,
-      similar_pairs_found: summary.similar_pairs_found,
-      untagged_cases: summary.untagged_cases ?? 0,
-      requirements_total: summary.requirements_total ?? 0,
-      requirements_covered: summary.requirements_covered ?? 0,
-    },
-    uncovered,
-    recommendations: recommendations ?? [],
-    duplicates: data.duplicates ?? [],
-    next_tier,
-    diff,
-  };
-
   return {
     content,
     sources: Array.isArray(rag_sources) && rag_sources.length > 0
       ? rag_sources as ChatSource[]
       : undefined,
-    auditData,
+    auditData: buildAuditData(data, diff),
   };
 }
