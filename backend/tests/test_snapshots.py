@@ -31,9 +31,22 @@ def _make_snapshot(project_id: str, offset_seconds: int = 0, **overrides):
     return snap
 
 
-async def _insert_snapshots(snapshots):
-    """Insert ORM objects into the test DB."""
+async def _make_project(project_id: str) -> None:
+    """Insert a minimal Project row so FK constraints on AuditSnapshot are satisfied."""
     from app.db.engine import AsyncSessionLocal
+    from app.db.models import Project
+
+    async with AsyncSessionLocal() as db:
+        db.add(Project(id=project_id, name="test-project"))
+        await db.commit()
+
+
+async def _insert_snapshots(snapshots, project_id: str | None = None):
+    """Insert ORM objects into the test DB, creating a parent project if needed."""
+    from app.db.engine import AsyncSessionLocal
+
+    if project_id is not None:
+        await _make_project(project_id)
 
     async with AsyncSessionLocal() as db:
         for s in snapshots:
@@ -58,7 +71,7 @@ async def test_list_returns_snapshots(app_client):
         _make_snapshot(project_id, offset_seconds=0),
         _make_snapshot(project_id, offset_seconds=60),
     ]
-    await _insert_snapshots(snaps)
+    await _insert_snapshots(snaps, project_id=project_id)
 
     resp = app_client.get(f"/api/snapshots/{project_id}")
     assert resp.status_code == 200
@@ -81,7 +94,7 @@ async def test_trend_shape(app_client):
         _make_snapshot(project_id, offset_seconds=0, summary={"coverage_pct": 60.0, "duplicates_found": 1, "requirements_total": 5, "requirements_covered": 3}),
         _make_snapshot(project_id, offset_seconds=60, summary={"coverage_pct": 80.0, "duplicates_found": 0, "requirements_total": 5, "requirements_covered": 4}),
     ]
-    await _insert_snapshots(snaps)
+    await _insert_snapshots(snaps, project_id=project_id)
 
     resp = app_client.get(f"/api/snapshots/{project_id}/trend")
     assert resp.status_code == 200
@@ -101,7 +114,7 @@ async def test_latest_returns_newest(app_client):
     project_id = str(uuid.uuid4())
     older = _make_snapshot(project_id, offset_seconds=0)
     newer = _make_snapshot(project_id, offset_seconds=120)
-    await _insert_snapshots([older, newer])
+    await _insert_snapshots([older, newer], project_id=project_id)
 
     resp = app_client.get(f"/api/snapshots/{project_id}/latest")
     assert resp.status_code == 200
@@ -122,7 +135,7 @@ async def test_delete_snapshot(app_client):
     """DELETE /api/snapshots/{project_id}/{snapshot_id} removes the snapshot."""
     project_id = str(uuid.uuid4())
     snap = _make_snapshot(project_id)
-    await _insert_snapshots([snap])
+    await _insert_snapshots([snap], project_id=project_id)
 
     resp = app_client.delete(f"/api/snapshots/{project_id}/{snap.id}")
     assert resp.status_code == 204
@@ -138,7 +151,7 @@ async def test_delete_wrong_project_returns_404(app_client):
     project_id = str(uuid.uuid4())
     other_project_id = str(uuid.uuid4())
     snap = _make_snapshot(project_id)
-    await _insert_snapshots([snap])
+    await _insert_snapshots([snap], project_id=project_id)
 
     resp = app_client.delete(f"/api/snapshots/{other_project_id}/{snap.id}")
     assert resp.status_code == 404

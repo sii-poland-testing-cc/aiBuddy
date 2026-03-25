@@ -31,7 +31,12 @@ logger = logging.getLogger("ai_buddy")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    if "sqlite" in settings.DATABASE_URL:
+        # SQLite (dev/test): create_all is safe and Alembic is not always run
+        await init_db()
+    else:
+        # PostgreSQL / other: schema managed by Alembic — never call create_all here
+        logger.info("Non-SQLite database detected — skipping init_db(); ensure `alembic upgrade head` has been run")
     logger.info("🚀 AI Buddy backend starting…")
     yield
     logger.info("🛑 AI Buddy backend shutting down…")
