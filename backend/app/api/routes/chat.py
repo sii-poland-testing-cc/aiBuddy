@@ -24,7 +24,7 @@ from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal
-from app.db.models import ProjectFile
+from app.db.models import Project, ProjectFile
 from app.db.queries import audit_file_filter
 from app.rag.context_builder import ContextBuilder
 from app.services.snapshots import save_snapshot
@@ -66,6 +66,27 @@ async def chat_stream(req: ChatRequest):
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async def _has_m1_context(project_id: str) -> bool:
+    """
+    Returns True only when BOTH conditions hold:
+      1. project.context_built_at IS NOT NULL  — M1 pipeline completed at least once
+      2. Chroma collection has vectors         — guards against manual index deletion
+
+    Without the context_built_at gate, a project with only M2 audit files indexed
+    (CSV/XLSX) would incorrectly enter the RAG chat path and query test-file content
+    as if it were documentation context.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            project = await db.get(Project, project_id)
+            if not project or not project.context_built_at:
+                return False
+        return await _context_builder.is_indexed(project_id)
+    except Exception as exc:
+        logger.warning("_has_m1_context check failed for %s: %s", project_id, exc)
+        return False
+
 
 async def _auto_load_audit_files(project_id: str) -> List[str]:
     """
@@ -118,8 +139,8 @@ async def _handle_rag_chat(
     """
     try:
         logger.info("Conversational path: project_id=%s", req.project_id)
-        is_indexed = await _context_builder.is_indexed(req.project_id)
-        logger.info("is_indexed(%s) = %s", req.project_id, is_indexed)
+        has_context = await _has_m1_context(req.project_id)
+        logger.info("has_m1_context(%s) = %s", req.project_id, has_context)
 
         term_name, rag_query = _resolve_rag_query(req.message)
         # Use a higher top_k for focused queries (term explanation or req-ID lookup)
@@ -127,7 +148,7 @@ async def _handle_rag_chat(
         is_targeted = term_name is not None or rag_query != req.message
 
         sources: list[dict] = []
-        if is_indexed:
+        if has_context:
             retrieval_top_k = 8 if is_targeted else 5
             logger.info(
                 "RAG retrieval for project %s, query=%r, top_k=%d",

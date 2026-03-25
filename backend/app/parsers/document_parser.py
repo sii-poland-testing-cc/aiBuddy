@@ -5,8 +5,12 @@ Unified parser for .docx and .pdf files.
 Returns a normalised dict per document:
   {filename, text, tables, headings, metadata}
 
-Place at: backend/app/parsers/document_parser.py
-Also create: backend/app/parsers/__init__.py  (empty)
+  text      — full document text with table content inlined (pipe-separated rows)
+  tables    — structured List[List[List[str]]]; reserved for future structured
+              extraction, currently unused by callers (content already in text)
+  headings  — List[{level, text}]; currently unused by callers, reserved for
+              future section-aware chunking
+  metadata  — {source: "docx"|"pdf-pdfplumber"|"pdf-pypdf", path: str}
 
 Install deps:
   pip install python-docx pdfplumber pypdf
@@ -68,7 +72,8 @@ class DocumentParser:
     async def _parse_pdf(self, path: Path) -> Dict[str, Any]:
         try:
             return await self._parse_pdf_pdfplumber(path)
-        except ImportError:
+        except Exception as exc:
+            logger.warning("pdfplumber failed for %s (%s), falling back to pypdf", path.name, exc)
             return await self._parse_pdf_pypdf(path)
 
     async def _parse_pdf_pdfplumber(self, path: Path) -> Dict[str, Any]:
@@ -96,10 +101,13 @@ class DocumentParser:
         }
 
     async def _parse_pdf_pypdf(self, path: Path) -> Dict[str, Any]:
-        from pypdf import PdfReader
-
-        reader = PdfReader(str(path))
-        text_parts = [p.extract_text() for p in reader.pages if p.extract_text()]
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            text_parts = [p.extract_text() for p in reader.pages if p.extract_text()]
+        except Exception as exc:
+            logger.warning("pypdf also failed for %s: %s — returning empty document", path.name, exc)
+            text_parts = []
 
         return {
             "filename": path.name,
