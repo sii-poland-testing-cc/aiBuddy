@@ -16,6 +16,7 @@ export interface AuditModePanelProps {
   auditFiles?: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteFile?: (id: string) => void;
   lastMappingDate?: string | null;
   isMappingRunning?: boolean;
   mappingProgress?: MappingProgress | null;
@@ -25,6 +26,9 @@ export interface AuditModePanelProps {
   onAuditPipeline?: (message: string) => void;
   tier?: Tier;
   onTierChange?: (tier: Tier) => void;
+  onAddJiraIssue?: (key: string) => Promise<void>;
+  onDeleteJiraIssue?: (id: string) => void;
+  jiraConfigured?: boolean;
 }
 
 // ── CovBadge ──────────────────────────────────────────────────────────────────
@@ -55,6 +59,7 @@ export function AuditModePanel({
   auditFiles = [],
   onAddFiles,
   onFileToggle,
+  onDeleteFile,
   lastMappingDate,
   isMappingRunning = false,
   mappingProgress,
@@ -64,8 +69,15 @@ export function AuditModePanel({
   onAuditPipeline,
   tier = "audit",
   onTierChange,
+  onAddJiraIssue,
+  onDeleteJiraIssue,
+  jiraConfigured = false,
 }: AuditModePanelProps) {
   const [openSnap, setOpenSnap] = useState<AuditSnapshot | null>(null);
+
+  const jiraItems = auditFiles
+    .filter((f) => f.source_type === "jira")
+    .map((f) => ({ id: f.id, key: f.filename }));
 
   return (
     <>
@@ -85,6 +97,11 @@ export function AuditModePanel({
           auditFiles={auditFiles}
           onAddFiles={onAddFiles}
           onFileToggle={onFileToggle}
+          onDeleteFile={onDeleteFile}
+          jiraItems={jiraItems}
+          onAddJira={onAddJiraIssue}
+          onDeleteJira={onDeleteJiraIssue}
+          jiraConfigured={jiraConfigured}
         />
 
         {/* Mapping */}

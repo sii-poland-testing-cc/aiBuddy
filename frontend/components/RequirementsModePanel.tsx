@@ -10,10 +10,14 @@ export interface RequirementsModePanelProps {
   auditFiles?: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteFile?: (id: string) => void;
   heatmapData?: HeatmapRow[];
   workContexts?: WorkContext[];
   currentContextId?: string | null;
   onContextChange?: (id: string | null) => void;
+  onAddJiraIssue?: (key: string) => Promise<void>;
+  onDeleteJiraIssue?: (id: string) => void;
+  jiraConfigured?: boolean;
 }
 
 function heatmapEmoji(color: HeatmapRow["color"]) {
@@ -24,11 +28,19 @@ export function RequirementsModePanel({
   auditFiles = [],
   onAddFiles,
   onFileToggle,
+  onDeleteFile,
   heatmapData = [],
   workContexts = [],
   currentContextId = null,
   onContextChange,
+  onAddJiraIssue,
+  onDeleteJiraIssue,
+  jiraConfigured = false,
 }: RequirementsModePanelProps) {
+  const jiraItems = auditFiles
+    .filter((f) => f.source_type === "jira")
+    .map((f) => ({ id: f.id, key: f.filename }));
+
   return (
     <div data-testid="panel-mode-requirements" className="flex flex-col" style={{ gap: 6 }}>
       <SourcesCard
@@ -36,6 +48,11 @@ export function RequirementsModePanel({
         auditFiles={auditFiles}
         onAddFiles={onAddFiles}
         onFileToggle={onFileToggle}
+        onDeleteFile={onDeleteFile}
+        jiraItems={jiraItems}
+        onAddJira={onAddJiraIssue}
+        onDeleteJira={onDeleteJiraIssue}
+        jiraConfigured={jiraConfigured}
       />
 
       {workContexts.length > 0 && (

@@ -10,7 +10,6 @@ import { AuditModePanel } from "./AuditModePanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type { PanelFile, AuditSnapshot } from "../lib/types";
 import type { PanelFile, AuditSnapshot } from "../lib/types";
 
 type Mode = "context" | "requirements" | "audit";
@@ -25,6 +24,7 @@ interface UtilityPanelProps {
   auditFiles?: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteFile?: (id: string) => void;
   // Mind Map
   onOpenMindMap?: () => void;
   // Glossary
@@ -58,6 +58,11 @@ interface UtilityPanelProps {
   workContexts?: WorkContext[];
   currentContextId?: string | null;
   onContextChange?: (id: string | null) => void;
+  // Jira
+  jiraItems?: import("./SourcesCard").JiraItem[];
+  onAddJiraIssue?: (key: string) => Promise<void>;
+  onDeleteJiraIssue?: (id: string) => void;
+  projectSettings?: { jira_url?: string; jira_api_key?: string };
 }
 
 // ── UtilityPanel (thin shell) ──────────────────────────────────────────────────
@@ -65,9 +70,11 @@ interface UtilityPanelProps {
 export default function UtilityPanel({
   open,
   activeMode,
+  projectId,
   auditFiles = [],
   onAddFiles,
   onFileToggle,
+  onDeleteFile,
   onOpenMindMap,
   glossary = [],
   onTermClick,
@@ -90,7 +97,12 @@ export default function UtilityPanel({
   workContexts = [],
   currentContextId = null,
   onContextChange,
+  jiraItems = [],
+  onAddJiraIssue,
+  onDeleteJiraIssue,
+  projectSettings,
 }: UtilityPanelProps) {
+  const jiraConfigured = !!(projectSettings?.jira_url && projectSettings?.jira_api_key);
   return (
     <aside
       data-testid="utility-panel"
@@ -110,6 +122,7 @@ export default function UtilityPanel({
             <ContextModePanel
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
+              onDeleteContextDoc={onDeleteFile}
               onOpenMindMap={onOpenMindMap}
               glossary={glossary}
               onTermClick={onTermClick}
@@ -119,6 +132,10 @@ export default function UtilityPanel({
               onBuild={onBuild}
               isBuildRunning={isBuildRunning}
               pendingContextFiles={pendingContextFiles}
+              jiraItems={jiraItems}
+              onAddJiraIssue={onAddJiraIssue}
+              onDeleteJiraIssue={onDeleteJiraIssue}
+              jiraConfigured={jiraConfigured}
             />
           )}
 
@@ -127,10 +144,14 @@ export default function UtilityPanel({
               auditFiles={auditFiles}
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
+              onDeleteFile={onDeleteFile}
               heatmapData={heatmapData}
               workContexts={workContexts}
               currentContextId={currentContextId}
               onContextChange={onContextChange}
+              onAddJiraIssue={onAddJiraIssue}
+              onDeleteJiraIssue={onDeleteJiraIssue}
+              jiraConfigured={jiraConfigured}
             />
           )}
 
@@ -139,6 +160,7 @@ export default function UtilityPanel({
               auditFiles={auditFiles}
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
+              onDeleteFile={onDeleteFile}
               lastMappingDate={lastMappingDate}
               isMappingRunning={isMappingRunning}
               mappingProgress={mappingProgress}
@@ -148,6 +170,9 @@ export default function UtilityPanel({
               onAuditPipeline={onAuditPipeline}
               tier={tier}
               onTierChange={onTierChange}
+              onAddJiraIssue={onAddJiraIssue}
+              onDeleteJiraIssue={onDeleteJiraIssue}
+              jiraConfigured={jiraConfigured}
             />
           )}
         </>

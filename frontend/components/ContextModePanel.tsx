@@ -12,6 +12,7 @@ export interface ContextModePanelProps {
   auditFiles?: never; // context mode builds its own file list from contextStatus
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteContextDoc?: (filename: string) => void;
   onOpenMindMap?: () => void;
   glossary?: GlossaryTerm[];
   onTermClick?: (term: string) => void;
@@ -21,6 +22,10 @@ export interface ContextModePanelProps {
   onBuild?: (mode: BuildMode) => void;
   pendingContextFiles?: string[];
   isBuildRunning?: boolean;
+  jiraItems?: import("./SourcesCard").JiraItem[];
+  onAddJiraIssue?: (key: string) => Promise<void>;
+  onDeleteJiraIssue?: (id: string) => void;
+  jiraConfigured?: boolean;
 }
 
 // ── Static mind map thumbnail SVG ─────────────────────────────────────────────
@@ -55,6 +60,7 @@ function MindMapThumbnail() {
 export function ContextModePanel({
   onAddFiles,
   onFileToggle,
+  onDeleteContextDoc,
   onOpenMindMap,
   glossary = [],
   onTermClick,
@@ -64,9 +70,12 @@ export function ContextModePanel({
   onBuild = () => {},
   pendingContextFiles = [],
   isBuildRunning = false,
+  jiraItems = [],
+  onAddJiraIssue,
+  onDeleteJiraIssue,
+  jiraConfigured = true,
 }: ContextModePanelProps) {
   const [glossarySearch, setGlossarySearch] = useState("");
-  const [localBuildMode, setLocalBuildMode] = useState<BuildMode>(buildMode);
 
   const filteredGlossary = glossary.filter(
     (t) =>
@@ -74,11 +83,6 @@ export function ContextModePanel({
       t.term.toLowerCase().includes(glossarySearch.toLowerCase()) ||
       t.definition.toLowerCase().includes(glossarySearch.toLowerCase())
   );
-
-  const handleBuildModeChange = (m: BuildMode) => {
-    setLocalBuildMode(m);
-    onBuildModeChange?.(m);
-  };
 
   // Build the file list for the sources card from pending + already-indexed docs
   const contextFiles = [
@@ -91,11 +95,11 @@ export function ContextModePanel({
       isNew: true,
     })),
     ...(contextStatus?.context_files ?? [])
-      .filter((f) => !pendingContextFiles.includes(f))
-      .map((filename) => ({
-        id: filename,
-        filename,
-        file_path: filename,
+      .filter((f) => !pendingContextFiles.includes(f.name))
+      .map((f) => ({
+        id: f.name,
+        filename: f.name,
+        file_path: f.name,
         source_type: "file" as const,
         selected: true,
         isNew: false,
@@ -109,6 +113,11 @@ export function ContextModePanel({
         auditFiles={contextFiles}
         onAddFiles={onAddFiles}
         onFileToggle={onFileToggle}
+        onDeleteFile={onDeleteContextDoc}
+        jiraItems={jiraItems}
+        onAddJira={onAddJiraIssue}
+        onDeleteJira={onDeleteJiraIssue}
+        jiraConfigured={jiraConfigured}
       />
 
       {/* Mind Map */}
@@ -222,11 +231,37 @@ export function ContextModePanel({
                 </div>
                 {contextStatus.context_files.map((f) => (
                   <div
-                    key={f}
+                    key={f.name}
                     className="font-mono text-buddy-text-muted overflow-hidden"
                     style={{ fontSize: 10, textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "1px 0" }}
                   >
-                    {f}
+                    {f.name}
+                    {f.indexed_at && (
+                      <span className="text-buddy-text-faint" style={{ marginLeft: 6 }}>
+                        {new Date(f.indexed_at).toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
+            {contextStatus.jira_sources && contextStatus.jira_sources.length > 0 && (
+              <>
+                <div className="font-semibold uppercase text-buddy-text-faint" style={{ fontSize: 10, letterSpacing: "0.06em", marginBottom: 4, marginTop: 6 }}>
+                  Jira:
+                </div>
+                {contextStatus.jira_sources.map((j) => (
+                  <div
+                    key={j.key}
+                    className="font-mono text-buddy-text-muted overflow-hidden"
+                    style={{ fontSize: 10, textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "1px 0" }}
+                  >
+                    <span style={{ color: "#5b7fba" }}>{j.key}</span>
+                    {j.indexed_at && (
+                      <span className="text-buddy-text-faint" style={{ marginLeft: 6 }}>
+                        {new Date(j.indexed_at).toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
                   </div>
                 ))}
               </>
@@ -244,21 +279,21 @@ export function ContextModePanel({
       <PanelCard id="build-mode" icon="🔧" title="Tryb budowania">
         <div className="flex flex-col" style={{ gap: 4, marginBottom: 10 }}>
           <TierButton
-            active={localBuildMode === "append"}
-            onClick={() => handleBuildModeChange("append")}
+            active={buildMode === "append"}
+            onClick={() => onBuildModeChange("append")}
           >
             Append — dołącz do istniejącego kontekstu
           </TierButton>
           <TierButton
-            active={localBuildMode === "rebuild"}
-            onClick={() => handleBuildModeChange("rebuild")}
+            active={buildMode === "rebuild"}
+            onClick={() => onBuildModeChange("rebuild")}
           >
             Rebuild — przebuduj od zera
           </TierButton>
         </div>
         <button
           data-testid="build-btn"
-          onClick={() => !isBuildRunning && onBuild(localBuildMode)}
+          onClick={() => !isBuildRunning && onBuild(buildMode)}
           disabled={isBuildRunning}
           className="w-full font-semibold transition-opacity text-buddy-surface"
           style={{

@@ -6,17 +6,15 @@ LlamaIndex Workflow, streaming intermediate events back to the frontend.
 """
 
 import asyncio
-import json
 import logging
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from sqlalchemy import select
+from typing import Any, AsyncGenerator, List
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import ChatRequest
 from app.agents.audit_workflow import AuditWorkflow, AnalysisProgressEvent
 from app.agents.optimize_workflow import OptimizeWorkflow, OptimizeProgressEvent
 from app.api.sse import SSE_DONE, sse_event
@@ -34,16 +32,6 @@ logger = logging.getLogger("ai_buddy.chat")
 router = APIRouter()
 
 _context_builder = ContextBuilder()
-
-
-# ─── Request / Response ───────────────────────────────────────────────────────
-
-class ChatRequest(BaseModel):
-    project_id: str
-    message: str
-    file_paths: list[str] = []
-    tier: str = "audit"                        # "audit" | "optimize" | "regenerate"
-    audit_report: Optional[Dict[str, Any]] = None  # required for tier="optimize"
 
 
 # ─── Route ────────────────────────────────────────────────────────────────────

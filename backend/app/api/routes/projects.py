@@ -2,33 +2,18 @@
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import ProjectCreate, ProjectOut
 from app.db.engine import get_db
 from app.db.models import Project, ProjectFile
 from app.services.work_context import get_or_create_default_domain
 
 router = APIRouter()
-
-
-# ─── Pydantic schemas ─────────────────────────────────────────────────────────
-
-class ProjectCreate(BaseModel):
-    name: str
-    description: Optional[str] = ""
-
-
-class ProjectOut(BaseModel):
-    project_id: str
-    name: str
-    description: str
-    created_at: str
-    file_count: int = 0
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
