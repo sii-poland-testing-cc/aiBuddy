@@ -13,6 +13,16 @@
 
   textarea { resize: none; }
   textarea:focus { outline: none; }
+
+  input[type="text"],
+  input[type="password"],
+  input[type="email"],
+  input[type="search"],
+  input:not([type]) {
+    color: #e8dcc8;
+    background-color: #211d19;
+    caret-color: #c8902a;
+  }
 }
 
 @keyframes fadeUp {

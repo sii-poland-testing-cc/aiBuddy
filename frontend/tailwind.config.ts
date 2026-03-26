@@ -13,6 +13,7 @@ const config: Config = {
         buddy: {
           base: "#141210",
           surface: "#1a1612",
+          surface2: "#211d19",
           elevated: "#1e1a16",
           border: "#2a2520",
           "border-dark": "#3a3028",
