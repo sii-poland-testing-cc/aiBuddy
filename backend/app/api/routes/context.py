@@ -444,7 +444,25 @@ def _merge_mind_maps(existing: dict, new: dict) -> dict:
             nodes.append(n)
 
     # Add new nodes; remap ids when label already exists
+    used_ids: set[str] = {n["id"] for n in nodes}
     id_remap: dict[str, str] = {}
+
+    # Derive next-id counter from the highest numeric suffix among existing ids
+    # (ids look like "e1", "e2", … so we parse the trailing digits)
+    import re as _re
+    _max = max(
+        (int(m.group(1)) for _id in used_ids if (m := _re.fullmatch(r"[a-z]+(\d+)", _id))),
+        default=0,
+    )
+    _counter = [_max]
+
+    def _fresh_id() -> str:
+        while True:
+            _counter[0] += 1
+            candidate = f"e{_counter[0]}"
+            if candidate not in used_ids:
+                return candidate
+
     for n in new.get("nodes", []):
         label_key = n.get("label", "").strip().lower()
         if not label_key:
@@ -452,9 +470,12 @@ def _merge_mind_maps(existing: dict, new: dict) -> dict:
         if label_key in label_to_id:
             id_remap[n["id"]] = label_to_id[label_key]
         else:
-            label_to_id[label_key] = n["id"]
-            id_remap[n["id"]] = n["id"]
-            nodes.append(n)
+            # Assign a fresh id if the new node's id collides with an existing one
+            new_id = n["id"] if n["id"] not in used_ids else _fresh_id()
+            used_ids.add(new_id)
+            label_to_id[label_key] = new_id
+            id_remap[n["id"]] = new_id
+            nodes.append({**n, "id": new_id})
 
     # Merge edges — remap source/target using id_remap for edges from the new map
     edge_keys: set[tuple] = set()
