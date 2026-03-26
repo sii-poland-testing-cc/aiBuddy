@@ -15,10 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.engine import AsyncSessionLocal, get_db
 from app.db.models import AuditSnapshot, Project, ProjectFile
-from app.rag.context_builder import ContextBuilder
+from app.rag.context_builder import context_builder
 
 router = APIRouter()
-context_builder = ContextBuilder()
 logger = logging.getLogger("ai_buddy")
 
 _upload_root = Path(settings.UPLOAD_DIR)
@@ -228,8 +227,9 @@ async def delete_file(
     except Exception as exc:
         logger.warning("Could not delete file from disk: %s", exc)
 
-    # Delete from Chroma
-    context_builder.delete_file_from_index(project_id, record.filename)
+    # Delete from Chroma — use the actual filename on disk, not the DB display name
+    # (Jira records store filename=issue_key but the file is issue_key.md)
+    context_builder.delete_file_from_index(project_id, Path(record.file_path).name)
 
     await db.delete(record)
     await db.commit()

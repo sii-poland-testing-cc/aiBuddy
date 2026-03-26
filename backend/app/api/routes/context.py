@@ -31,13 +31,12 @@ from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
 from app.db.models import Project
-from app.rag.context_builder import ContextBuilder
+from app.rag.context_builder import context_builder as _context_builder
 from app.services.jira_client import JiraClient, to_markdown
 
 logger = logging.getLogger("ai_buddy.context")
 
 router = APIRouter()
-_context_builder = ContextBuilder()
 
 # Write-through in-memory cache: { project_id: { mind_map, glossary, stats, ... } }
 #
@@ -141,6 +140,10 @@ async def build_context(
       {"type": "result",   "data": {project_id, rag_ready, mind_map, glossary, stats}}
       {"type": "error",    "data": {"message": str}}
     """
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, f"Project '{project_id}' not found")
+
     proj_dir = UPLOAD_ROOT / project_id / "context"
     proj_dir.mkdir(parents=True, exist_ok=True)
 
@@ -157,14 +160,12 @@ async def build_context(
         with dest.open("wb") as f:
             shutil.copyfileobj(upload.file, f)
         file_paths.append(str(dest))
-
-    project = await db.get(Project, project_id)
-    cf = _parse_context_files(project.context_files if project else None)
+    cf = _parse_context_files(project.context_files)
     if mode == "rebuild":
         file_paths.extend(_jira_md_paths(project_id))
     else:
         # append: only Jira items added/refreshed after the last M1 build
-        file_paths.extend(_jira_mds_for_append(project_id, cf, project.context_built_at if project else None))
+        file_paths.extend(_jira_mds_for_append(project_id, cf, project.context_built_at))
 
     return StreamingResponse(
         _run_m1(project_id, file_paths, mode),

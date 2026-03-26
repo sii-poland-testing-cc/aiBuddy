@@ -76,7 +76,6 @@ export function ContextModePanel({
   jiraConfigured = true,
 }: ContextModePanelProps) {
   const [glossarySearch, setGlossarySearch] = useState("");
-  const [localBuildMode, setLocalBuildMode] = useState<BuildMode>(buildMode);
 
   const filteredGlossary = glossary.filter(
     (t) =>
@@ -84,11 +83,6 @@ export function ContextModePanel({
       t.term.toLowerCase().includes(glossarySearch.toLowerCase()) ||
       t.definition.toLowerCase().includes(glossarySearch.toLowerCase())
   );
-
-  const handleBuildModeChange = (m: BuildMode) => {
-    setLocalBuildMode(m);
-    onBuildModeChange?.(m);
-  };
 
   // Build the file list for the sources card from pending + already-indexed docs
   const contextFiles = [
@@ -285,21 +279,21 @@ export function ContextModePanel({
       <PanelCard id="build-mode" icon="🔧" title="Tryb budowania">
         <div className="flex flex-col" style={{ gap: 4, marginBottom: 10 }}>
           <TierButton
-            active={localBuildMode === "append"}
-            onClick={() => handleBuildModeChange("append")}
+            active={buildMode === "append"}
+            onClick={() => onBuildModeChange("append")}
           >
             Append — dołącz do istniejącego kontekstu
           </TierButton>
           <TierButton
-            active={localBuildMode === "rebuild"}
-            onClick={() => handleBuildModeChange("rebuild")}
+            active={buildMode === "rebuild"}
+            onClick={() => onBuildModeChange("rebuild")}
           >
             Rebuild — przebuduj od zera
           </TierButton>
         </div>
         <button
           data-testid="build-btn"
-          onClick={() => !isBuildRunning && onBuild(localBuildMode)}
+          onClick={() => !isBuildRunning && onBuild(buildMode)}
           disabled={isBuildRunning}
           className="w-full font-semibold transition-opacity text-buddy-surface"
           style={{

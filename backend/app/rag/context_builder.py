@@ -53,6 +53,11 @@ class ContextBuilder:
     async def index_files(self, project_id: str, file_paths: list[str]) -> None:
         """Parse and index uploaded files for a given project."""
         documents = SimpleDirectoryReader(input_files=file_paths).load_data()
+        # Normalise metadata key to "filename" (SimpleDirectoryReader uses "file_name")
+        # so that delete_file_from_index can query a single consistent key.
+        for doc in documents:
+            if "file_name" in doc.metadata:
+                doc.metadata["filename"] = doc.metadata["file_name"]
         collection = self._get_collection(project_id)
         vector_store = ChromaVectorStore(chroma_collection=collection)
         storage_ctx = StorageContext.from_defaults(vector_store=vector_store)
@@ -180,3 +185,8 @@ class ContextBuilder:
 
     def _get_collection(self, project_id: str):
         return self._chroma_client.get_or_create_collection(self._collection_name(project_id))
+
+
+# Shared singleton — all routes must use this instance to avoid
+# concurrent PersistentClient lock contention on Chroma's SQLite backend.
+context_builder = ContextBuilder()

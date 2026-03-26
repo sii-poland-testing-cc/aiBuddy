@@ -75,7 +75,7 @@ function FileList({
           >
             <input
               type="checkbox"
-              defaultChecked={f.selected}
+              checked={f.selected}
               disabled={isAlwaysOn}
               style={{ accentColor: "#c8902a", cursor: isAlwaysOn ? "not-allowed" : "pointer" }}
               onChange={(e) => onFileToggle?.(f.file_path, e.target.checked)}
@@ -355,7 +355,7 @@ export function SourcesCard({
                   >
                     <input
                       type="checkbox"
-                      defaultChecked={f.selected}
+                      checked={f.selected}
                       style={{ accentColor: "#c8902a", cursor: "pointer" }}
                       onChange={(e) => onFileToggle?.(f.file_path, e.target.checked)}
                     />

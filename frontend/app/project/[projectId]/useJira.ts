@@ -86,17 +86,21 @@ export function useJira({
           `${API_BASE}/api/context/${projectId}/jira/${encodeURIComponent(key)}`,
           { method: "DELETE" }
         );
-        if (resp.ok || resp.status === 204) {
-          await fetchStatus();
+        if (!resp.ok && resp.status !== 204) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error((err as { detail?: string }).detail ?? "Błąd podczas usuwania Jira");
         }
+        await fetchStatus();
         return;
       }
       const resp = await fetch(`${API_BASE}/api/files/${projectId}/${id}`, {
         method: "DELETE",
       });
-      if (resp.ok || resp.status === 204) {
-        onFilesChanged();
+      if (!resp.ok && resp.status !== 204) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail ?? "Błąd podczas usuwania pliku");
       }
+      onFilesChanged();
     },
     [activeMode, projectId, fetchStatus, onFilesChanged]
   );
@@ -108,17 +112,21 @@ export function useJira({
           `${API_BASE}/api/context/${projectId}/docs/${encodeURIComponent(fileId)}`,
           { method: "DELETE" }
         );
-        if (resp.ok || resp.status === 204) {
-          await fetchStatus();
+        if (!resp.ok && resp.status !== 204) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error((err as { detail?: string }).detail ?? "Błąd podczas usuwania pliku");
         }
+        await fetchStatus();
         return;
       }
       const resp = await fetch(`${API_BASE}/api/files/${projectId}/${fileId}`, {
         method: "DELETE",
       });
-      if (resp.ok || resp.status === 204) {
-        onFilesChanged();
+      if (!resp.ok && resp.status !== 204) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail ?? "Błąd podczas usuwania pliku");
       }
+      onFilesChanged();
     },
     [activeMode, projectId, fetchStatus, onFilesChanged]
   );

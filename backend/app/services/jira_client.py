@@ -56,13 +56,18 @@ class JiraClient:
             return {"ok": False, "status_code": None, "detail": str(exc)}
 
     async def get_issue(self, key: str) -> Optional[dict]:
-        """Fetch a single issue. Returns None on 404."""
+        """Fetch a single issue. Returns None on 404 or any HTTP error."""
         url = f"{self.base_url}/rest/api/2/issue/{key}"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, auth=self._auth, headers=self._headers)
-        if resp.status_code == 404:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, auth=self._auth, headers=self._headers)
+        except httpx.HTTPError as exc:
+            logger.warning("HTTP error fetching issue %s: %s", key, exc)
             return None
-        resp.raise_for_status()
+        if not resp.is_success:
+            if resp.status_code != 404:
+                logger.warning("Unexpected status %s fetching issue %s", resp.status_code, key)
+            return None
         return resp.json()
 
     async def search_issues(self, jql: str, max_results: int = 50) -> list[dict]:
@@ -169,9 +174,9 @@ class JiraClient:
                 if nested_raw is None:
                     continue
                 nested = _extract_issue(nested_raw)
+                seen.add(ref["key"])
                 if nested["type"].lower() != "bug":
                     continue
-                seen.add(ref["key"])
                 direction = "inward" if "inwardIssue" in link else "outward"
                 nested["link_type"] = link.get("type", {}).get(direction, "")
                 result["linked"].append(nested)
