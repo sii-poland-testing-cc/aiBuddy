@@ -174,6 +174,7 @@ describe("UtilityPanel", () => {
 
   it("Jira item shows delete button on hover, clicking calls onDeleteJiraIssue", async () => {
     const onDeleteJiraIssue = vi.fn();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     renderPanel("audit", {
       auditFiles: FILES,
       projectSettings: { jira_url: "https://acme.atlassian.net", jira_api_key: "key" },
@@ -182,6 +183,7 @@ describe("UtilityPanel", () => {
     await userEvent.click(screen.getByTestId("src-tab-jira"));
     await userEvent.click(screen.getByTestId("jira-delete-btn"));
     expect(onDeleteJiraIssue).toHaveBeenCalledWith("f4");
+    vi.restoreAllMocks();
   });
 
   it("Jira tab add button calls onAddJiraIssue", async () => {

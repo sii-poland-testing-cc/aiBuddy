@@ -12,6 +12,7 @@ export interface ContextModePanelProps {
   auditFiles?: never; // context mode builds its own file list from contextStatus
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteContextDoc?: (filename: string) => void;
   onOpenMindMap?: () => void;
   glossary?: GlossaryTerm[];
   onTermClick?: (term: string) => void;
@@ -22,7 +23,9 @@ export interface ContextModePanelProps {
   pendingContextFiles?: string[];
   isBuildRunning?: boolean;
   jiraItems?: import("./SourcesCard").JiraItem[];
-  onAddJira?: (key: string) => Promise<void>;
+  onAddJiraIssue?: (key: string) => Promise<void>;
+  onDeleteJiraIssue?: (id: string) => void;
+  jiraConfigured?: boolean;
 }
 
 // ── Static mind map thumbnail SVG ─────────────────────────────────────────────
@@ -57,6 +60,7 @@ function MindMapThumbnail() {
 export function ContextModePanel({
   onAddFiles,
   onFileToggle,
+  onDeleteContextDoc,
   onOpenMindMap,
   glossary = [],
   onTermClick,
@@ -67,7 +71,9 @@ export function ContextModePanel({
   pendingContextFiles = [],
   isBuildRunning = false,
   jiraItems = [],
-  onAddJira,
+  onAddJiraIssue,
+  onDeleteJiraIssue,
+  jiraConfigured = true,
 }: ContextModePanelProps) {
   const [glossarySearch, setGlossarySearch] = useState("");
   const [localBuildMode, setLocalBuildMode] = useState<BuildMode>(buildMode);
@@ -113,8 +119,11 @@ export function ContextModePanel({
         auditFiles={contextFiles}
         onAddFiles={onAddFiles}
         onFileToggle={onFileToggle}
+        onDeleteFile={onDeleteContextDoc}
         jiraItems={jiraItems}
-        onAddJira={onAddJira}
+        onAddJira={onAddJiraIssue}
+        onDeleteJira={onDeleteJiraIssue}
+        jiraConfigured={jiraConfigured}
       />
 
       {/* Mind Map */}

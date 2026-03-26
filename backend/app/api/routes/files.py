@@ -219,6 +219,18 @@ async def delete_file(
     record = await db.get(ProjectFile, file_id)
     if not record or record.project_id != project_id:
         raise HTTPException(404, "File not found")
+
+    # Delete from disk
+    path = Path(record.file_path)
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as exc:
+        logger.warning("Could not delete file from disk: %s", exc)
+
+    # Delete from Chroma
+    context_builder.delete_file_from_index(project_id, record.filename)
+
     await db.delete(record)
     await db.commit()
 

@@ -53,10 +53,12 @@ function FileList({
   files,
   isNew,
   onFileToggle,
+  onDeleteFile,
 }: {
   files: PanelFile[];
   isNew: boolean;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteFile?: (id: string) => void;
 }) {
   return (
     <div className="flex flex-col">
@@ -64,10 +66,11 @@ function FileList({
         const extStyle = fileExtStyle(f.filename);
         const label = fileExtLabel(f.filename);
         const isAlwaysOn = f.source_type !== "file";
+        const isPending = f.isNew === true && f.id.startsWith("pending-");
         return (
           <div
             key={f.id}
-            className="flex items-center border-b border-buddy-border/50"
+            className="flex items-center border-b border-buddy-border/50 group"
             style={{ gap: 7, padding: "5px 0", opacity: isNew ? 1 : 0.5 }}
           >
             <input
@@ -99,6 +102,21 @@ function FileList({
                 NEW
               </span>
             )}
+            {!isPending && onDeleteFile && (
+              <button
+                data-testid="file-delete-btn"
+                onClick={() => {
+                  if (window.confirm("Usunąć plik " + f.filename + "?")) {
+                    onDeleteFile(f.id);
+                  }
+                }}
+                title="Usuń"
+                className="opacity-0 group-hover:opacity-100 text-buddy-text-dim hover:text-red-400 transition-all"
+                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: "0 2px", lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            )}
           </div>
         );
       })}
@@ -125,15 +143,21 @@ export function SourcesCard({
   auditFiles = [],
   onAddFiles,
   onFileToggle,
+  onDeleteFile,
   jiraItems = [],
   onAddJira,
+  onDeleteJira,
+  jiraConfigured = true,
 }: {
   cardId: string;
   auditFiles: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteFile?: (id: string) => void;
   jiraItems?: JiraItem[];
   onAddJira?: (key: string) => Promise<void>;
+  onDeleteJira?: (id: string) => void;
+  jiraConfigured?: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<"files" | "jira" | "links">("files");
   const [jiraInput, setJiraInput] = useState("");
@@ -197,13 +221,13 @@ export function SourcesCard({
           {newFiles.length > 0 && (
             <>
               <SectionLabel>Nowe</SectionLabel>
-              <FileList files={newFiles} isNew onFileToggle={onFileToggle} />
+              <FileList files={newFiles} isNew onFileToggle={onFileToggle} onDeleteFile={onDeleteFile} />
             </>
           )}
           {usedFiles.length > 0 && (
             <>
               <SectionLabel>Poprzednio użyte</SectionLabel>
-              <FileList files={usedFiles} isNew={false} onFileToggle={onFileToggle} />
+              <FileList files={usedFiles} isNew={false} onFileToggle={onFileToggle} onDeleteFile={onDeleteFile} />
             </>
           )}
           {auditFiles.filter((f) => f.source_type === "file").length === 0 && (
@@ -218,6 +242,18 @@ export function SourcesCard({
       {/* Jira tab */}
       {activeTab === "jira" && (
         <div>
+          {!jiraConfigured && (
+            <div
+              data-testid="jira-config-overlay"
+              className="text-buddy-text-dim"
+              style={{ fontSize: 11, padding: "10px 0", textAlign: "center", lineHeight: 1.5 }}
+            >
+              Skonfiguruj Jira w ustawieniach projektu,<br />
+              aby dodawać issues jako źródła.
+            </div>
+          )}
+          {jiraConfigured && (
+          <>
           {/* Input + plus icon button */}
           <div style={{ display: "flex", gap: 6, marginBottom: jiraError ? 4 : 8 }}>
             <input
@@ -227,7 +263,7 @@ export function SourcesCard({
               onChange={(e) => { setJiraInput(e.target.value); setJiraError(null); }}
               onKeyDown={(e) => { if (e.key === "Enter") handleAddJira(); }}
               disabled={jiraLoading}
-              data-testid="jira-key-input"
+              data-testid="jira-issue-input"
               className="flex-1 bg-buddy-surface2 border border-buddy-border text-buddy-text placeholder:text-buddy-text-dim focus:outline-none focus:border-buddy-gold transition-colors"
               style={{ padding: "5px 8px", borderRadius: 4, fontSize: 11 }}
             />
@@ -257,7 +293,7 @@ export function SourcesCard({
               {jiraItems.map((item) => (
                 <div
                   key={item.id}
-                  className="flex items-center gap-2 border-b border-buddy-border"
+                  className="flex items-center gap-2 border-b border-buddy-border group"
                   style={{ padding: "5px 0" }}
                 >
                   <span
@@ -275,6 +311,21 @@ export function SourcesCard({
                   >
                     {item.key}
                   </span>
+                  {onDeleteJira && (
+                    <button
+                      data-testid="jira-delete-btn"
+                      onClick={() => {
+                        if (window.confirm("Usunąć issue " + item.key + "?")) {
+                          onDeleteJira(item.id);
+                        }
+                      }}
+                      title="Usuń"
+                      className="opacity-0 group-hover:opacity-100 text-buddy-text-dim hover:text-red-400 transition-all"
+                      style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: "0 2px", lineHeight: 1 }}
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -282,6 +333,8 @@ export function SourcesCard({
             <p className="text-buddy-text-faint" style={{ fontSize: 11, textAlign: "center", padding: "8px 0" }}>
               Brak issues Jira
             </p>
+          )}
+          </>
           )}
         </div>
       )}

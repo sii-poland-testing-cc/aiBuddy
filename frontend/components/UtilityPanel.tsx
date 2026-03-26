@@ -23,6 +23,7 @@ interface UtilityPanelProps {
   auditFiles?: PanelFile[];
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
+  onDeleteFile?: (id: string) => void;
   // Mind Map
   onOpenMindMap?: () => void;
   // Glossary
@@ -54,7 +55,9 @@ interface UtilityPanelProps {
   onTierChange?: (tier: Tier) => void;
   // Jira
   jiraItems?: import("./SourcesCard").JiraItem[];
-  onAddJira?: (key: string) => Promise<void>;
+  onAddJiraIssue?: (key: string) => Promise<void>;
+  onDeleteJiraIssue?: (id: string) => void;
+  projectSettings?: { jira_url?: string; jira_api_key?: string };
 }
 
 // ── UtilityPanel (thin shell) ──────────────────────────────────────────────────
@@ -66,6 +69,7 @@ export default function UtilityPanel({
   auditFiles = [],
   onAddFiles,
   onFileToggle,
+  onDeleteFile,
   onOpenMindMap,
   glossary = [],
   onTermClick,
@@ -86,8 +90,11 @@ export default function UtilityPanel({
   tier = "audit",
   onTierChange,
   jiraItems = [],
-  onAddJira,
+  onAddJiraIssue,
+  onDeleteJiraIssue,
+  projectSettings,
 }: UtilityPanelProps) {
+  const jiraConfigured = !!(projectSettings?.jira_url && projectSettings?.jira_api_key);
   return (
     <aside
       data-testid="utility-panel"
@@ -107,6 +114,7 @@ export default function UtilityPanel({
             <ContextModePanel
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
+              onDeleteContextDoc={onDeleteFile}
               onOpenMindMap={onOpenMindMap}
               glossary={glossary}
               onTermClick={onTermClick}
@@ -117,7 +125,9 @@ export default function UtilityPanel({
               isBuildRunning={isBuildRunning}
               pendingContextFiles={pendingContextFiles}
               jiraItems={jiraItems}
-              onAddJira={onAddJira}
+              onAddJiraIssue={onAddJiraIssue}
+              onDeleteJiraIssue={onDeleteJiraIssue}
+              jiraConfigured={jiraConfigured}
             />
           )}
 
@@ -126,8 +136,11 @@ export default function UtilityPanel({
               auditFiles={auditFiles}
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
+              onDeleteFile={onDeleteFile}
               heatmapData={heatmapData}
-              onAddJira={onAddJira}
+              onAddJiraIssue={onAddJiraIssue}
+              onDeleteJiraIssue={onDeleteJiraIssue}
+              jiraConfigured={jiraConfigured}
             />
           )}
 
@@ -136,6 +149,7 @@ export default function UtilityPanel({
               auditFiles={auditFiles}
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
+              onDeleteFile={onDeleteFile}
               lastMappingDate={lastMappingDate}
               isMappingRunning={isMappingRunning}
               mappingProgress={mappingProgress}
@@ -145,7 +159,9 @@ export default function UtilityPanel({
               onAuditPipeline={onAuditPipeline}
               tier={tier}
               onTierChange={onTierChange}
-              onAddJira={onAddJira}
+              onAddJiraIssue={onAddJiraIssue}
+              onDeleteJiraIssue={onDeleteJiraIssue}
+              jiraConfigured={jiraConfigured}
             />
           )}
         </>

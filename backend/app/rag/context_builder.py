@@ -164,6 +164,14 @@ class ContextBuilder:
         except Exception:
             pass  # collection may not exist yet
 
+    def delete_file_from_index(self, project_id: str, filename: str) -> None:
+        """Remove all Chroma vectors whose metadata filename matches the given filename."""
+        try:
+            collection = self._get_collection(project_id)
+            collection.delete(where={"filename": filename})
+        except Exception as exc:
+            logger.warning("Failed to delete '%s' from Chroma for project %s: %s", filename, project_id, exc)
+
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _collection_name(self, project_id: str) -> str:

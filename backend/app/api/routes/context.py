@@ -680,3 +680,51 @@ async def delete_context_jira(
     cache = dict(_context_store.get(project_id, {}))
     cache["context_files"] = cf
     _context_store[project_id] = cache
+
+    # Delete MD file from disk
+    md_path = UPLOAD_ROOT / project_id / "context" / "jira" / f"{key}.md"
+    try:
+        if md_path.exists():
+            md_path.unlink()
+    except Exception as exc:
+        logger.warning("Could not delete Jira MD file from disk: %s", exc)
+
+    # Remove from Chroma
+    _context_builder.delete_file_from_index(project_id, f"{key}.md")
+
+
+@router.delete("/{project_id}/docs/{filename}", status_code=204)
+async def delete_context_doc(
+    project_id: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    cf = _parse_context_files(project.context_files)
+    doc_names = [d["name"] for d in cf["docs"]]
+    if filename not in doc_names:
+        raise HTTPException(404, "Document not found in context sources")
+
+    # Delete the file from disk
+    doc_path = UPLOAD_ROOT / project_id / "context" / filename
+    try:
+        if doc_path.exists():
+            doc_path.unlink()
+    except Exception as exc:
+        logger.warning("Could not delete context doc from disk: %s", exc)
+
+    # Remove from Chroma
+    _context_builder.delete_file_from_index(project_id, filename)
+
+    # Remove from context_files["docs"] and save to DB
+    cf["docs"] = [d for d in cf["docs"] if d["name"] != filename]
+    project.context_files = cf
+    await db.commit()
+
+    # Update write-through cache
+    cache = dict(_context_store.get(project_id, {}))
+    cache["context_files"] = cf
+    _context_store[project_id] = cache
