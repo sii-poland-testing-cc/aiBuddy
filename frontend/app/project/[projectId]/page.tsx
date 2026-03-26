@@ -17,6 +17,7 @@ import { useProjectFiles } from "@/lib/useProjectFiles";
 import { useHeatmap } from "@/lib/useHeatmap";
 import { useMapping } from "@/lib/useMapping";
 import { useRequirements } from "@/lib/useRequirements";
+import { useWorkContext } from "@/lib/useWorkContext";
 import { useSnapshots } from "@/lib/useSnapshots";
 import { usePanelFiles } from "@/lib/usePanelFiles";
 import RequirementsView from "@/components/RequirementsView";
@@ -75,11 +76,13 @@ export default function ProjectPage() {
     lastRunAt: lastMappingDate,
     runMapping,
   } = useMapping(projectId, retryHeatmap);
+  const { contexts: workContexts, currentContextId, setContext: setCurrentContextId } = useWorkContext(projectId);
+
   const {
     requirements, stats: reqStats, loading: reqLoading, error: reqError,
     isExtracting, extractionProgress,
     extractRequirements, patchRequirement,
-  } = useRequirements(projectId);
+  } = useRequirements(projectId, { workContextId: currentContextId });
 
   const snapshots = useSnapshots(projectId, latestSnapshotId);
   const [panelFiles, handleFileToggle] = usePanelFiles(projectId, refreshKey);
@@ -374,6 +377,9 @@ export default function ProjectPage() {
           onTierChange={(t) => {
             setTier(t);
           }}
+          workContexts={workContexts}
+          currentContextId={currentContextId}
+          onContextChange={setCurrentContextId}
         />
       </div>
 

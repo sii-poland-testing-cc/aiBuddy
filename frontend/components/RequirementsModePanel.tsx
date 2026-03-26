@@ -2,6 +2,7 @@
 
 import type { HeatmapRow } from "../lib/useHeatmap";
 import type { PanelFile } from "../lib/types";
+import type { WorkContext } from "../lib/useWorkContext";
 import { PanelCard } from "./PanelCard";
 import { SourcesCard } from "./SourcesCard";
 
@@ -10,6 +11,9 @@ export interface RequirementsModePanelProps {
   onAddFiles?: () => void;
   onFileToggle?: (filePath: string, checked: boolean) => void;
   heatmapData?: HeatmapRow[];
+  workContexts?: WorkContext[];
+  currentContextId?: string | null;
+  onContextChange?: (id: string | null) => void;
 }
 
 function heatmapEmoji(color: HeatmapRow["color"]) {
@@ -21,6 +25,9 @@ export function RequirementsModePanel({
   onAddFiles,
   onFileToggle,
   heatmapData = [],
+  workContexts = [],
+  currentContextId = null,
+  onContextChange,
 }: RequirementsModePanelProps) {
   return (
     <div data-testid="panel-mode-requirements" className="flex flex-col" style={{ gap: 6 }}>
@@ -30,6 +37,34 @@ export function RequirementsModePanel({
         onAddFiles={onAddFiles}
         onFileToggle={onFileToggle}
       />
+
+      {workContexts.length > 0 && (
+        <PanelCard id="work-context" icon="🏗" title="Kontekst pracy" defaultOpen>
+          <select
+            data-testid="work-context-selector"
+            value={currentContextId ?? ""}
+            onChange={(e) => onContextChange?.(e.target.value || null)}
+            style={{
+              width: "100%",
+              fontSize: 11,
+              padding: "4px 6px",
+              background: "var(--buddy-surface, #1a1a1a)",
+              color: "var(--buddy-text, #e0e0e0)",
+              border: "1px solid var(--buddy-border, #333)",
+              borderRadius: 4,
+              cursor: "pointer",
+            }}
+          >
+            <option value="">Domena (wszystkie)</option>
+            {workContexts.map((ctx) => (
+              <option key={ctx.id} value={ctx.id}>
+                {"  ".repeat(ctx.level === "story" ? 2 : ctx.level === "epic" ? 1 : 0)}
+                {ctx.name} ({ctx.status})
+              </option>
+            ))}
+          </select>
+        </PanelCard>
+      )}
 
       <PanelCard id="heatmap" icon="🗂" title="Heatmap pokrycia" defaultOpen>
         {heatmapData.length > 0 ? (

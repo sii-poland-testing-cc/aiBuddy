@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     M1_BATCH_OVERLAP: int = 1_800      # overlap between consecutive batches
     M1_GLOSSARY_TERMS_PER_GROUP: int = 15  # phase-2 glossary: term definitions per LLM call
 
+    # Staged Knowledge Promotion lifecycle engine.
+    # False (default) = lifecycle logic bypassed; system behaves as before Phase 1.
+    # True            = lifecycle tracking and promotion fully active.
+    # Allows gradual per-environment enablement.
+    LIFECYCLE_ENABLED: bool = False
+
     # File uploads
     UPLOAD_DIR: str = "./data/uploads"
     MAX_UPLOAD_MB: int = 50

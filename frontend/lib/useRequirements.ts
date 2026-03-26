@@ -52,7 +52,13 @@ export interface ExtractionProgress {
   stage: string;
 }
 
-export function useRequirements(projectId: string) {
+export interface UseRequirementsOptions {
+  workContextId?: string | null;
+  includePending?: boolean;
+}
+
+export function useRequirements(projectId: string, options: UseRequirementsOptions = {}) {
+  const { workContextId, includePending = false } = options;
   const ops = useContext(ProjectOperationsContext);
 
   const [requirements, setRequirements] = useState<Requirement[]>([]);
@@ -74,8 +80,12 @@ export function useRequirements(projectId: string) {
     setLoading(true);
     setError(null);
     try {
+      const params = new URLSearchParams();
+      if (workContextId) params.set("work_context_id", workContextId);
+      if (includePending) params.set("include_pending", "true");
+      const qs = params.toString() ? `?${params.toString()}` : "";
       const [flatRes, statsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/requirements/${projectId}/flat`),
+        fetch(`${API_BASE}/api/requirements/${projectId}/flat${qs}`),
         fetch(`${API_BASE}/api/requirements/${projectId}/stats`),
       ]);
 
@@ -107,7 +117,7 @@ export function useRequirements(projectId: string) {
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, workContextId, includePending]);
 
   const extractRequirements = useCallback(async (message = "") => {
     if (!projectId || isExtracting) return;

@@ -101,8 +101,10 @@ class ContextBuilderWorkflow(Workflow):
     async def parse(self, ctx: Context, ev: StartEvent) -> ParsedDocsEvent:
         file_paths: List[str] = ev.get("file_paths", [])
         project_id: str = ev.get("project_id", "default")
+        work_context_id: Optional[str] = ev.get("work_context_id", None)
 
         await ctx.store.set("project_id", project_id)
+        await ctx.store.set("work_context_id", work_context_id)
 
         ctx.write_event_to_stream(ProgressEvent(
             message=f"Parsing {len(file_paths)} document(s)…",
@@ -263,6 +265,7 @@ class ContextBuilderWorkflow(Workflow):
     @step
     async def assemble(self, ctx: Context, ev: ReviewedEvent) -> StopEvent:
         project_id = await ctx.store.get("project_id")
+        work_context_id: Optional[str] = await ctx.store.get("work_context_id")
 
         ctx.write_event_to_stream(ProgressEvent(
             message="Assembling mind map and glossary…",
@@ -279,6 +282,7 @@ class ContextBuilderWorkflow(Workflow):
 
         return StopEvent(result={
             "project_id": project_id,
+            "work_context_id": work_context_id,
             "rag_ready": True,
             "mind_map": mind_map,
             "glossary": glossary,

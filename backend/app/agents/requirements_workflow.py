@@ -319,8 +319,10 @@ class RequirementsWorkflow(Workflow):
     async def extract(self, ctx: Context, ev: StartEvent) -> ExtractedRequirementsEvent:
         project_id: str = ev.get("project_id", "default")
         user_message: str = ev.get("user_message", "")
+        work_context_id: Optional[str] = ev.get("work_context_id", None)
 
         await ctx.store.set("project_id", project_id)
+        await ctx.store.set("work_context_id", work_context_id)
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
             message="Retrieving project documentation from knowledge base…",
@@ -469,6 +471,7 @@ class RequirementsWorkflow(Workflow):
     @step
     async def assemble(self, ctx: Context, ev: ReviewedRequirementsEvent) -> StopEvent:
         project_id = await ctx.store.get("project_id")
+        work_context_id: Optional[str] = await ctx.store.get("work_context_id")
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
             message="Persisting requirements registry…",
@@ -476,7 +479,7 @@ class RequirementsWorkflow(Workflow):
         ))
 
         # Build flat list with hierarchy IDs for DB persistence
-        flat_reqs = self._flatten_for_persistence(ev.features, project_id)
+        flat_reqs = self._flatten_for_persistence(ev.features, project_id, work_context_id)
 
         ctx.write_event_to_stream(RequirementsProgressEvent(
             message="✅ Requirements registry built successfully!",
@@ -823,7 +826,10 @@ No markdown fences."""
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _feature_row(self, feature: Dict, feature_id: str, project_id: str) -> Dict:
+    def _feature_row(
+        self, feature: Dict, feature_id: str, project_id: str,
+        work_context_id: Optional[str], lifecycle_status: str,
+    ) -> Dict:
         return {
             "id": feature_id,
             "project_id": project_id,
@@ -838,9 +844,14 @@ No markdown fences."""
             "completeness_score": None,
             "needs_review": False,
             "review_reason": None,
+            "work_context_id": work_context_id,
+            "lifecycle_status": lifecycle_status,
         }
 
-    def _req_row(self, req: Dict, req_id: str, feature_id: str, project_id: str) -> Dict:
+    def _req_row(
+        self, req: Dict, req_id: str, feature_id: str, project_id: str,
+        work_context_id: Optional[str], lifecycle_status: str,
+    ) -> Dict:
         confidence = float(req.get("confidence") or 0.5)
         needs_review = req.get("needs_review", confidence < 0.7)
         return {
@@ -860,9 +871,14 @@ No markdown fences."""
             "review_reason": req.get("review_reason") or (
                 f"Low confidence ({confidence:.2f})" if needs_review else None
             ),
+            "work_context_id": work_context_id,
+            "lifecycle_status": lifecycle_status,
         }
 
-    def _ac_row(self, ac: Dict, req_id: str, project_id: str, req: Dict, parent_confidence: float) -> Dict:
+    def _ac_row(
+        self, ac: Dict, req_id: str, project_id: str, req: Dict, parent_confidence: float,
+        work_context_id: Optional[str], lifecycle_status: str,
+    ) -> Dict:
         if not isinstance(ac, dict):
             ac = {"title": str(ac), "description": "", "testability": "medium"}
         ac_confidence = float(ac.get("confidence") or parent_confidence * 0.9)
@@ -880,22 +896,35 @@ No markdown fences."""
             "completeness_score": None,
             "needs_review": ac_confidence < 0.7,
             "review_reason": None,
+            "work_context_id": work_context_id,
+            "lifecycle_status": lifecycle_status,
         }
 
-    def _flatten_for_persistence(self, features: List[Dict], project_id: str) -> List[Dict]:
+    def _flatten_for_persistence(
+        self, features: List[Dict], project_id: str,
+        work_context_id: Optional[str] = None,
+    ) -> List[Dict]:
         """Build flat requirement list with UUIDs and parent references for DB."""
+        lifecycle_status = "draft" if work_context_id is not None else "promoted"
         flat = []
         for feature in features:
             feature_id = str(uuid.uuid4())
-            flat.append(self._feature_row(feature, feature_id, project_id))
+            flat.append(self._feature_row(
+                feature, feature_id, project_id, work_context_id, lifecycle_status
+            ))
             for req in feature.get("requirements", []):
                 if not isinstance(req, dict):
                     continue
                 req_id = str(uuid.uuid4())
-                row = self._req_row(req, req_id, feature_id, project_id)
+                row = self._req_row(
+                    req, req_id, feature_id, project_id, work_context_id, lifecycle_status
+                )
                 flat.append(row)
                 for ac in req.get("acceptance_criteria", []):
-                    flat.append(self._ac_row(ac, req_id, project_id, req, row["confidence"]))
+                    flat.append(self._ac_row(
+                        ac, req_id, project_id, req, row["confidence"],
+                        work_context_id, lifecycle_status,
+                    ))
         return flat
 
     def _flag_low_confidence(self, features: List[Dict]) -> List[Dict]:

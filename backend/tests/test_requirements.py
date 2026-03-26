@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _create_project(app_client, name: str = "req-test-project") -> str:
@@ -249,3 +251,291 @@ def test_requirements_human_review(app_client):
     updated = patch_resp.json()
     assert updated["human_reviewed"] is True
     assert updated["needs_review"] is False
+
+
+# ─── Phase 3: lifecycle / work_context_id tests ───────────────────────────────
+
+def _run_extraction_with_context(app_client, project_id: str, work_context_id: str) -> dict:
+    """Run extraction tagging requirements with a work_context_id."""
+    mock_llm = _mock_llm_for_requirements()
+    with patch("app.api.routes.requirements.get_llm", return_value=mock_llm), \
+         patch(
+             "app.agents.requirements_workflow.ContextBuilder.is_indexed",
+             new_callable=AsyncMock,
+             return_value=True,
+         ), \
+         patch(
+             "app.agents.requirements_workflow.ContextBuilder.retrieve_nodes",
+             new_callable=AsyncMock,
+             return_value=[],
+         ), \
+         patch(
+             "app.agents.requirements_workflow.ContextBuilder.get_indexed_filenames",
+             return_value=[],
+         ):
+        r = app_client.post(
+            f"/api/requirements/{project_id}/extract",
+            json={"message": "", "work_context_id": work_context_id},
+        )
+    assert r.status_code == 200
+
+    result_data: dict = {}
+    for line in r.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            ev = json.loads(payload)
+            if ev.get("type") == "result":
+                result_data = ev["data"]
+        except json.JSONDecodeError:
+            continue
+    return result_data
+
+
+def test_extraction_without_work_context_id_is_promoted(app_client):
+    """
+    When no work_context_id is provided, requirements default to lifecycle_status='promoted'
+    (backwards-compatible with all existing code).
+    """
+    project_id = _create_project(app_client)
+    _run_extraction(app_client, project_id)
+
+    resp = app_client.get(f"/api/requirements/{project_id}/flat")
+    assert resp.status_code == 200
+    reqs = resp.json()["requirements"]
+    assert len(reqs) > 0
+    for r in reqs:
+        assert r["lifecycle_status"] == "promoted", (
+            f"Expected 'promoted' for requirement without work_context_id, got {r['lifecycle_status']!r}"
+        )
+        assert r["work_context_id"] is None
+
+
+def test_extraction_with_work_context_id_is_draft(app_client):
+    """
+    When work_context_id is provided, requirements are tagged as lifecycle_status='draft'.
+    """
+    project_id = _create_project(app_client)
+
+    # Create a work context (domain → epic → story hierarchy)
+    domain_resp = app_client.get(f"/api/work-contexts/{project_id}")
+    assert domain_resp.status_code == 200
+    contexts = domain_resp.json()["contexts"]
+    assert len(contexts) > 0, "Expected a default domain to be auto-created"
+    domain_id = contexts[0]["id"]
+
+    # Create an epic under the domain
+    epic_resp = app_client.post(
+        f"/api/work-contexts/{project_id}",
+        json={"level": "epic", "name": "Payment Epic", "parent_id": domain_id},
+    )
+    assert epic_resp.status_code == 201
+    epic_id = epic_resp.json()["id"]
+
+    _run_extraction_with_context(app_client, project_id, epic_id)
+
+    # All requirements must be tagged with the epic ID and status=draft.
+    # Pass include_pending=true — default view returns promoted items only.
+    resp = app_client.get(
+        f"/api/requirements/{project_id}/flat?work_context_id={epic_id}&include_pending=true"
+    )
+    assert resp.status_code == 200
+    reqs = resp.json()["requirements"]
+    assert len(reqs) > 0
+    for r in reqs:
+        assert r["lifecycle_status"] == "draft", (
+            f"Expected 'draft' for requirement with work_context_id, got {r['lifecycle_status']!r}"
+        )
+        assert r["work_context_id"] == epic_id
+
+
+def test_lifecycle_status_filter_on_flat_endpoint(app_client):
+    """
+    GET /flat?lifecycle_status=draft should only return draft requirements,
+    and ?lifecycle_status=promoted only promoted ones.
+    """
+    project_id = _create_project(app_client)
+
+    # First extraction: no context → promoted
+    _run_extraction(app_client, project_id)
+
+    resp_all = app_client.get(f"/api/requirements/{project_id}/flat")
+    assert resp_all.status_code == 200
+    total = len(resp_all.json()["requirements"])
+    assert total > 0
+
+    # All should be promoted
+    resp_promoted = app_client.get(
+        f"/api/requirements/{project_id}/flat?lifecycle_status=promoted"
+    )
+    assert resp_promoted.status_code == 200
+    assert len(resp_promoted.json()["requirements"]) == total
+
+    # None should be draft
+    resp_draft = app_client.get(
+        f"/api/requirements/{project_id}/flat?lifecycle_status=draft"
+    )
+    assert resp_draft.status_code == 200
+    assert len(resp_draft.json()["requirements"]) == 0
+
+
+def test_lifecycle_status_filter_on_hierarchical_endpoint(app_client):
+    """
+    GET /{project_id}?lifecycle_status=promoted should respect the filter.
+    """
+    project_id = _create_project(app_client)
+    _run_extraction(app_client, project_id)
+
+    resp = app_client.get(
+        f"/api/requirements/{project_id}?lifecycle_status=promoted"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] > 0
+
+    resp_draft = app_client.get(
+        f"/api/requirements/{project_id}?lifecycle_status=draft"
+    )
+    assert resp_draft.status_code == 200
+    assert resp_draft.json()["total"] == 0
+
+
+def test_audit_log_created_on_extraction(app_client):
+    """
+    Each persisted requirement should produce an ArtifactAuditLog row with
+    event_type='created'. Verify via DB introspection through the conftest db.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactAuditLog
+    from sqlalchemy import select as sa_select
+
+    project_id = _create_project(app_client)
+    _run_extraction(app_client, project_id)
+
+    async def _count_log_entries():
+        async with AsyncSessionLocal() as db:
+            stmt = sa_select(ArtifactAuditLog).where(
+                ArtifactAuditLog.project_id == project_id,
+                ArtifactAuditLog.event_type == "created",
+                ArtifactAuditLog.artifact_type == "requirement",
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            return len(rows)
+
+    count = asyncio.get_event_loop().run_until_complete(_count_log_entries())
+    assert count > 0, "Expected ArtifactAuditLog rows after extraction"
+
+
+def test_requirements_adapter_detect_conflict_same_ext_id_different_title():
+    """detect_conflict returns True when same external_id has very different titles."""
+    from app.lifecycle.requirements_adapter import RequirementsAdapter
+    adapter = RequirementsAdapter(db=None)  # type: ignore[arg-type]
+
+    incoming = {"external_id": "FR-001", "title": "Initiate payment transfer", "description": ""}
+    existing = {"external_id": "FR-001", "title": "Completely unrelated requirement about logging", "description": ""}
+
+    has_conflict, reason = adapter.detect_conflict(incoming, existing)
+    assert has_conflict is True
+    assert "title_mismatch" in reason
+
+
+def test_requirements_adapter_detect_conflict_same_title_different_ext_id():
+    """detect_conflict returns True when same title appears under different external_ids."""
+    from app.lifecycle.requirements_adapter import RequirementsAdapter
+    adapter = RequirementsAdapter(db=None)  # type: ignore[arg-type]
+
+    incoming = {"external_id": "FR-099", "title": "Initiate bank transfer", "description": "x"}
+    existing = {"external_id": "FR-001", "title": "Initiate bank transfer", "description": "y"}
+
+    has_conflict, reason = adapter.detect_conflict(incoming, existing)
+    assert has_conflict is True
+    assert reason == "duplicate_title"
+
+
+def test_requirements_adapter_no_conflict_matching_requirement():
+    """detect_conflict returns False when incoming and existing are effectively the same."""
+    from app.lifecycle.requirements_adapter import RequirementsAdapter
+    adapter = RequirementsAdapter(db=None)  # type: ignore[arg-type]
+
+    incoming = {"external_id": "FR-001", "title": "Initiate bank transfer", "description": "Users can initiate transfers."}
+    existing = {"external_id": "FR-001", "title": "Initiate bank transfer", "description": "Users can initiate transfers."}
+
+    has_conflict, reason = adapter.detect_conflict(incoming, existing)
+    assert has_conflict is False
+    assert reason == ""
+
+
+# ─── Phase 7: default promoted-only view + include_pending ───────────────────
+
+def test_flat_default_returns_promoted_only(app_client):
+    """
+    GET /flat without filters returns only lifecycle_status='promoted' items.
+    Items with other statuses (draft, etc.) are excluded by default.
+    """
+    project_id = _create_project(app_client)
+    _run_extraction(app_client, project_id)
+
+    resp = app_client.get(f"/api/requirements/{project_id}/flat")
+    assert resp.status_code == 200
+    reqs = resp.json()["requirements"]
+    assert len(reqs) > 0
+    for r in reqs:
+        assert r["lifecycle_status"] == "promoted"
+
+
+def test_flat_include_pending_shows_draft(app_client):
+    """
+    GET /flat?include_pending=true also returns draft/active/ready items.
+    """
+    project_id = _create_project(app_client)
+
+    # Create a domain and epic, extract with work_context → draft requirements
+    domain_resp = app_client.get(f"/api/work-contexts/{project_id}")
+    domain_id = domain_resp.json()["contexts"][0]["id"]
+    epic_resp = app_client.post(
+        f"/api/work-contexts/{project_id}",
+        json={"level": "epic", "name": "Epic A", "parent_id": domain_id},
+    )
+    epic_id = epic_resp.json()["id"]
+    _run_extraction_with_context(app_client, project_id, epic_id)
+
+    # Default view: promoted only → 0 (all are draft)
+    resp_default = app_client.get(f"/api/requirements/{project_id}/flat")
+    assert resp_default.status_code == 200
+    assert len(resp_default.json()["requirements"]) == 0
+
+    # With include_pending=true → should see draft items
+    resp_pending = app_client.get(
+        f"/api/requirements/{project_id}/flat?include_pending=true"
+    )
+    assert resp_pending.status_code == 200
+    assert len(resp_pending.json()["requirements"]) > 0
+
+
+def test_flat_work_context_id_filter(app_client):
+    """
+    GET /flat?work_context_id=X&include_pending=true returns only items for that context.
+    """
+    project_id = _create_project(app_client)
+
+    domain_resp = app_client.get(f"/api/work-contexts/{project_id}")
+    domain_id = domain_resp.json()["contexts"][0]["id"]
+    epic_resp = app_client.post(
+        f"/api/work-contexts/{project_id}",
+        json={"level": "epic", "name": "Epic A", "parent_id": domain_id},
+    )
+    epic_id = epic_resp.json()["id"]
+    _run_extraction_with_context(app_client, project_id, epic_id)
+
+    resp = app_client.get(
+        f"/api/requirements/{project_id}/flat?work_context_id={epic_id}&include_pending=true"
+    )
+    assert resp.status_code == 200
+    reqs = resp.json()["requirements"]
+    assert len(reqs) > 0
+    for r in reqs:
+        assert r["work_context_id"] == epic_id

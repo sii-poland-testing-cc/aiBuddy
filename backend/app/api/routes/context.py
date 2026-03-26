@@ -16,10 +16,11 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.context_builder_workflow import ContextBuilderWorkflow, ProgressEvent
@@ -28,8 +29,13 @@ from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
-from app.db.models import Project
+from app.db.models import ArtifactLifecycle, Project
 from app.rag.context_builder import ContextBuilder
+from app.services.context_lifecycle import (
+    clear_manifest_for_project,
+    register_glossary_items,
+    register_graph_items,
+)
 
 logger = logging.getLogger("ai_buddy.context")
 
@@ -63,9 +69,11 @@ async def build_context(
     project_id: str,
     files: List[UploadFile] = File(...),
     mode: str = Query("append", pattern="^(append|rebuild)$"),
+    work_context_id: Optional[str] = Query(None),
 ):
     """
     Upload Word/PDF files and stream M1 pipeline progress.
+    Pass work_context_id to tag artefacts as draft (lifecycle-aware build).
     SSE event shapes:
       {"type": "progress", "data": {"message": str, "progress": float, "stage": str}}
       {"type": "result",   "data": {project_id, rag_ready, mind_map, glossary, stats}}
@@ -89,7 +97,7 @@ async def build_context(
         file_paths.append(str(dest))
 
     return StreamingResponse(
-        _run_m1(project_id, file_paths, mode),
+        _run_m1(project_id, file_paths, mode, work_context_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -99,10 +107,12 @@ async def build_context(
 async def rebuild_from_existing(
     project_id: str,
     mode: str = Query("rebuild", pattern="^(append|rebuild)$"),
+    work_context_id: Optional[str] = Query(None),
 ):
     """
     Re-run the M1 pipeline using documents already on disk.
     No file upload required — reads from the project's context upload directory.
+    Pass work_context_id to tag artefacts as draft.
     """
     proj_dir = UPLOAD_ROOT / project_id / "context"
     if not proj_dir.exists():
@@ -119,14 +129,19 @@ async def rebuild_from_existing(
             "No .docx or .pdf files found. Upload documents first via /build."
         )
     return StreamingResponse(
-        _run_m1(project_id, file_paths, mode),
+        _run_m1(project_id, file_paths, mode, work_context_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 
-async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
+async def _run_m1(
+    project_id: str,
+    file_paths: List[str],
+    mode: str = "append",
+    work_context_id: Optional[str] = None,
+):
     # ── Rebuild: wipe existing Chroma collection + clear cache ────────────────
     if mode == "rebuild":
         _context_builder.delete_collection(project_id)
@@ -134,14 +149,21 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
 
     llm = get_llm()
     workflow = ContextBuilderWorkflow(llm=llm, timeout=settings.M1_WORKFLOW_TIMEOUT_SECONDS)
-    logger.info("M1 context build STARTED — project=%s mode=%s files=%s", project_id, mode, [Path(p).name for p in file_paths])
+    logger.info(
+        "M1 context build STARTED — project=%s mode=%s work_context=%s files=%s",
+        project_id, mode, work_context_id, [Path(p).name for p in file_paths],
+    )
 
     # Track last known stage for keepalive messages
     last_progress = {"message": "Processing…", "progress": 0.05, "stage": "parse"}
     result = None
 
     try:
-        handler = workflow.run(project_id=project_id, file_paths=file_paths)
+        handler = workflow.run(
+            project_id=project_id,
+            file_paths=file_paths,
+            work_context_id=work_context_id,
+        )
 
         async for kind, item in stream_with_keepalive(handler):
             if kind == "event":
@@ -209,6 +231,23 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
                     )
         except Exception as db_exc:
             logger.error("Failed to persist M1 artefacts for '%s': %s", project_id, db_exc)
+
+        # ── Register / update ArtifactLifecycle manifest ──────────────────────
+        try:
+            async with AsyncSessionLocal() as db:
+                if mode == "rebuild":
+                    await clear_manifest_for_project(db, project_id)
+                await register_graph_items(
+                    db, project_id, work_context_id,
+                    result["mind_map"].get("nodes", []),
+                    result["mind_map"].get("edges", []),
+                )
+                await register_glossary_items(
+                    db, project_id, work_context_id,
+                    result.get("glossary", []),
+                )
+        except Exception as lc_exc:
+            logger.error("Failed to register lifecycle manifest for '%s': %s", project_id, lc_exc)
 
         # ── Write-through cache ───────────────────────────────────────────────
         _context_store[project_id] = {
@@ -314,42 +353,123 @@ async def context_status(project_id: str, db: AsyncSession = Depends(get_db)):
 # ── Mind map ──────────────────────────────────────────────────────────────────
 
 @router.get("/{project_id}/mindmap")
-async def get_mindmap(project_id: str, db: AsyncSession = Depends(get_db)):
-    # 1. In-memory cache hit
+async def get_mindmap(
+    project_id: str,
+    work_context_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    # Load full mind map (cache-first, DB fallback)
     cache = _context_store.get(project_id)
     if cache:
-        return cache["mind_map"]
+        mind_map = cache["mind_map"]
+    else:
+        project = await db.get(Project, project_id)
+        if not project or not project.context_built_at:
+            raise HTTPException(404, "Context not built yet for this project. Run /build first.")
+        if not project.mind_map:
+            raise HTTPException(404, "Mind map not available.")
+        _context_store[project_id] = _load_project_artefacts(project)
+        mind_map = _context_store[project_id]["mind_map"]
 
-    # 2. DB fallback
-    project = await db.get(Project, project_id)
-    if not project or not project.context_built_at:
-        raise HTTPException(404, "Context not built yet for this project. Run /build first.")
-    if not project.mind_map:
-        raise HTTPException(404, "Mind map not available.")
+    # If no work_context_id: filter via manifest table (promoted items only).
+    # Fallback to full data when no manifest rows exist (pre-Phase-4 projects).
+    filtered = await _filter_mindmap_by_manifest(db, project_id, mind_map, work_context_id)
+    return filtered
 
-    # Warm the cache for subsequent requests
-    _context_store[project_id] = _load_project_artefacts(project)
-    return _context_store[project_id]["mind_map"]
+
+async def _filter_mindmap_by_manifest(
+    db: AsyncSession,
+    project_id: str,
+    mind_map: dict,
+    work_context_id: Optional[str],
+) -> dict:
+    """Filter mind map nodes/edges using the ArtifactLifecycle manifest.
+
+    - No work_context_id: return promoted items only; fall back to full data if no manifest rows.
+    - With work_context_id: return items for that context.
+    """
+    node_stmt = select(ArtifactLifecycle).where(
+        ArtifactLifecycle.project_id == project_id,
+        ArtifactLifecycle.artifact_type == "graph_node",
+    )
+    edge_stmt = select(ArtifactLifecycle).where(
+        ArtifactLifecycle.project_id == project_id,
+        ArtifactLifecycle.artifact_type == "graph_edge",
+    )
+
+    if work_context_id is not None:
+        node_stmt = node_stmt.where(ArtifactLifecycle.work_context_id == work_context_id)
+        edge_stmt = edge_stmt.where(ArtifactLifecycle.work_context_id == work_context_id)
+    else:
+        node_stmt = node_stmt.where(ArtifactLifecycle.lifecycle_status == "promoted")
+        edge_stmt = edge_stmt.where(ArtifactLifecycle.lifecycle_status == "promoted")
+
+    node_rows = (await db.execute(node_stmt)).scalars().all()
+    edge_rows = (await db.execute(edge_stmt)).scalars().all()
+
+    # Fallback: if no manifest rows exist yet, return full mind map unchanged
+    if not node_rows and not edge_rows:
+        return mind_map
+
+    allowed_node_ids = {r.artifact_item_id for r in node_rows}
+    allowed_edge_keys = {r.artifact_item_id for r in edge_rows}
+
+    nodes = [n for n in mind_map.get("nodes", []) if n["id"] in allowed_node_ids]
+    edges = [e for e in mind_map.get("edges", [])
+             if f"{e['source']}→{e['target']}" in allowed_edge_keys]
+    return {"nodes": nodes, "edges": edges}
 
 
 # ── Glossary ──────────────────────────────────────────────────────────────────
 
 @router.get("/{project_id}/glossary")
-async def get_glossary(project_id: str, db: AsyncSession = Depends(get_db)):
-    # 1. In-memory cache hit
+async def get_glossary(
+    project_id: str,
+    work_context_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    # Load full glossary (cache-first, DB fallback)
     cache = _context_store.get(project_id)
     if cache:
-        return cache["glossary"]
+        glossary = cache["glossary"]
+    else:
+        project = await db.get(Project, project_id)
+        if not project or not project.context_built_at:
+            raise HTTPException(404, "Context not built yet for this project. Run /build first.")
+        if not project.glossary:
+            raise HTTPException(404, "Glossary not available.")
+        _context_store[project_id] = _load_project_artefacts(project)
+        glossary = _context_store[project_id]["glossary"]
 
-    # 2. DB fallback
-    project = await db.get(Project, project_id)
-    if not project or not project.context_built_at:
-        raise HTTPException(404, "Context not built yet for this project. Run /build first.")
-    if not project.glossary:
-        raise HTTPException(404, "Glossary not available.")
+    # Filter via manifest table; fallback to full data when no manifest rows exist
+    return await _filter_glossary_by_manifest(db, project_id, glossary, work_context_id)
 
-    _context_store[project_id] = _load_project_artefacts(project)
-    return _context_store[project_id]["glossary"]
+
+async def _filter_glossary_by_manifest(
+    db: AsyncSession,
+    project_id: str,
+    glossary: list,
+    work_context_id: Optional[str],
+) -> list:
+    """Filter glossary terms using the ArtifactLifecycle manifest."""
+    stmt = select(ArtifactLifecycle).where(
+        ArtifactLifecycle.project_id == project_id,
+        ArtifactLifecycle.artifact_type == "glossary_term",
+    )
+    if work_context_id is not None:
+        stmt = stmt.where(ArtifactLifecycle.work_context_id == work_context_id)
+    else:
+        stmt = stmt.where(ArtifactLifecycle.lifecycle_status == "promoted")
+
+    rows = (await db.execute(stmt)).scalars().all()
+
+    # Fallback: no manifest rows → return full glossary unchanged
+    if not rows:
+        return glossary
+
+    allowed_terms = {r.artifact_item_id for r in rows}
+    return [t for t in glossary if t.get("term", "").lower().replace(" ", "_") in allowed_terms
+            or t.get("term", "") in allowed_terms]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

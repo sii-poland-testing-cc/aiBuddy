@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
 from app.db.models import Project, ProjectFile
+from app.services.work_context import get_or_create_default_domain
 
 router = APIRouter()
 
@@ -79,6 +80,10 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
     )
     db.add(project)
     await db.commit()
+
+    # Auto-provision Default Domain for every new project (idempotent)
+    await get_or_create_default_domain(db, project.id)
+
     return ProjectOut(
         project_id=project.id,
         name=project.name,

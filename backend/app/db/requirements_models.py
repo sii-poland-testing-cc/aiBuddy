@@ -101,6 +101,18 @@ class Requirement(Base):
         DateTime(timezone=True), nullable=True,
     )
 
+    # Lifecycle fields (Phase 1)
+    work_context_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("work_contexts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    lifecycle_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="promoted"
+    )
+    # "draft" | "active" | "ready" | "promoted" | "archived" | "conflict_pending"
+
     # Relationships
     children: Mapped[List["Requirement"]] = relationship(
         "Requirement",

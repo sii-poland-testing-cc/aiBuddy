@@ -3,6 +3,7 @@
 import type { GlossaryTerm, ContextStatus } from "../lib/useContextBuilder";
 import type { HeatmapRow } from "../lib/useHeatmap";
 import type { MappingProgress } from "../lib/useMapping";
+import type { WorkContext } from "../lib/useWorkContext";
 import { ContextModePanel } from "./ContextModePanel";
 import { RequirementsModePanel } from "./RequirementsModePanel";
 import { AuditModePanel } from "./AuditModePanel";
@@ -53,6 +54,10 @@ interface UtilityPanelProps {
   // Tier
   tier?: Tier;
   onTierChange?: (tier: Tier) => void;
+  // Work context selection (requirements mode)
+  workContexts?: WorkContext[];
+  currentContextId?: string | null;
+  onContextChange?: (id: string | null) => void;
 }
 
 // ── UtilityPanel (thin shell) ──────────────────────────────────────────────────
@@ -82,6 +87,9 @@ export default function UtilityPanel({
   latestSnapshotId,
   tier = "audit",
   onTierChange,
+  workContexts = [],
+  currentContextId = null,
+  onContextChange,
 }: UtilityPanelProps) {
   return (
     <aside
@@ -120,6 +128,9 @@ export default function UtilityPanel({
               onAddFiles={onAddFiles}
               onFileToggle={onFileToggle}
               heatmapData={heatmapData}
+              workContexts={workContexts}
+              currentContextId={currentContextId}
+              onContextChange={onContextChange}
             />
           )}
 

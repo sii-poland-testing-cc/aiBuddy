@@ -41,6 +41,7 @@ router = APIRouter()
 
 class ExtractRequest(BaseModel):
     message: str = ""  # optional user hint (e.g. "focus on payment module")
+    work_context_id: Optional[str] = None  # tag requirements to a work context (draft lifecycle)
 
 
 class RequirementUpdate(BaseModel):
@@ -66,15 +67,16 @@ async def extract_requirements(project_id: str, req: ExtractRequest = ExtractReq
     Returns SSE stream with progress + final result.
 
     If requirements already exist for this project, they are replaced (full re-extract).
+    Pass work_context_id to tag requirements as draft (lifecycle-aware extraction).
     """
     return StreamingResponse(
-        _run_extraction(project_id, req.message),
+        _run_extraction(project_id, req.message, req.work_context_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-async def _run_extraction(project_id: str, user_message: str):
+async def _run_extraction(project_id: str, user_message: str, work_context_id: Optional[str] = None):
     llm = get_llm()
     workflow = RequirementsWorkflow(
         llm=llm, timeout=settings.REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS
@@ -83,12 +85,16 @@ async def _run_extraction(project_id: str, user_message: str):
     last_progress = {"message": "Processing…", "progress": 0.05, "stage": "extract"}
     result = None
 
-    logger.info("Faza2 requirements extraction STARTED — project=%s", project_id)
+    logger.info(
+        "Faza2 requirements extraction STARTED — project=%s work_context=%s",
+        project_id, work_context_id,
+    )
 
     try:
         handler = workflow.run(
             project_id=project_id,
             user_message=user_message,
+            work_context_id=work_context_id,
         )
 
         async for kind, item in stream_with_keepalive(handler):
@@ -144,11 +150,18 @@ async def list_requirements(
     project_id: str,
     level: Optional[str] = Query(None, pattern="^(feature|functional_req|acceptance_criterion)$"),
     needs_review: Optional[bool] = None,
+    lifecycle_status: Optional[str] = None,
+    work_context_id: Optional[str] = None,
+    include_pending: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     """
     List requirements as a hierarchical tree (features → reqs → ACs).
-    Optionally filter by level or review status.
+
+    Default (no work_context_id): returns only lifecycle_status="promoted" (Domain view).
+    With work_context_id: returns items for that specific context.
+    With include_pending=True: also includes draft/active/ready items.
+    Explicit lifecycle_status overrides the default filter.
     """
     stmt = (
         select(Requirement)
@@ -159,6 +172,19 @@ async def list_requirements(
         stmt = stmt.where(Requirement.level == level)
     if needs_review is not None:
         stmt = stmt.where(Requirement.needs_review == needs_review)
+
+    if lifecycle_status is not None:
+        # Explicit override — honour it as-is
+        stmt = stmt.where(Requirement.lifecycle_status == lifecycle_status)
+    elif work_context_id is not None:
+        # Context-scoped view
+        stmt = stmt.where(Requirement.work_context_id == work_context_id)
+        if not include_pending:
+            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
+    else:
+        # Default Domain view: promoted items only
+        if not include_pending:
+            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
 
     rows = (await db.execute(stmt)).scalars().all()
 
@@ -200,14 +226,35 @@ async def list_requirements(
 @router.get("/{project_id}/flat")
 async def list_requirements_flat(
     project_id: str,
+    lifecycle_status: Optional[str] = None,
+    work_context_id: Optional[str] = None,
+    include_pending: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
-    """Return all requirements as a flat list (for audits and matching)."""
+    """
+    Return all requirements as a flat list (for audits and matching).
+
+    Default: returns only lifecycle_status="promoted" (Domain view).
+    With work_context_id: returns items for that context.
+    With include_pending=True: also includes draft/active/ready items.
+    Explicit lifecycle_status overrides the default filter.
+    """
     stmt = (
         select(Requirement)
         .where(Requirement.project_id == project_id)
         .order_by(Requirement.level, Requirement.created_at)
     )
+
+    if lifecycle_status is not None:
+        stmt = stmt.where(Requirement.lifecycle_status == lifecycle_status)
+    elif work_context_id is not None:
+        stmt = stmt.where(Requirement.work_context_id == work_context_id)
+        if not include_pending:
+            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
+    else:
+        if not include_pending:
+            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
+
     rows = (await db.execute(stmt)).scalars().all()
 
     return {
@@ -358,6 +405,8 @@ def _req_to_dict(r: Requirement) -> Dict[str, Any]:
         "human_reviewed": r.human_reviewed,
         "needs_review": r.needs_review,
         "review_reason": r.review_reason,
+        "work_context_id": r.work_context_id,
+        "lifecycle_status": r.lifecycle_status,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
