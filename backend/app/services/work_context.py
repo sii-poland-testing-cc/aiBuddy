@@ -254,3 +254,24 @@ async def archive_work_context(
     await db.commit()
     await db.refresh(ctx)
     return ctx
+
+
+async def create_domain(
+    db: AsyncSession,
+    project_id: str,
+    name: str,
+    description: Optional[str] = None,
+) -> WorkContext:
+    """Create an additional Domain for multi-domain projects."""
+    ctx = WorkContext(
+        project_id=project_id,
+        parent_id=None,
+        level="domain",
+        name=name,
+        description=description,
+        status="draft",
+    )
+    db.add(ctx)
+    await db.commit()
+    await db.refresh(ctx)
+    return ctx

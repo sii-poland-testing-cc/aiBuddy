@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import TopBar from "@/components/TopBar";
 import MessageList from "@/components/MessageList";
@@ -18,11 +18,17 @@ import { useHeatmap } from "@/lib/useHeatmap";
 import { useMapping } from "@/lib/useMapping";
 import { useRequirements } from "@/lib/useRequirements";
 import { useWorkContext } from "@/lib/useWorkContext";
+import type { WorkContext } from "@/lib/useWorkContext";
+import { usePromotion, type PromotionResult } from "@/lib/usePromotion";
+import { useConflicts } from "@/lib/useConflicts";
+import PromotionPreview from "@/components/PromotionPreview";
+import ConflictResolution from "@/components/ConflictResolution";
 import { useSnapshots } from "@/lib/useSnapshots";
 import { usePanelFiles } from "@/lib/usePanelFiles";
 import { useJira } from "./useJira";
 import RequirementsView from "@/components/RequirementsView";
 import InfoBanner from "@/components/InfoBanner";
+import WorkContextBar from "@/components/WorkContextBar";
 
 type Mode = "context" | "requirements" | "audit";
 type Tier = "audit" | "optimize" | "regenerate" | "rag_chat";
@@ -79,16 +85,55 @@ export default function ProjectPage() {
     lastRunAt: lastMappingDate,
     runMapping,
   } = useMapping(projectId, retryHeatmap);
-  const { contexts: workContexts, currentContextId, setContext: setCurrentContextId } = useWorkContext(projectId);
+  const {
+    contexts: workContexts,
+    currentContextId,
+    setContext: setCurrentContextId,
+    createContext: createWorkContext,
+    createDomain: createWorkDomain,
+    updateContext: updateWorkContext,
+    archiveContext: archiveWorkContext,
+    refresh: refreshWorkContexts,
+  } = useWorkContext(projectId);
+
+  // ── Promotion & Conflicts ────────────────────────────────────────────────────
+  const { pendingCount: pendingConflicts, refresh: refreshConflicts } = useConflicts(projectId);
+  const [promotionContext, setPromotionContext] = useState<WorkContext | null>(null);
+  const [promotionResult, setPromotionResult] = useState<{
+    count: number;
+    conflicts: number;
+    contextName: string;
+  } | null>(null);
+  const [conflictViewOpen, setConflictViewOpen] = useState(false);
 
   const {
     requirements, stats: reqStats, loading: reqLoading, error: reqError,
     isExtracting, extractionProgress,
     extractRequirements, patchRequirement,
-  } = useRequirements(projectId, { workContextId: currentContextId });
+  } = useRequirements(projectId, {
+    workContextId: currentContextId,
+    includePending: currentContextId != null,
+  });
 
   const snapshots = useSnapshots(projectId, latestSnapshotId);
   const [panelFiles, handleFileToggle] = usePanelFiles(projectId, refreshKey);
+
+  const itemCounts = useMemo(() => {
+    const counts: Record<string, { reqs: number; audits: number }> = {};
+    for (const req of requirements) {
+      if (req.work_context_id) {
+        counts[req.work_context_id] ??= { reqs: 0, audits: 0 };
+        counts[req.work_context_id].reqs++;
+      }
+    }
+    for (const snap of snapshots) {
+      if (snap.work_context_id) {
+        counts[snap.work_context_id] ??= { reqs: 0, audits: 0 };
+        counts[snap.work_context_id].audits++;
+      }
+    }
+    return counts;
+  }, [requirements, snapshots]);
 
   const getSelectedFilePaths = useCallback(
     () => panelFiles.filter((f) => f.selected).map((f) => f.file_path),
@@ -238,6 +283,24 @@ export default function ProjectPage() {
     setTier(mode === "context" ? "rag_chat" : "audit");
   }, []);
 
+  const handlePromoteContext = useCallback((ctx: WorkContext) => {
+    setPromotionContext(ctx);
+  }, []);
+
+  const handlePromotionConfirm = useCallback(
+    async (result: PromotionResult, ctxName: string) => {
+      setPromotionContext(null);
+      setPromotionResult({
+        count: result.promoted_count,
+        conflicts: result.conflict_count,
+        contextName: ctxName,
+      });
+      await refreshWorkContexts();
+      if (result.conflict_count > 0) refreshConflicts();
+    },
+    [refreshWorkContexts, refreshConflicts],
+  );
+
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -271,10 +334,26 @@ export default function ProjectPage() {
         ragReady={ragReady}
       />
 
+      {/* ── Work Context Bar ────────────────────────────────────────────────── */}
+      <WorkContextBar
+        projectId={projectId}
+        contexts={workContexts}
+        currentContextId={currentContextId}
+        onContextChange={setCurrentContextId}
+        createContext={createWorkContext}
+        createDomain={createWorkDomain}
+        updateContext={updateWorkContext}
+        archiveContext={archiveWorkContext}
+        itemCounts={itemCounts}
+        pendingConflicts={pendingConflicts}
+        onOpenConflicts={() => setConflictViewOpen(true)}
+        onPromote={handlePromoteContext}
+      />
+
       {/* ── Main: chat + artifact + utility ────────────────────────────────── */}
       <div
         className="flex overflow-hidden"
-        style={{ flex: 1, marginTop: 48 }}
+        style={{ flex: 1, marginTop: 84 }}
       >
 
         {/* ── Chat column ──────────────────────────────────────────────────── */}
@@ -337,6 +416,47 @@ export default function ProjectPage() {
             </div>
           )}
 
+          {/* Promotion result banner */}
+          {promotionResult && (
+            <div
+              className="flex-shrink-0 border-b border-buddy-border flex items-center gap-2"
+              style={{
+                padding: "8px 48px",
+                fontSize: 12,
+                background: "rgba(74,158,107,0.08)",
+                color: "#4a9e6b",
+              }}
+            >
+              <span>
+                ✓ Promoted {promotionResult.count} item
+                {promotionResult.count !== 1 ? "s" : ""} from &quot;
+                {promotionResult.contextName}&quot;
+                {promotionResult.conflicts > 0
+                  ? `. ${promotionResult.conflicts} conflict${promotionResult.conflicts !== 1 ? "s" : ""} queued for review.`
+                  : "."}
+              </span>
+              {promotionResult.conflicts > 0 && (
+                <button
+                  onClick={() => {
+                    setPromotionResult(null);
+                    setConflictViewOpen(true);
+                  }}
+                  className="text-buddy-gold hover:text-buddy-gold-light underline transition-colors"
+                  style={{ fontSize: 11 }}
+                >
+                  View conflicts →
+                </button>
+              )}
+              <button
+                onClick={() => setPromotionResult(null)}
+                className="ml-auto text-buddy-success/60 hover:text-buddy-success"
+                style={{ fontSize: 14 }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* Messages or Requirements view */}
           <div className="flex-1 overflow-y-auto">
             {activeMode === "requirements" ? (
@@ -348,6 +468,8 @@ export default function ProjectPage() {
                 contextReady={ragReady}
                 onExtract={handleExtract}
                 onMarkReviewed={handleMarkReviewed}
+                currentContextId={currentContextId}
+                contexts={workContexts}
               />
             ) : (
               <MessageList
@@ -421,6 +543,34 @@ export default function ProjectPage() {
         onClose={() => setMmModalOpen(false)}
         nodes={modalNodes}
         edges={mindMapEdges.map((e) => ({ source: e.source, target: e.target }))}
+        currentContextId={currentContextId}
+        contexts={workContexts}
+      />
+
+      {/* ── Promotion Preview Modal ─────────────────────────────────────────── */}
+      {promotionContext && (
+        <PromotionPreview
+          projectId={projectId}
+          context={promotionContext}
+          parentName={
+            promotionContext.parent_id
+              ? (workContexts.find((c) => c.id === promotionContext.parent_id)?.name ?? "parent")
+              : "Domain"
+          }
+          onConfirm={(result) => handlePromotionConfirm(result, promotionContext.name)}
+          onCancel={() => setPromotionContext(null)}
+        />
+      )}
+
+      {/* ── Conflict Resolution Overlay ─────────────────────────────────────── */}
+      <ConflictResolution
+        open={conflictViewOpen}
+        onClose={() => {
+          setConflictViewOpen(false);
+          refreshConflicts();
+        }}
+        projectId={projectId}
+        initialContextId={currentContextId}
       />
     </div>
   );

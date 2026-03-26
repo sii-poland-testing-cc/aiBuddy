@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_db
 from app.services.work_context import (
     archive_work_context,
+    create_domain,
     create_work_context,
     get_work_context,
     list_work_contexts,
@@ -129,6 +130,21 @@ def _build_tree(all_ctxs: list) -> list[WorkContextNode]:
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
+
+class WorkContextDomainCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+@router.post("/{project_id}/domain", response_model=WorkContextOut, status_code=201)
+async def create_domain_context(
+    project_id: str,
+    body: WorkContextDomainCreate,
+    db: AsyncSession = Depends(get_db),
+) -> WorkContextOut:
+    """Create an additional Domain for multi-domain projects."""
+    ctx = await create_domain(db=db, project_id=project_id, name=body.name, description=body.description)
+    return _to_out(ctx)
+
 
 @router.post("/{project_id}", response_model=WorkContextOut, status_code=201)
 async def create_context(

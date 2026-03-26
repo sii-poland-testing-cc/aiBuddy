@@ -136,6 +136,8 @@ export default function UtilityPanel({
               onAddJiraIssue={onAddJiraIssue}
               onDeleteJiraIssue={onDeleteJiraIssue}
               jiraConfigured={jiraConfigured}
+              currentContextId={currentContextId}
+              contextName={currentContextId && workContexts ? workContexts.find((c) => c.id === currentContextId)?.name : undefined}
             />
           )}
 

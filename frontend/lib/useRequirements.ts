@@ -36,6 +36,8 @@ export interface Requirement {
   needs_review: boolean;
   review_reason: string | null;
   taxonomy: { module?: string; risk_level?: string; business_domain?: string } | null;
+  work_context_id?: string | null;
+  lifecycle_status?: string | null;
 }
 
 export interface RequirementsStats {

@@ -26,6 +26,8 @@ export interface ContextModePanelProps {
   onAddJiraIssue?: (key: string) => Promise<void>;
   onDeleteJiraIssue?: (id: string) => void;
   jiraConfigured?: boolean;
+  currentContextId?: string | null;
+  contextName?: string;
 }
 
 // ── Static mind map thumbnail SVG ─────────────────────────────────────────────
@@ -74,6 +76,8 @@ export function ContextModePanel({
   onAddJiraIssue,
   onDeleteJiraIssue,
   jiraConfigured = true,
+  currentContextId,
+  contextName,
 }: ContextModePanelProps) {
   const [glossarySearch, setGlossarySearch] = useState("");
 
@@ -160,6 +164,11 @@ export function ContextModePanel({
         title="Glosariusz"
         badge={glossary.length || undefined}
       >
+        {currentContextId && glossary.length > 0 && (
+          <div style={{ fontSize: 10, marginBottom: 6, padding: "3px 8px", borderRadius: 4, background: "rgba(200,144,42,0.08)", color: "#c8902a", border: "1px solid rgba(200,144,42,0.2)" }}>
+            🏷 {contextName ?? "Context overlay"}
+          </div>
+        )}
         <input
           type="text"
           placeholder="Szukaj terminów…"

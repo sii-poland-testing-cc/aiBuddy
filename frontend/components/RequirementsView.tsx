@@ -33,29 +33,49 @@ function sourceColor(st: string): { bg: string; text: string; border: string } {
   }
 }
 
+function lifecycleColor(status: string | null | undefined): { bg: string; text: string; border: string } {
+  switch (status) {
+    case "draft":     return { bg: "rgba(100,100,100,0.12)", text: "#9a9a9a", border: "rgba(100,100,100,0.25)" };
+    case "active":    return { bg: "rgba(96,165,250,0.12)", text: "#60a5fa", border: "rgba(96,165,250,0.25)" };
+    case "ready":     return { bg: "rgba(200,144,42,0.12)", text: "#c8902a", border: "rgba(200,144,42,0.25)" };
+    case "promoted":  return { bg: "rgba(74,158,107,0.12)", text: "#4a9e6b", border: "rgba(74,158,107,0.25)" };
+    case "conflict_pending": return { bg: "rgba(200,90,58,0.12)", text: "#c85a3a", border: "rgba(200,90,58,0.25)" };
+    default:          return { bg: "rgba(42,37,32,0.5)", text: "#7a6e64", border: "#3a342c" };
+  }
+}
+
 // ── RequirementCard ────────────────────────────────────────────────────────────
 
 interface CardProps {
   req: Requirement;
   onMarkReviewed: (id: string) => void;
+  currentContextId?: string | null;
+  contexts?: import("../lib/useWorkContext").WorkContext[];
 }
 
-function RequirementCard({ req, onMarkReviewed }: CardProps) {
+function RequirementCard({ req, onMarkReviewed, currentContextId, contexts }: CardProps) {
   const [expanded, setExpanded] = useState(false);
   const pct = req.confidence != null ? Math.round(req.confidence * 100) : null;
   const lc = levelColor(req.level);
   const sc = sourceColor(req.source_type);
   const longDesc = req.description && req.description.length > 120;
+  const isContextItem = !!(req.lifecycle_status && req.lifecycle_status !== "promoted");
 
   return (
     <div
       data-testid="req-card"
       className="bg-buddy-elevated rounded-lg"
       style={{
-        border: req.needs_review
+        border: isContextItem && currentContextId
+          ? `1px solid ${lifecycleColor(req.lifecycle_status).border}`
+          : req.needs_review
           ? "1px solid rgba(245,158,11,0.5)"
           : "1px solid var(--buddy-border, #2a2520)",
-        borderLeft: req.needs_review ? "3px solid #f59e0b" : undefined,
+        borderLeft: isContextItem && currentContextId
+          ? `3px solid ${lifecycleColor(req.lifecycle_status).text}`
+          : req.needs_review
+          ? "3px solid #f59e0b"
+          : undefined,
         padding: "10px 12px",
       }}
     >
@@ -135,6 +155,27 @@ function RequirementCard({ req, onMarkReviewed }: CardProps) {
         >
           {req.source_type}
         </span>
+        {req.lifecycle_status && req.lifecycle_status !== "promoted" && (
+          <span
+            style={{
+              fontSize: 10, padding: "1px 6px", borderRadius: 3,
+              background: lifecycleColor(req.lifecycle_status).bg,
+              color: lifecycleColor(req.lifecycle_status).text,
+              border: `1px solid ${lifecycleColor(req.lifecycle_status).border}`,
+            }}
+          >
+            {req.lifecycle_status}
+          </span>
+        )}
+        {req.work_context_id && contexts && (() => {
+          const ctxName = contexts.find((c) => c.id === req.work_context_id)?.name;
+          if (!ctxName) return null;
+          return (
+            <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "rgba(42,37,32,0.4)", color: "#7a6e64", border: "1px solid #3a342c" }}>
+              📍 {ctxName}
+            </span>
+          );
+        })()}
         {req.needs_review && (
           <span
             style={{
@@ -183,10 +224,14 @@ function ModuleGroup({
   label,
   items,
   onMarkReviewed,
+  currentContextId,
+  contexts,
 }: {
   label: string;
   items: Requirement[];
   onMarkReviewed: (id: string) => void;
+  currentContextId?: string | null;
+  contexts?: import("../lib/useWorkContext").WorkContext[];
 }) {
   const [open, setOpen] = useState(true);
   return (
@@ -224,7 +269,7 @@ function ModuleGroup({
           style={{ padding: "10px 12px" }}
         >
           {items.map((req) => (
-            <RequirementCard key={req.id} req={req} onMarkReviewed={onMarkReviewed} />
+            <RequirementCard key={req.id} req={req} onMarkReviewed={onMarkReviewed} currentContextId={currentContextId} contexts={contexts} />
           ))}
         </div>
       )}
@@ -242,6 +287,8 @@ interface RequirementsViewProps {
   contextReady: boolean;
   onExtract: () => void;
   onMarkReviewed: (id: string) => void;
+  currentContextId?: string | null;
+  contexts?: import("../lib/useWorkContext").WorkContext[];
 }
 
 export default function RequirementsView({
@@ -252,19 +299,26 @@ export default function RequirementsView({
   contextReady,
   onExtract,
   onMarkReviewed,
+  currentContextId,
+  contexts,
 }: RequirementsViewProps) {
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return requirements;
+    let result = requirements;
+    if (statusFilter) {
+      result = result.filter((r) => (r.lifecycle_status ?? "promoted") === statusFilter);
+    }
+    if (!search.trim()) return result;
     const q = search.toLowerCase();
-    return requirements.filter(
+    return result.filter(
       (r) =>
         r.title.toLowerCase().includes(q) ||
         (r.description ?? "").toLowerCase().includes(q) ||
         (r.external_id ?? "").toLowerCase().includes(q)
     );
-  }, [requirements, search]);
+  }, [requirements, search, statusFilter]);
 
   const groups = useMemo(() => {
     const map = new Map<string, Requirement[]>();
@@ -274,12 +328,22 @@ export default function RequirementsView({
       arr.push(r);
       map.set(key, arr);
     }
+    // Sort within each group: context items (non-promoted) first
+    for (const [, items] of map) {
+      if (currentContextId) {
+        items.sort((a, b) => {
+          const aIsContext = a.lifecycle_status && a.lifecycle_status !== "promoted" ? 0 : 1;
+          const bIsContext = b.lifecycle_status && b.lifecycle_status !== "promoted" ? 0 : 1;
+          return aIsContext - bIsContext;
+        });
+      }
+    }
     return [...map.entries()].sort(([a], [b]) => {
       if (a === "Inne") return 1;
       if (b === "Inne") return -1;
       return a.localeCompare(b);
     });
-  }, [filtered]);
+  }, [filtered, currentContextId]);
 
   return (
     <div className="flex flex-col h-full" style={{ padding: "0 48px" }}>
@@ -342,6 +406,36 @@ export default function RequirementsView({
           )}
         </div>
 
+        {/* Status filter chips (context mode) */}
+        {currentContextId && requirements.length > 0 && (
+          <div className="flex gap-1.5 flex-wrap" style={{ marginBottom: 8 }}>
+            {["promoted", "active", "ready", "draft"].map((status) => {
+              const count = requirements.filter((r) => (r.lifecycle_status ?? "promoted") === status).length;
+              if (count === 0) return null;
+              const lc = lifecycleColor(status);
+              return (
+                <button
+                  key={status}
+                  onClick={() => setStatusFilter((f) => f === status ? null : status)}
+                  style={{
+                    fontSize: 10, padding: "2px 8px", borderRadius: 12, cursor: "pointer",
+                    background: statusFilter === status ? lc.bg : "rgba(42,37,32,0.3)",
+                    color: statusFilter === status ? lc.text : "#7a6e64",
+                    border: `1px solid ${statusFilter === status ? lc.border : "#3a342c"}`,
+                  }}
+                >
+                  {status} ({count})
+                </button>
+              );
+            })}
+            {statusFilter && (
+              <button onClick={() => setStatusFilter(null)} style={{ fontSize: 10, color: "#7a6e64", background: "none", border: "none", cursor: "pointer" }}>
+                ✕ clear
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Search */}
         <input
           data-testid="req-search"
@@ -399,7 +493,11 @@ export default function RequirementsView({
               <p className="font-medium text-buddy-text" style={{ fontSize: 14, marginBottom: 6 }}>
                 Nie wyodrębniono jeszcze wymagań
               </p>
-              {contextReady ? (
+              {currentContextId ? (
+                <p className="text-buddy-text-muted" style={{ fontSize: 12, lineHeight: 1.5, maxWidth: 340 }}>
+                  No artifacts in this context yet. Run context builder or extract requirements to populate.
+                </p>
+              ) : contextReady ? (
                 <p className="text-buddy-text-muted" style={{ fontSize: 12, lineHeight: 1.5, maxWidth: 340 }}>
                   Kontekst projektu jest gotowy. Kliknij przycisk poniżej, aby wyodrębnić wymagania z dokumentacji.
                 </p>
@@ -447,6 +545,8 @@ export default function RequirementsView({
                 label={key}
                 items={items}
                 onMarkReviewed={onMarkReviewed}
+                currentContextId={currentContextId}
+                contexts={contexts}
               />
             ))}
           </div>

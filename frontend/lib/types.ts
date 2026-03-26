@@ -26,4 +26,6 @@ export interface AuditSnapshot {
   requirements_uncovered?: string[];
   recommendations?: string[];
   files_used?: string[];
+  work_context_id?: string | null;
+  lifecycle_status?: string | null;
 }

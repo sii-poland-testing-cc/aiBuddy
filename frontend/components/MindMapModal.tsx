@@ -20,6 +20,8 @@ interface MindMapModalProps {
   onClose: () => void;
   nodes: ModalNode[];
   edges: ModalEdge[];
+  currentContextId?: string | null;
+  contexts?: import("../lib/useWorkContext").WorkContext[];
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -74,11 +76,12 @@ function getCluster(id: string, edges: ModalEdge[], visited: Set<string> = new S
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function MindMapModal({ open, onClose, nodes, edges }: MindMapModalProps) {
+export default function MindMapModal({ open, onClose, nodes, edges, currentContextId, contexts }: MindMapModalProps) {
   const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
   const { zoom, pan } = view;
   const [query, setQuery]       = useState("");
   const [tooltip, setTooltip]   = useState<Tooltip | null>(null);
+  const [showOverlay, setShowOverlay] = useState(false);
 
   // Drag state tracked in refs to avoid re-renders during drag
   const dragging      = useRef(false);
@@ -245,6 +248,7 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
     if (!open) {
       setQuery("");
       setTooltip(null);
+      setShowOverlay(false);
       return;
     }
     // Wait one frame for DOM to be ready
@@ -275,7 +279,7 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
       {/* ── Toolbar ─────────────────────────────────────────────────────────── */}
       <div
         className="flex-shrink-0 flex items-center gap-2.5 border-b border-buddy-border bg-buddy-surface"
-        style={{ height: 48, padding: "0 16px" }}
+        style={{ height: 48, padding: "0 16px", borderBottom: showOverlay && currentContextId ? "1px solid rgba(200,144,42,0.3)" : undefined }}
       >
         <span className="font-semibold text-buddy-text" style={{ fontSize: 13, marginRight: 4 }}>
           🗺 Mind Map
@@ -320,6 +324,25 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
             ? `${matchCount} / ${nodes.length} dopasowań`
             : `${nodes.length} węzłów`}
         </span>
+
+        {/* Context overlay controls */}
+        {currentContextId && contexts?.find((c) => c.id === currentContextId) && (() => {
+          const ctx = contexts.find((c) => c.id === currentContextId)!;
+          return (
+            <>
+              <span style={{ fontSize: 11, padding: "3px 8px", borderRadius: 4, background: "rgba(200,144,42,0.1)", color: "#c8902a", border: "1px solid rgba(200,144,42,0.3)", whiteSpace: "nowrap" }}>
+                🏷 {ctx.name}
+              </span>
+              <button
+                onClick={() => setShowOverlay((v) => !v)}
+                className={`flex items-center justify-center border transition-all ${showOverlay ? "border-buddy-gold/40 text-buddy-gold bg-buddy-gold/10" : "border-buddy-border text-buddy-text-muted bg-transparent hover:bg-buddy-surface2 hover:border-buddy-border-light hover:text-buddy-text"}`}
+                style={{ minWidth: 60, height: 28, borderRadius: 4, fontSize: 11, cursor: "pointer" }}
+              >
+                {showOverlay ? "Overlay ✦" : "Domain"}
+              </button>
+            </>
+          );
+        })()}
 
         {/* Zoom controls */}
         <div className="flex items-center gap-0.5">
@@ -366,6 +389,12 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
             <marker id="arr-modal" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
               <path d="M0,0 L0,6 L6,3 z" fill="#3a342c" />
             </marker>
+            {showOverlay && currentContextId && (
+              <filter id="ctx-glow">
+                <feGaussianBlur stdDeviation="2" result="blur"/>
+                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+              </filter>
+            )}
           </defs>
           <g transform={transform}>
             {/* Edges */}
@@ -490,6 +519,14 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
           </g>
         </svg>
 
+        {/* ── Context overlay banner ───────────────────────────────────────── */}
+        {showOverlay && currentContextId && (
+          <div className="absolute inset-x-0 top-0 pointer-events-none" style={{
+            background: "linear-gradient(180deg, rgba(200,144,42,0.08) 0%, transparent 60px)",
+            height: 60,
+          }} />
+        )}
+
         {/* ── Legend (bottom-left) ──────────────────────────────────────────── */}
         <div
           className="absolute flex gap-3.5 border border-buddy-border"
@@ -567,6 +604,11 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
               </span>
             );
           })()}
+          {currentContextId && (
+            <div className="text-buddy-text-dim" style={{ fontSize: 10, marginTop: 4 }}>
+              {contexts?.find(c => c.id === currentContextId)?.name ?? "Context overlay"}
+            </div>
+          )}
           {tooltip.node.desc && (
             <div className="text-buddy-text-muted" style={{ fontSize: 11, lineHeight: 1.5 }}>
               {tooltip.node.desc}

@@ -6,14 +6,18 @@ export interface GlossaryTerm {
   term: string;
   definition: string;
   related_terms?: string[];
+  work_context_id?: string | null;
+  lifecycle_status?: string | null;
 }
 
 interface GlossaryProps {
   items: GlossaryTerm[];
   onTermClick?: (term: GlossaryTerm) => void;
+  currentContextId?: string | null;
+  contextName?: string;
 }
 
-export default function Glossary({ items, onTermClick }: GlossaryProps) {
+export default function Glossary({ items, onTermClick, currentContextId, contextName }: GlossaryProps) {
   const [search, setSearch] = useState("");
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const filtered = items.filter(
@@ -25,6 +29,11 @@ export default function Glossary({ items, onTermClick }: GlossaryProps) {
 
   return (
     <div className="h-full flex flex-col">
+      {currentContextId && items.length > 0 && (
+        <div style={{ fontSize: 10, marginBottom: 6, padding: "3px 8px", borderRadius: 4, background: "rgba(200,144,42,0.08)", color: "#c8902a", border: "1px solid rgba(200,144,42,0.2)" }}>
+          🏷 {contextName ?? "Context overlay"}
+        </div>
+      )}
       <input
         value={search}
         onChange={(e) => setSearch(e.target.value)}
@@ -48,11 +57,14 @@ export default function Glossary({ items, onTermClick }: GlossaryProps) {
             onMouseLeave={() => setHoveredIdx(null)}
             className="px-3.5 py-2.5 mb-1.5 bg-buddy-elevated rounded-lg transition-[border-color] duration-150"
             style={{
-              border: `1px solid ${hoveredIdx === i ? "#c8902a" : "#2a2520"}`,
+              border: `1px solid ${hoveredIdx === i ? "#c8902a" : item.lifecycle_status && item.lifecycle_status !== "promoted" ? "rgba(96,165,250,0.3)" : "#2a2520"}`,
               cursor: onTermClick ? "pointer" : "default",
             }}
           >
             <div className="flex items-center gap-2 mb-1">
+              {item.lifecycle_status === "conflict_pending" && (
+                <span title="Conflict pending" style={{ color: "#c85a3a", fontSize: 11 }}>⚠</span>
+              )}
               <span className="font-semibold text-buddy-gold-light text-[13px]">{item.term}</span>
             </div>
             <p className="text-[#c8b89a] text-xs leading-relaxed m-0 mb-1.5">

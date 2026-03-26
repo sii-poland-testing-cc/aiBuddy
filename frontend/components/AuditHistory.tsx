@@ -11,6 +11,7 @@ import {
 } from "recharts";
 
 import { coverageColor } from "../lib/coverageColor";
+import type { WorkContext } from "../lib/useWorkContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -38,6 +39,8 @@ interface Snapshot {
   requirements_uncovered: string[];
   recommendations: string[];
   diff: SnapshotDiff | null;
+  work_context_id?: string | null;
+  lifecycle_status?: string | null;
 }
 
 interface TrendData {
@@ -49,6 +52,8 @@ interface TrendData {
 interface AuditHistoryProps {
   projectId: string;
   latestSnapshotId?: string;
+  currentContextId?: string | null;
+  contexts?: WorkContext[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -108,16 +113,19 @@ function SnapshotRow({
   snap,
   isLatest,
   onDelete,
+  contexts,
 }: {
   snap: Snapshot;
   isLatest: boolean;
   onDelete: (id: string) => void;
+  contexts?: WorkContext[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
   const pct = snap.summary?.coverage_pct ?? 0;
   const dups = snap.summary?.duplicates_found ?? 0;
   const filenames = snap.files_used.map((p) => p.split("/").pop() ?? p);
+  const contextName = snap.work_context_id && contexts ? contexts.find((c) => c.id === snap.work_context_id)?.name : undefined;
 
   const handleDelete = () => {
     if (window.confirm("Usunąć ten snapshot audytu?")) {
@@ -143,6 +151,25 @@ function SnapshotRow({
         <span style={{ fontSize: 12, color: "#c8b89a", minWidth: 90 }}>
           {formatDate(snap.created_at)}
         </span>
+
+        {/* Lifecycle badge */}
+        {snap.lifecycle_status === "promoted" && (
+          <span style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, background: "rgba(74,158,107,0.15)", color: "#4a9e6b", border: "1px solid rgba(74,158,107,0.3)" }}>
+            promoted
+          </span>
+        )}
+        {snap.lifecycle_status === "draft" && (
+          <span style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, background: "rgba(100,100,100,0.15)", color: "#9a9a9a", border: "1px solid rgba(100,100,100,0.3)" }}>
+            draft
+          </span>
+        )}
+
+        {/* Context name chip */}
+        {contextName && (
+          <span style={{ fontSize: 10, color: "#7a6e64", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 80, whiteSpace: "nowrap" }}>
+            📍 {contextName}
+          </span>
+        )}
 
         {/* Coverage badge */}
         <span
@@ -276,6 +303,8 @@ function SnapshotRow({
 export default function AuditHistory({
   projectId,
   latestSnapshotId,
+  currentContextId,
+  contexts,
 }: AuditHistoryProps) {
   const [open, setOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -284,7 +313,18 @@ export default function AuditHistory({
   const fetchData = useCallback(() => {
     fetch(`${API_BASE}/api/snapshots/${projectId}`)
       .then((r) => r.json())
-      .then((data: Snapshot[]) => setSnapshots(data))
+      .then((data: Snapshot[]) => {
+        if (currentContextId) {
+          const sorted = [...data].sort((a, b) => {
+            const aIsCtx = a.work_context_id === currentContextId ? 0 : 1;
+            const bIsCtx = b.work_context_id === currentContextId ? 0 : 1;
+            return aIsCtx - bIsCtx;
+          });
+          setSnapshots(sorted);
+        } else {
+          setSnapshots(data);
+        }
+      })
       .catch(() => {});
 
     fetch(`${API_BASE}/api/snapshots/${projectId}/trend`)
@@ -372,6 +412,7 @@ export default function AuditHistory({
                 snap={snap}
                 isLatest={snap.id === latestSnapshotId}
                 onDelete={handleDelete}
+                contexts={contexts}
               />
             ))
           )}
