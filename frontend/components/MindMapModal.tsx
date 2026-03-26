@@ -75,8 +75,8 @@ function getCluster(id: string, edges: ModalEdge[], visited: Set<string> = new S
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function MindMapModal({ open, onClose, nodes, edges }: MindMapModalProps) {
-  const [zoom, setZoom]         = useState(1);
-  const [pan, setPan]           = useState({ x: 0, y: 0 });
+  const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
+  const { zoom, pan } = view;
   const [query, setQuery]       = useState("");
   const [tooltip, setTooltip]   = useState<Tooltip | null>(null);
 
@@ -121,14 +121,16 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
   // ── Zoom helpers ──────────────────────────────────────────────────────────────
 
   const zoomAt = useCallback((delta: number, cx: number, cy: number) => {
-    setZoom((prev) => {
-      const next = Math.min(2.5, Math.max(0.15, prev + delta));
-      const scale = next / prev;
-      setPan((p) => ({
-        x: cx - scale * (cx - p.x),
-        y: cy - scale * (cy - p.y),
-      }));
-      return next;
+    setView((prev) => {
+      const next = Math.min(2.5, Math.max(0.15, prev.zoom + delta));
+      const scale = next / prev.zoom;
+      return {
+        zoom: next,
+        pan: {
+          x: cx - scale * (cx - prev.pan.x),
+          y: cy - scale * (cy - prev.pan.y),
+        },
+      };
     });
   }, []);
 
@@ -142,8 +144,7 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
   );
 
   const resetView = useCallback(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    setView({ zoom: 1, pan: { x: 0, y: 0 } });
   }, []);
 
   const fitView = useCallback(() => {
@@ -160,10 +161,12 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
     const scaleX = W / (maxX - minX);
     const scaleY = H / (maxY - minY);
     const newZoom = Math.min(scaleX, scaleY, 1.2);
-    setZoom(newZoom);
-    setPan({
-      x: W / 2 - newZoom * ((minX + maxX) / 2),
-      y: H / 2 - newZoom * ((minY + maxY) / 2),
+    setView({
+      zoom: newZoom,
+      pan: {
+        x: W / 2 - newZoom * ((minX + maxX) / 2),
+        y: H / 2 - newZoom * ((minY + maxY) / 2),
+      },
     });
   }, [nodes]);
 
@@ -180,36 +183,48 @@ export default function MindMapModal({ open, onClose, nodes, edges }: MindMapMod
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [zoomAt]);
+  }, [zoomAt, open]);
 
   // ── Drag ──────────────────────────────────────────────────────────────────────
 
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
+  const startDrag = useCallback((mx: number, my: number) => {
     dragging.current = true;
-    dragStart.current = { mx: e.clientX, my: e.clientY, px: 0, py: 0 };
-    // store current pan at drag start
-    setPan((p) => {
-      dragStart.current.px = p.x;
-      dragStart.current.py = p.y;
-      return p;
+    dragStart.current = { mx, my, px: 0, py: 0 };
+    setView((v) => {
+      dragStart.current.px = v.pan.x;
+      dragStart.current.py = v.pan.y;
+      return v;
     });
   }, []);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 0 || e.button === 1) {
+      if (e.button === 1) e.preventDefault(); // suppress autoscroll cursor
+      startDrag(e.clientX, e.clientY);
+    }
+  }, [startDrag]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!dragging.current) return;
-      setPan({
-        x: dragStart.current.px + (e.clientX - dragStart.current.mx),
-        y: dragStart.current.py + (e.clientY - dragStart.current.my),
-      });
+      setView((v) => ({
+        ...v,
+        pan: {
+          x: dragStart.current.px + (e.clientX - dragStart.current.mx),
+          y: dragStart.current.py + (e.clientY - dragStart.current.my),
+        },
+      }));
     };
     const onUp = () => { dragging.current = false; };
+    // Prevent middle-click autoscroll (browser default on mousedown button=1)
+    const onAuxDown = (e: MouseEvent) => { if (e.button === 1) e.preventDefault(); };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("mousedown", onAuxDown);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("mousedown", onAuxDown);
     };
   }, []);
 
