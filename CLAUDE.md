@@ -85,7 +85,7 @@ StartEvent → ParsedDocsEvent → EmbeddedEvent → ExtractedEvent → Reviewed
 - `backend/app/agents/context_builder_workflow.py` — M1 LlamaIndex Workflow
 - `backend/app/parsers/document_parser.py` — `.docx` (python-docx) + `.pdf` (pdfplumber)
 - `backend/app/api/routes/context.py` — SSE endpoint + status/mindmap/glossary GETs; `_context_store` dict as write-through cache; DB is authoritative store
-- `backend/app/rag/context_builder.py` — Chroma manager; `build()`, `build_with_sources()`, `index_from_docs()`, `is_indexed()`
+- `backend/app/rag/context_builder.py` — Chroma manager; `build()`, `build_with_sources()`, `retrieve_nodes()` (raw nodes with metadata), `get_indexed_filenames()`, `index_from_docs()` (enriches chunks with `first_heading`/`has_tables`/`is_table_row` metadata + indexes table rows separately), `is_indexed()`; chunk size/overlap driven by `RAG_CHUNK_SIZE`/`RAG_CHUNK_OVERLAP` settings
 
 ### API endpoints
 ```
@@ -448,6 +448,10 @@ cd frontend && npm test
 | `M1_WORKFLOW_TIMEOUT_SECONDS` | `1800` | M1 build timeout; increase for large corpora |
 | `REQUIREMENTS_WORKFLOW_TIMEOUT_SECONDS` | `1800` | Faza 2 extraction timeout; reflection adds multiple LLM calls |
 | `REFLECTION_MAX_ITERATIONS` | `2` | Producer-critic-refine cycles in M1 and Faza 2 workflows; `0` = disabled |
+| `RAG_CHUNK_SIZE` | `1024` | Token budget per indexed chunk (was hard-coded 512) |
+| `RAG_CHUNK_OVERLAP` | `128` | Overlap between consecutive chunks (was hard-coded 64) |
+| `RAG_TOP_K` | `10` | Nodes retrieved per query in Faza 2 fan-out (was hard-coded 8) |
+| `RAG_MAX_CONTEXT_CHARS` | `60000` | Hard cap on combined context fed to Faza 2 LLM (was hard-coded 30 000) |
 
 ---
 
@@ -492,9 +496,9 @@ M1: Context Builder  ──→  Faza 2: Requirements Extraction
 ```
 Faza 2: Requirements Reconstruction
   POST /api/requirements/{project_id}/extract  (SSE)
-  Workflow: Extract → Review → Persist
-  Input:  M1 RAG context (multiple queries)
-  Output: Hierarchical requirements registry in DB
+  Workflow: Extract → Review → Assemble
+  Input:  M1 RAG context (12 parallel queries, top_k=10 per query, cap 60K chars)
+  Output: Hierarchical requirements registry in DB; source_references per requirement
   Tables: requirements (hierarchical, with confidence + human_reviewed)
 
 Faza 5+6: Semantic Mapping & Coverage Scoring
@@ -508,7 +512,7 @@ Faza 5+6: Semantic Mapping & Coverage Scoring
 ### Key Files (Faza 2/5/6)
 
 - `backend/app/db/requirements_models.py` — `Requirement`, `RequirementTCMapping`, `CoverageScore` ORM models (share `Base` with `models.py`)
-- `backend/app/agents/requirements_workflow.py` — Faza 2: LlamaIndex Workflow (Extract → Review → Persist); reflection loop with critic checking missing/duplicate/hallucinated requirements; rule-based post-processing always runs after reflection
+- `backend/app/agents/requirements_workflow.py` — Faza 2: LlamaIndex Workflow (Extract → Review → Assemble); 12 concurrent RAG queries via `asyncio.gather`; `[Source: file — heading]` breadcrumbs injected into LLM context; `source_references` field populated per requirement; reflection loop with critic checking missing/duplicate/hallucinated requirements; rule-based post-processing always runs after reflection
 - `backend/app/agents/mapping_workflow.py` — Faza 5+6: LlamaIndex Workflow (Load → CoarseMatch → FineMatch → Score → Persist)
 - `backend/app/agents/audit_workflow_integration.py` — Bridge: audit uses Faza 5+6 scores → Faza 2 registry → legacy extraction (3-tier priority)
 - `backend/app/api/routes/requirements.py` — Faza 2 API: SSE extract, CRUD, stats, gaps, human review

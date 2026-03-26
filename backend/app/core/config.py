@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # Max concurrent LLM calls across all workflows (prevents API rate limiting)
     LLM_CONCURRENT_CALLS: int = 4
 
+    # RAG retrieval tuning (Faza 2 requirements extraction)
+    RAG_CHUNK_SIZE: int = 1024          # token budget per indexed chunk
+    RAG_CHUNK_OVERLAP: int = 128        # overlap between consecutive chunks
+    RAG_TOP_K: int = 10                 # nodes retrieved per query
+    RAG_MAX_CONTEXT_CHARS: int = 60_000 # hard cap on combined context fed to LLM
+
     # M1 context extraction tuning
     M1_BATCH_CHARS: int = 12_000       # max characters per extraction batch
     M1_BATCH_OVERLAP: int = 1_800      # overlap between consecutive batches

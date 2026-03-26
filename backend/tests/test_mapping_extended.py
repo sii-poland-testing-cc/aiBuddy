@@ -61,8 +61,10 @@ def _run_requirements(app_client, project_id: str) -> dict:
     with patch("app.api.routes.requirements.get_llm", return_value=mock_llm), \
          patch("app.agents.requirements_workflow.ContextBuilder.is_indexed",
                new_callable=AsyncMock, return_value=True), \
-         patch("app.agents.requirements_workflow.ContextBuilder.build_with_sources",
-               new_callable=AsyncMock, return_value=("Docs.", [])):
+         patch("app.agents.requirements_workflow.ContextBuilder.retrieve_nodes",
+               new_callable=AsyncMock, return_value=[]), \
+         patch("app.agents.requirements_workflow.ContextBuilder.get_indexed_filenames",
+               return_value=[]):
         r = app_client.post(f"/api/requirements/{project_id}/extract", json={"message": ""})
     assert r.status_code == 200
     for line in r.text.splitlines():

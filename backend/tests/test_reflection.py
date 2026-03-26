@@ -99,6 +99,8 @@ def _make_requirements_workflow(llm=None):
     wf.context_builder.build_with_sources = AsyncMock(
         return_value=("FR-001 bank transfer. FR-002 history.", [])
     )
+    wf.context_builder.retrieve_nodes = AsyncMock(return_value=[])
+    wf.context_builder.get_indexed_filenames = MagicMock(return_value=[])
     return wf
 
 
@@ -634,14 +636,19 @@ async def test_req_combined_context_passed_to_critic():
     mock_llm.acomplete = AsyncMock(side_effect=_capturing_side)
 
     wf = _make_requirements_workflow(llm=mock_llm)
-    # build_with_sources returns a distinctive string we can check appears in critic prompt
-    wf.context_builder.build_with_sources = AsyncMock(
-        return_value=("UNIQUE_SOURCE_MARKER payment transfer FR-001", [])
-    )
+    # retrieve_nodes returns a distinctive node so the marker ends up in combined_context
+    # and subsequently in the critic's source_sample
+    class _MockNode:
+        def get_content(self): return "UNIQUE_SOURCE_MARKER payment transfer FR-001"
+        metadata = {"filename": "srs.docx", "first_heading": "", "has_tables": False, "is_table_row": False}
+    wf.context_builder.retrieve_nodes = AsyncMock(return_value=[_MockNode()])
+    wf.context_builder.get_indexed_filenames = MagicMock(return_value=[])
 
     with patch("app.agents.requirements_workflow.settings") as mock_settings:
         mock_settings.REFLECTION_MAX_ITERATIONS = 1
         mock_settings.LLM_CONCURRENT_CALLS = 4
+        mock_settings.RAG_TOP_K = 10
+        mock_settings.RAG_MAX_CONTEXT_CHARS = 60_000
         handler = wf.run(project_id="req-ctx-store", user_message="")
         async for _ in handler.stream_events():
             pass

@@ -44,7 +44,10 @@ class ContextBuilder:
     def __init__(self):
         self._embed_model = get_embed_model()
         Settings.embed_model = self._embed_model
-        Settings.node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=64)
+        Settings.node_parser = SentenceSplitter(
+            chunk_size=cfg.RAG_CHUNK_SIZE,
+            chunk_overlap=cfg.RAG_CHUNK_OVERLAP,
+        )
 
         self._chroma_client = chromadb.PersistentClient(path=cfg.CHROMA_PERSIST_DIR)
 
@@ -115,6 +118,35 @@ class ContextBuilder:
             return "(No indexed context found for this project.)", []
 
 
+    async def retrieve_nodes(
+        self, project_id: str, query: str, top_k: int | None = None
+    ) -> list:
+        """Return raw LlamaIndex nodes (with full metadata) for a query."""
+        k = top_k if top_k is not None else cfg.RAG_TOP_K
+        try:
+            collection = self._get_collection(project_id)
+            if collection.count() == 0:
+                return []
+            vector_store = ChromaVectorStore(chroma_collection=collection)
+            storage_ctx = StorageContext.from_defaults(vector_store=vector_store)
+            index = VectorStoreIndex.from_vector_store(vector_store, storage_context=storage_ctx)
+            retriever = index.as_retriever(similarity_top_k=k)
+            return await retriever.aretrieve(query)
+        except Exception as exc:
+            logger.warning("retrieve_nodes failed for project %s: %s", project_id, exc)
+            return []
+
+    def get_indexed_filenames(self, project_id: str) -> list[str]:
+        """Return unique filenames of all indexed documents for this project."""
+        try:
+            collection = self._get_collection(project_id)
+            results = collection.get(include=["metadatas"])
+            filenames = {str(m.get("filename", "")) for m in (results.get("metadatas") or [])}
+            return sorted(f for f in filenames if f)
+        except Exception as exc:
+            logger.warning("get_indexed_filenames failed for project %s: %s", project_id, exc)
+            return []
+
     async def index_from_docs(
         self,
         project_id: str,
@@ -124,22 +156,46 @@ class ContextBuilder:
         Index already-parsed documents (from DocumentParser) into Chroma.
         Called by M1 ContextBuilderWorkflow after the parse step.
 
+        Enriches chunk metadata with:
+          - first_heading: first document heading (aids breadcrumb generation)
+          - has_tables: whether the source doc contains tables
+          - is_table_row: True for table-derived documents (separate indexed items)
+
         Returns number of chunks indexed (approximate).
         """
         from llama_index.core.schema import Document as LlamaDocument
 
-        llama_docs = [
-            LlamaDocument(
-                text=doc["text"],
-                metadata={
-                    "filename": doc["filename"],
-                    "source": doc.get("metadata", {}).get("source", "unknown"),
-                    "project_id": project_id,
-                },
-            )
-            for doc in docs
-            if doc.get("text", "").strip()
-        ]
+        llama_docs: list[LlamaDocument] = []
+
+        for doc in docs:
+            text = doc.get("text", "").strip()
+            if not text:
+                continue
+
+            headings = doc.get("headings", [])
+            tables = doc.get("tables", [])
+            first_heading = headings[0]["text"] if headings else ""
+            has_tables = bool(tables)
+
+            base_meta = {
+                "filename": doc["filename"],
+                "source": doc.get("metadata", {}).get("source", "unknown"),
+                "project_id": project_id,
+                "first_heading": first_heading,
+                "has_tables": has_tables,
+                "is_table_row": False,
+            }
+            llama_docs.append(LlamaDocument(text=text, metadata=base_meta))  # type: ignore[call-arg]
+
+            # Index each table row separately so structured data is retrievable
+            for table in tables:
+                for row in table:
+                    row_text = " | ".join(str(c).strip() for c in row if str(c).strip())
+                    if row_text:
+                        llama_docs.append(LlamaDocument(  # type: ignore[call-arg]
+                            text=row_text,
+                            metadata={**base_meta, "is_table_row": True},
+                        ))
 
         if not llama_docs:
             return 0

@@ -102,9 +102,13 @@ def _run_requirements_extraction(app_client, project_id: str) -> dict:
              return_value=True,
          ), \
          patch(
-             "app.agents.requirements_workflow.ContextBuilder.build_with_sources",
+             "app.agents.requirements_workflow.ContextBuilder.retrieve_nodes",
              new_callable=AsyncMock,
-             return_value=("Sample project documentation with requirements.", []),
+             return_value=[],
+         ), \
+         patch(
+             "app.agents.requirements_workflow.ContextBuilder.get_indexed_filenames",
+             return_value=[],
          ):
         r = app_client.post(
             f"/api/requirements/{project_id}/extract",
