@@ -17,7 +17,7 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -67,22 +67,61 @@ def _jira_md_paths(project_id: str) -> list[str]:
     return sorted(str(p) for p in jira_dir.iterdir() if p.suffix.lower() == ".md")
 
 
+def _jira_mds_for_append(project_id: str, cf: dict, context_built_at) -> list[str]:
+    """
+    Return Jira MD paths that need to be included in an append build.
+
+    A Jira item is included when its indexed_at > context_built_at — meaning it was
+    added/refreshed after the last M1 run and hasn't been processed by the pipeline yet.
+    Items with no indexed_at or no prior build are always included.
+    """
+    jira_dir = UPLOAD_ROOT / project_id / "context" / "jira"
+    if not jira_dir.exists():
+        return []
+
+    result = []
+    for item in cf.get("jira", []):
+        md_path = jira_dir / f"{item['key']}.md"
+        if not md_path.exists():
+            continue
+        indexed_at_str = item.get("indexed_at")
+        if context_built_at is None or indexed_at_str is None:
+            result.append(str(md_path))
+            continue
+        try:
+            indexed_at = datetime.fromisoformat(indexed_at_str)
+            built_at = context_built_at if context_built_at.tzinfo else context_built_at.replace(tzinfo=timezone.utc)
+            if indexed_at > built_at:
+                result.append(str(md_path))
+        except (ValueError, TypeError):
+            result.append(str(md_path))
+
+    return sorted(result)
+
+
 def _parse_context_files(raw) -> dict:
     """
     Parse context_files from DB into canonical dict form.
 
-    Handles both formats for backward compatibility:
-      Legacy: ["doc.pdf", "jira:KEY"]
-      New:    {"docs": ["doc.pdf"], "jira": [{"key": "KEY", "indexed": True, "indexed_at": "..."}]}
+    Handles all formats for backward compatibility:
+      Legacy list:  ["doc.pdf", "jira:KEY"]
+      Dict v1:      {"docs": ["doc.pdf"], "jira": [...]}   (docs as plain strings)
+      Dict v2:      {"docs": [{"name": "doc.pdf", "indexed_at": "..."}], "jira": [...]}
     """
     if raw is None:
         return {"docs": [], "jira": []}
     if isinstance(raw, list):
-        docs = [f for f in raw if not f.startswith("jira:")]
+        # Oldest format — plain string list, possibly with "jira:" prefix entries
+        docs = [{"name": f, "indexed_at": None} for f in raw if not f.startswith("jira:")]
         jira = [{"key": f[5:], "indexed": True, "indexed_at": None} for f in raw if f.startswith("jira:")]
         return {"docs": docs, "jira": jira}
     if isinstance(raw, dict):
-        return {"docs": list(raw.get("docs", [])), "jira": list(raw.get("jira", []))}
+        raw_docs = raw.get("docs", [])
+        docs = [
+            d if isinstance(d, dict) else {"name": d, "indexed_at": None}
+            for d in raw_docs
+        ]
+        return {"docs": docs, "jira": list(raw.get("jira", []))}
     return {"docs": [], "jira": []}
 
 
@@ -93,6 +132,7 @@ async def build_context(
     project_id: str,
     files: List[UploadFile] = File(...),
     mode: str = Query("append", pattern="^(append|rebuild)$"),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Upload Word/PDF files and stream M1 pipeline progress.
@@ -118,9 +158,13 @@ async def build_context(
             shutil.copyfileobj(upload.file, f)
         file_paths.append(str(dest))
 
-    # In rebuild mode also include Jira MDs so Chroma is fully re-populated
+    project = await db.get(Project, project_id)
+    cf = _parse_context_files(project.context_files if project else None)
     if mode == "rebuild":
         file_paths.extend(_jira_md_paths(project_id))
+    else:
+        # append: only Jira items added/refreshed after the last M1 build
+        file_paths.extend(_jira_mds_for_append(project_id, cf, project.context_built_at if project else None))
 
     return StreamingResponse(
         _run_m1(project_id, file_paths, mode),
@@ -133,6 +177,7 @@ async def build_context(
 async def rebuild_from_existing(
     project_id: str,
     mode: str = Query("rebuild", pattern="^(append|rebuild)$"),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Re-run the M1 pipeline using documents already on disk.
@@ -147,8 +192,13 @@ async def rebuild_from_existing(
     file_paths = sorted(
         str(p) for p in proj_dir.iterdir() if p.suffix.lower() in M1_ALLOWED
     )
-    # Always include Jira MDs (present regardless of mode)
-    file_paths.extend(_jira_md_paths(project_id))
+    project = await db.get(Project, project_id)
+    cf = _parse_context_files(project.context_files if project else None)
+    if mode == "rebuild":
+        file_paths.extend(_jira_md_paths(project_id))
+    else:
+        file_paths.extend(_jira_mds_for_append(project_id, cf, project.context_built_at if project else None))
+
     if not file_paths:
         raise HTTPException(
             404,
@@ -168,9 +218,96 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
         _context_builder.delete_collection(project_id)
         _context_store.pop(project_id, None)
 
+    norm = lambda p: str(p).replace("\\", "/")
+
+    # indexed_at is stamped NOW — before the workflow runs — so it is always
+    # earlier than context_built_at (set after the workflow completes).
+    # This makes `indexed_at < context_built_at` naturally true for every file
+    # processed in this run, which is used as the "already indexed" guard in
+    # subsequent append builds.
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # ── Pre-load existing state (append needs it both for filtering and merge) ─
+    existing_cf: dict = {"docs": [], "jira": []}
+    last_built_at: Optional[datetime] = None
+    existing_artefacts: Optional[dict] = None
+
+    if mode == "append":
+        cached = _context_store.get(project_id)
+        if cached:
+            existing_cf = _parse_context_files(cached.get("context_files"))
+            existing_artefacts = {
+                "mind_map": cached.get("mind_map", {"nodes": [], "edges": []}),
+                "glossary": cached.get("glossary", []),
+            }
+            raw_built = cached.get("context_built_at")
+            if raw_built:
+                try:
+                    last_built_at = datetime.fromisoformat(raw_built)
+                except Exception:
+                    pass
+        if not last_built_at or existing_artefacts is None:
+            try:
+                async with AsyncSessionLocal() as db:
+                    project = await db.get(Project, project_id)
+                    if project and project.context_built_at:
+                        existing_cf = _parse_context_files(project.context_files)
+                        last_built_at = project.context_built_at
+                        existing_artefacts = {
+                            "mind_map": project.mind_map or {"nodes": [], "edges": []},
+                            "glossary": project.glossary or [],
+                        }
+            except Exception:
+                pass
+
+        # ── Filter: skip non-jira docs already indexed since the last build ───
+        # A doc is "already indexed" when its indexed_at < last context_built_at,
+        # meaning it was indexed during a previous build and its vectors are still
+        # in Chroma (append mode never wipes the collection).
+        if last_built_at:
+            doc_map = {d["name"]: d for d in existing_cf["docs"]}
+
+            def _already_indexed(path: str) -> bool:
+                if "/context/jira/" in norm(path):
+                    return False  # Jira handled by _jira_mds_for_append
+                doc = doc_map.get(Path(path).name)
+                if not doc or not doc.get("indexed_at"):
+                    return False  # new file — must be processed
+                try:
+                    indexed_dt = datetime.fromisoformat(doc["indexed_at"])
+                    lba = last_built_at
+                    # Normalise to naive UTC — SQLite may return naive datetimes
+                    if indexed_dt.tzinfo is not None:
+                        indexed_dt = indexed_dt.replace(tzinfo=None)
+                    if lba.tzinfo is not None:  # type: ignore[union-attr]
+                        lba = lba.replace(tzinfo=None)
+                    return indexed_dt < lba
+                except Exception:
+                    return False
+
+            non_jira_before = sum(1 for p in file_paths if "/context/jira/" not in norm(p))
+            file_paths = [p for p in file_paths if not _already_indexed(p)]
+            non_jira_after = sum(1 for p in file_paths if "/context/jira/" not in norm(p))
+            skipped = non_jira_before - non_jira_after
+            if skipped:
+                logger.info("M1 append: skipping %d already-indexed doc(s)", skipped)
+
+        # ── Nothing left to process — short-circuit without running workflow ──
+        if not file_paths:
+            logger.info("M1 append: nothing to process for project=%s", project_id)
+            yield sse_event({
+                "type": "noop",
+                "data": {"message": "Wszystkie pliki są już zaindeksowane — brak zmian do przetworzenia."},
+            })
+            yield SSE_DONE
+            return
+
     llm = get_llm()
     workflow = ContextBuilderWorkflow(llm=llm, timeout=settings.M1_WORKFLOW_TIMEOUT_SECONDS)
-    logger.info("M1 context build STARTED — project=%s mode=%s files=%s", project_id, mode, [Path(p).name for p in file_paths])
+    logger.info(
+        "M1 context build STARTED — project=%s mode=%s files=%s",
+        project_id, mode, [Path(p).name for p in file_paths],
+    )
 
     # Track last known stage for keepalive messages
     last_progress = {"message": "Processing…", "progress": 0.05, "stage": "parse"}
@@ -196,46 +333,32 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
         if result is None:
             raise RuntimeError("Workflow completed without a result")
 
-        # ── New doc filenames (exclude jira/ MDs — tracked separately) ──────────
-        norm = lambda p: str(p).replace("\\", "/")
-        new_doc_names = [Path(p).name for p in file_paths if "/context/jira/" not in norm(p)]
+        # ── Docs processed in this run (non-jira, with fresh indexed_at) ──────
+        new_docs = [
+            {"name": Path(p).name, "indexed_at": now_iso}
+            for p in file_paths if "/context/jira/" not in norm(p)
+        ]
 
-        # ── Append mode: merge new artefacts with existing ones ───────────────
-        existing_cf: dict = {"docs": [], "jira": []}
-        existing: dict | None = None
-        if mode == "append":
-            existing = _context_store.get(project_id)
-            if not existing:
-                # Try loading from DB
-                try:
-                    async with AsyncSessionLocal() as db:
-                        project = await db.get(Project, project_id)
-                        if project and project.context_built_at:
-                            existing = {
-                                "mind_map": project.mind_map or {"nodes": [], "edges": []},
-                                "glossary": project.glossary or [],
-                            }
-                            existing_cf = _parse_context_files(project.context_files)
-                except Exception:
-                    pass
-            else:
-                existing_cf = _parse_context_files(existing.get("context_files"))
-            if existing:
-                result["mind_map"] = _merge_mind_maps(existing["mind_map"], result["mind_map"])
-                result["glossary"] = _merge_glossaries(existing["glossary"], result["glossary"])
-                result["stats"]["entity_count"] = len(result["mind_map"]["nodes"])
-                result["stats"]["term_count"] = len(result["glossary"])
+        # ── Merge artefacts (append only) ─────────────────────────────────────
+        if mode == "append" and existing_artefacts:
+            result["mind_map"] = _merge_mind_maps(existing_artefacts["mind_map"], result["mind_map"])
+            result["glossary"] = _merge_glossaries(existing_artefacts["glossary"], result["glossary"])
+            result["stats"]["entity_count"] = len(result["mind_map"]["nodes"])
+            result["stats"]["term_count"] = len(result["glossary"])
 
-        # ── Merge context_files into new dict format ──────────────────────────
-        now_iso = datetime.now(timezone.utc).isoformat()
+        # ── Merge context_files ────────────────────────────────────────────────
         if mode == "append":
-            merged_docs = list(dict.fromkeys(existing_cf["docs"] + new_doc_names))
+            # Start from existing docs; overwrite indexed_at for any file that was
+            # re-processed in this run; add newly seen files.
+            existing_doc_map = {d["name"]: d for d in existing_cf["docs"]}
+            for d in new_docs:
+                existing_doc_map[d["name"]] = d  # update indexed_at
+            merged_docs = list(existing_doc_map.values())
             merged_jira = existing_cf["jira"]  # managed by add/delete endpoints
         else:
-            # rebuild: only newly uploaded docs; re-stamp indexed_at on all jira items
-            merged_docs = new_doc_names
-            # Load existing jira metadata from DB (Chroma was wiped, re-indexed above)
-            old_jira: list = existing_cf["jira"]
+            # rebuild: stamp new indexed_at on uploaded docs; re-stamp jira items
+            merged_docs = new_docs
+            old_jira: list = []
             try:
                 async with AsyncSessionLocal() as db:
                     project_row = await db.get(Project, project_id)
@@ -249,8 +372,11 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
 
         merged_cf = {"docs": merged_docs, "jira": merged_jira}
 
-        # ── Persist artefacts to DB ───────────────────────────────────────────
+        # built_at is set AFTER the workflow — always later than now_iso, so
+        # every doc indexed in this run satisfies indexed_at < context_built_at.
         built_at = datetime.now(timezone.utc)
+
+        # ── Persist artefacts to DB ───────────────────────────────────────────
         try:
             async with AsyncSessionLocal() as db:
                 project = await db.get(Project, project_id)
@@ -284,7 +410,7 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
             stats.get("entity_count", "?"),
             stats.get("relation_count", "?"),
             stats.get("term_count", "?"),
-            merged_docs,
+            [d["name"] for d in merged_docs],
             [j["key"] for j in merged_jira],
         )
         yield sse_event({"type": "result", "data": result})
@@ -299,21 +425,51 @@ async def _run_m1(project_id: str, file_paths: List[str], mode: str = "append"):
 # ── Merge helpers ─────────────────────────────────────────────────────────────
 
 def _merge_mind_maps(existing: dict, new: dict) -> dict:
-    """Merge two mind maps, deduplicating nodes by id and edges by (source, target)."""
-    node_ids: set[str] = set()
+    """Merge two mind maps, deduplicating nodes by label and edges by (source, target).
+
+    Deduplication is by label (case-insensitive) rather than id because each workflow
+    run reassigns sequential ids (e1, e2, …) from scratch — id-based dedup would
+    silently drop every node from an append build since e1…eN already exist.
+    When a new node's label matches an existing node, its id is remapped to the
+    existing node's id so that edges in the new map remain consistent.
+    """
+    # Build canonical label→id map from existing nodes
+    label_to_id: dict[str, str] = {}
     nodes: list[dict] = []
-    for n in existing.get("nodes", []) + new.get("nodes", []):
-        if n["id"] not in node_ids:
-            node_ids.add(n["id"])
+    for n in existing.get("nodes", []):
+        label_key = n.get("label", "").strip().lower()
+        if label_key and label_key not in label_to_id:
+            label_to_id[label_key] = n["id"]
             nodes.append(n)
 
+    # Add new nodes; remap ids when label already exists
+    id_remap: dict[str, str] = {}
+    for n in new.get("nodes", []):
+        label_key = n.get("label", "").strip().lower()
+        if not label_key:
+            continue
+        if label_key in label_to_id:
+            id_remap[n["id"]] = label_to_id[label_key]
+        else:
+            label_to_id[label_key] = n["id"]
+            id_remap[n["id"]] = n["id"]
+            nodes.append(n)
+
+    # Merge edges — remap source/target using id_remap for edges from the new map
     edge_keys: set[tuple] = set()
     edges: list[dict] = []
-    for e in existing.get("edges", []) + new.get("edges", []):
+    for e in existing.get("edges", []):
         key = (e["source"], e["target"])
         if key not in edge_keys:
             edge_keys.add(key)
             edges.append(e)
+    for e in new.get("edges", []):
+        src = id_remap.get(e["source"], e["source"])
+        tgt = id_remap.get(e["target"], e["target"])
+        key = (src, tgt)
+        if key not in edge_keys:
+            edge_keys.add(key)
+            edges.append({**e, "source": src, "target": tgt})
 
     return {"nodes": nodes, "edges": edges}
 

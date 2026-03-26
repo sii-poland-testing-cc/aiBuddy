@@ -95,11 +95,11 @@ export function ContextModePanel({
       isNew: true,
     })),
     ...(contextStatus?.context_files ?? [])
-      .filter((f) => !pendingContextFiles.includes(f))
-      .map((filename) => ({
-        id: filename,
-        filename,
-        file_path: filename,
+      .filter((f) => !pendingContextFiles.includes(f.name))
+      .map((f) => ({
+        id: f.name,
+        filename: f.name,
+        file_path: f.name,
         source_type: "file" as const,
         selected: true,
         isNew: false,
@@ -228,11 +228,37 @@ export function ContextModePanel({
                 </div>
                 {contextStatus.context_files.map((f) => (
                   <div
-                    key={f}
+                    key={f.name}
                     className="font-mono text-buddy-text-muted overflow-hidden"
                     style={{ fontSize: 10, textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "1px 0" }}
                   >
-                    {f}
+                    {f.name}
+                    {f.indexed_at && (
+                      <span className="text-buddy-text-faint" style={{ marginLeft: 6 }}>
+                        {new Date(f.indexed_at).toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
+            {contextStatus.jira_sources && contextStatus.jira_sources.length > 0 && (
+              <>
+                <div className="font-semibold uppercase text-buddy-text-faint" style={{ fontSize: 10, letterSpacing: "0.06em", marginBottom: 4, marginTop: 6 }}>
+                  Jira:
+                </div>
+                {contextStatus.jira_sources.map((j) => (
+                  <div
+                    key={j.key}
+                    className="font-mono text-buddy-text-muted overflow-hidden"
+                    style={{ fontSize: 10, textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "1px 0" }}
+                  >
+                    <span style={{ color: "#5b7fba" }}>{j.key}</span>
+                    {j.indexed_at && (
+                      <span className="text-buddy-text-faint" style={{ marginLeft: 6 }}>
+                        {new Date(j.indexed_at).toLocaleString("pl-PL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
                   </div>
                 ))}
               </>

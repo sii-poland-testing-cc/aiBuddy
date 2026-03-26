@@ -404,8 +404,9 @@ def test_rebuild_mode_replaces_artefacts(app_client):
     assert status["document_count"] == 1, (
         f"Expected document_count=1 after rebuild, got {status['document_count']}"
     )
-    assert status["context_files"] == ["qa_process.docx"], (
-        f"Expected only qa_process.docx, got {status['context_files']}"
+    cf_names = [f["name"] for f in status["context_files"]]
+    assert cf_names == ["qa_process.docx"], (
+        f"Expected only qa_process.docx, got {cf_names}"
     )
 
 
@@ -425,14 +426,19 @@ def test_context_files_tracked(app_client):
     _build(app_client, pid, "srs_payment_module.docx")
     s1 = app_client.get(f"/api/context/{pid}/status").json()
     assert s1["document_count"] == 1
-    assert "srs_payment_module.docx" in s1["context_files"]
+    srs_entry = next(f for f in s1["context_files"] if f["name"] == "srs_payment_module.docx")
+    assert srs_entry["indexed_at"] is not None, "indexed_at must be set after build"
 
-    # Build 2 (append)
+    # Build 2 (append) — srs already indexed, only test_plan should be processed
     _build(app_client, pid, "test_plan_payment.docx", mode="append")
     s2 = app_client.get(f"/api/context/{pid}/status").json()
     assert s2["document_count"] == 2
-    assert "srs_payment_module.docx" in s2["context_files"]
-    assert "test_plan_payment.docx" in s2["context_files"]
+    names2 = {f["name"] for f in s2["context_files"]}
+    assert "srs_payment_module.docx" in names2
+    assert "test_plan_payment.docx" in names2
+    # Both entries must carry indexed_at
+    for f in s2["context_files"]:
+        assert f["indexed_at"] is not None, f"{f['name']} missing indexed_at"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

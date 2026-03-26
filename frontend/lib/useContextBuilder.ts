@@ -16,13 +16,18 @@ export interface JiraSource {
   indexed_at: string | null;
 }
 
+export interface ContextFile {
+  name: string;
+  indexed_at: string | null;
+}
+
 export interface ContextStatus {
   project_id: string;
   rag_ready: boolean;
   artefacts_ready: boolean;
   stats: { entity_count: number; relation_count: number; term_count: number } | null;
   context_built_at?: string | null;
-  context_files?: string[] | null;
+  context_files?: ContextFile[] | null;
   jira_sources?: JiraSource[] | null;
   document_count?: number;
 }
@@ -68,6 +73,7 @@ export function useContextBuilder(projectId: string) {
   const [status, setStatus]       = useState<ContextStatus | null>(null);
   const [localError, setError]    = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [noopMessage, setNoopMessage] = useState<string | null>(null);
 
   // Context wins (survives navigation), local is fallback
   const ctxOp = ops?.getOp(projectId, OP_TYPE);
@@ -123,6 +129,7 @@ export function useContextBuilder(projectId: string) {
     setError(null);
     ops?.updateOp(projectId, OP_TYPE, { isRunning: true, progress: 0, stage: "parse", message: null, error: null });
 
+    setNoopMessage(null);
     try {
       let res: Response;
       if (files.length === 0) {
@@ -157,6 +164,8 @@ export function useContextBuilder(projectId: string) {
             stats: ev.data.stats,
             context_built_at: new Date().toISOString(),
           });
+        } else if (ev.type === "noop") {
+          setNoopMessage(ev.data.message as string);
         } else if (ev.type === "error") {
           setError(ev.data.message);
           ops?.updateOp(projectId, OP_TYPE, { error: ev.data.message });
@@ -188,5 +197,5 @@ export function useContextBuilder(projectId: string) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.artefacts_ready]);
 
-  return { isBuilding, stage, progress, log, result, status, error, statusError, buildContext, fetchStatus, retry: fetchStatus, clearError: () => { setError(null); ops?.updateOp(projectId, OP_TYPE, { error: null }); }, clearStatusError: () => setStatusError(null) };
+  return { isBuilding, stage, progress, log, result, status, error, statusError, noopMessage, buildContext, fetchStatus, retry: fetchStatus, clearError: () => { setError(null); ops?.updateOp(projectId, OP_TYPE, { error: null }); }, clearStatusError: () => setStatusError(null), clearNoopMessage: () => setNoopMessage(null) };
 }

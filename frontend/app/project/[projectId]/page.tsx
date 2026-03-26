@@ -20,6 +20,7 @@ import { useRequirements } from "@/lib/useRequirements";
 import { useSnapshots } from "@/lib/useSnapshots";
 import { usePanelFiles } from "@/lib/usePanelFiles";
 import RequirementsView from "@/components/RequirementsView";
+import InfoBanner from "@/components/InfoBanner";
 
 type Mode = "context" | "requirements" | "audit";
 type Tier = "audit" | "optimize" | "regenerate" | "rag_chat";
@@ -67,6 +68,7 @@ export default function ProjectPage() {
     result: ctxResult, status: contextStatus,
     isBuilding, buildContext, fetchStatus,
     statusError: contextStatusError, clearStatusError: clearContextStatusError,
+    noopMessage: contextNoopMessage, clearNoopMessage: clearContextNoopMessage,
   } = useContextBuilder(projectId);
 
   const { uploadFiles } = useProjectFiles(projectId);
@@ -321,6 +323,13 @@ export default function ProjectPage() {
               >
                 ✕
               </button>
+            </div>
+          )}
+
+          {/* Context build noop banner (all files already indexed) */}
+          {contextNoopMessage && activeMode === "context" && (
+            <div className="flex-shrink-0 border-b border-buddy-border" style={{ padding: "6px 48px" }}>
+              <InfoBanner message={contextNoopMessage} onDismiss={clearContextNoopMessage} />
             </div>
           )}
 

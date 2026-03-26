@@ -208,7 +208,10 @@ describe("UtilityPanel", () => {
       rag_ready: true,
       artefacts_ready: true,
       stats: null,
-      context_files: ["srs_payment.docx", "test_plan.docx"],
+      context_files: [
+        { name: "srs_payment.docx", indexed_at: "2025-01-01T10:00:00Z" },
+        { name: "test_plan.docx", indexed_at: null },
+      ],
     };
     renderPanel("context", { auditFiles: FILES, contextStatus });
     expect(screen.getByText("srs_payment.docx")).toBeInTheDocument();
