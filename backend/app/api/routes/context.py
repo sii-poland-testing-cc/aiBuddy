@@ -148,6 +148,16 @@ async def build_context(
       {"type": "result",   "data": {project_id, rag_ready, mind_map, glossary, stats}}
       {"type": "error",    "data": {"message": str}}
     """
+    # Validate file types first (cheap, no DB round-trip)
+    for upload in files:
+        filename = upload.filename or "upload"
+        ext = Path(filename).suffix.lower()
+        if ext not in M1_ALLOWED:
+            raise HTTPException(
+                400,
+                f"M1 only accepts .docx and .pdf files, got: '{filename}'"
+            )
+
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, f"Project '{project_id}' not found")
@@ -158,12 +168,6 @@ async def build_context(
     file_paths = []
     for upload in files:
         filename = upload.filename or "upload"
-        ext = Path(filename).suffix.lower()
-        if ext not in M1_ALLOWED:
-            raise HTTPException(
-                400,
-                f"M1 only accepts .docx and .pdf files, got: '{filename}'"
-            )
         dest = proj_dir / filename
         with dest.open("wb") as f:
             shutil.copyfileobj(upload.file, f)
@@ -473,10 +477,17 @@ def _merge_mind_maps(existing: dict, new: dict) -> dict:
     # Build canonical label→id map from existing nodes
     label_to_id: dict[str, str] = {}
     nodes: list[dict] = []
+    seen_ids: set[str] = set()
     for n in existing.get("nodes", []):
         label_key = n.get("label", "").strip().lower()
-        if label_key and label_key not in label_to_id:
-            label_to_id[label_key] = n["id"]
+        if label_key:
+            if label_key not in label_to_id:
+                label_to_id[label_key] = n["id"]
+                seen_ids.add(n["id"])
+                nodes.append(n)
+        elif n["id"] not in seen_ids:
+            # No label — fall back to id-based dedup
+            seen_ids.add(n["id"])
             nodes.append(n)
 
     # Add new nodes; remap ids when label already exists
