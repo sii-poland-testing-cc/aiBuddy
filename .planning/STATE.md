@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 01-db-foundation-01-01-PLAN.md
-last_updated: "2026-03-27T22:17:34.303Z"
+status: verifying
+stopped_at: Completed 01-db-foundation-01-02-PLAN.md
+last_updated: "2026-03-27T22:35:39.316Z"
 last_activity: 2026-03-27
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 
 Phase: 01 (db-foundation) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-03-27
 
 Progress: [░░░░░░░░░░] 0%
@@ -53,6 +53,7 @@ Progress: [░░░░░░░░░░] 0%
 
 *Updated after each plan completion*
 | Phase 01-db-foundation P01-01 | 2 | 2 tasks | 5 files |
+| Phase 01-db-foundation P01-02 | 15 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,8 @@ Recent decisions affecting current work:
 - RBAC: Request-scoped permission memoization belongs in Phase 3 (not later) — SSE workflows make N+1 a correctness issue
 - [Phase 01-db-foundation]: organization_id on Project is nullable=True in ORM — SQLite prohibits ADD COLUMN NOT NULL without DEFAULT; FK RESTRICT provides runtime integrity
 - [Phase 01-db-foundation]: JWT_SECRET added to Settings as placeholder to prevent ValidationError before Phase 2 auth implementation
+- [Phase 01-db-foundation]: Removed uq_workspaces_org_name unique index from migration (ORM lacks UniqueConstraint); added ix_projects_workspace_id which ORM declares but migration omitted
+- [Phase 01-db-foundation]: Test DB seeding: autouse conftest fixture with INSERT OR IGNORE after app_client lifespan ensures FK integrity without migrations
 
 ### Pending Todos
 
@@ -81,6 +84,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-27T22:17:34.299Z
-Stopped at: Completed 01-db-foundation-01-01-PLAN.md
+Last session: 2026-03-27T22:35:39.311Z
+Stopped at: Completed 01-db-foundation-01-02-PLAN.md
 Resume file: None

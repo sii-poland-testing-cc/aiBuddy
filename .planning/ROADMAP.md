@@ -6,7 +6,7 @@ This milestone grafts a three-tier organizational hierarchy (Organization → Wo
 
 ## Phases
 
-- [ ] **Phase 1: DB Foundation** - Add organizations + workspaces tables; add organization_id and workspace_id FKs to projects; seed existing data; all existing tests pass
+- [x] **Phase 1: DB Foundation** - Add organizations + workspaces tables; add organization_id and workspace_id FKs to projects; seed existing data; all existing tests pass (completed 2026-03-27)
 - [ ] **Phase 2: Authentication** - Users table, register/login/logout/me endpoints, JWT in httpOnly cookie, ENFORCE_AUTH flag, frontend login/register pages
 - [ ] **Phase 3: RBAC Core** - Permission resolver with inheritance + memoization, require_permission() Depends wired on all existing routes, IDOR protection, SSE guards
 - [ ] **Phase 4: Role Assignment API** - Assign/revoke user roles per resource, list members, superadmin bootstrap endpoint
@@ -25,10 +25,10 @@ This milestone grafts a three-tier organizational hierarchy (Organization → Wo
   3. All existing project rows are seeded into a default organization; workspace_id left null
   4. `alembic upgrade head` runs cleanly from scratch and `alembic check` shows no drift
   5. All existing backend pytest tests pass with ENFORCE_AUTH=false after migration
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 01-01-PLAN.md — ORM models (Organization, Workspace) + Project FK columns + config fix
-- [ ] 01-02-PLAN.md — Alembic migration 005 + conftest fixture + hierarchy tests
+- [x] 01-02-PLAN.md — Alembic migration 005 + conftest fixture + hierarchy tests
 
 ### Phase 2: Authentication
 **Goal**: Users can register and log in; every API call carries a verified identity; existing functionality is unaffected when ENFORCE_AUTH=false.
@@ -101,7 +101,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. DB Foundation | 1/2 | In Progress|  |
+| 1. DB Foundation | 2/2 | Complete   | 2026-03-27 |
 | 2. Authentication | 0/TBD | Not started | - |
 | 3. RBAC Core | 0/TBD | Not started | - |
 | 4. Role Assignment API | 0/TBD | Not started | - |

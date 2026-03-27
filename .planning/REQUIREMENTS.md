@@ -31,8 +31,8 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 
 - [x] **HIER-01**: `organizations` table created (id UUID, name, owner_id FK → users, created_at)
 - [x] **HIER-02**: `workspaces` table created (id UUID, organization_id FK → organizations, name, created_at)
-- [ ] **HIER-03**: `projects` table gains `organization_id` FK (required) and `workspace_id` FK (nullable → workspaces); existing rows seeded into a default organization; workspace_id left null by default
-- [ ] **HIER-04**: Alembic migration covers all schema changes with proper FK constraints and indexes; all existing tests still pass after migration
+- [x] **HIER-03**: `projects` table gains `organization_id` FK (required) and `workspace_id` FK (nullable → workspaces); existing rows seeded into a default organization; workspace_id left null by default
+- [x] **HIER-04**: Alembic migration covers all schema changes with proper FK constraints and indexes; all existing tests still pass after migration
 
 ### Authentication
 
@@ -120,8 +120,8 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 |-------------|-------|--------|
 | HIER-01 | Phase 1 | Complete |
 | HIER-02 | Phase 1 | Complete |
-| HIER-03 | Phase 1 | Pending |
-| HIER-04 | Phase 1 | Pending |
+| HIER-03 | Phase 1 | Complete |
+| HIER-04 | Phase 1 | Complete |
 | AUTH-01 | Phase 2 | Pending |
 | AUTH-02 | Phase 2 | Pending |
 | AUTH-03 | Phase 2 | Pending |
