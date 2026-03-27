@@ -21,6 +21,7 @@ from alembic import context
 # ── Import all models so Alembic sees every table ────────────────────────────
 from app.db.models import Base          # projects, project_files, audit_snapshots
 import app.db.requirements_models       # noqa: F401  requirements, mappings, scores
+import app.db.hierarchy_models          # noqa: F401  organizations, workspaces
 
 # ── Alembic config object ─────────────────────────────────────────────────────
 config = context.config

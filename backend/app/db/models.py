@@ -50,6 +50,20 @@ class Project(Base):
     settings: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
     # JSON: arbitrary project-level settings object
 
+    # -- Hierarchy FKs (Phase 1) ------------------------------------------------
+    organization_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    workspace_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("workspaces.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     files: Mapped[List["ProjectFile"]] = relationship(
         "ProjectFile",
         back_populates="project",
@@ -61,6 +75,14 @@ class Project(Base):
         back_populates="project",
         order_by="AuditSnapshot.created_at.desc()",
         cascade="all, delete-orphan",
+    )
+
+    # -- Hierarchy relationships ------------------------------------------------
+    organization: Mapped[Optional["Organization"]] = relationship(
+        "Organization", back_populates="projects"
+    )
+    workspace: Mapped[Optional["Workspace"]] = relationship(
+        "Workspace", back_populates="projects"
     )
 
 

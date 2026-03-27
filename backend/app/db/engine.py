@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 from app.core.config import settings
 from app.db.models import Base
 import app.db.requirements_models  # noqa: F401 — registers Faza 2 tables with Base
+import app.db.hierarchy_models  # noqa: F401 — registers hierarchy tables with Base
 
 engine = create_async_engine(
     settings.DATABASE_URL,
