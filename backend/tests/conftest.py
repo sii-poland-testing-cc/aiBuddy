@@ -87,3 +87,27 @@ def app_client():
     from app.main import app
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def _seed_default_org(app_client):
+    """Insert default organization row in test DB so FK constraints don't break.
+
+    The Alembic migration seeds this row via op.execute(), but tests use
+    init_db() (create_all) which skips migration data. This fixture fills
+    the gap.
+    """
+    import asyncio
+    from sqlalchemy import text
+    from app.db.engine import AsyncSessionLocal
+
+    async def _insert():
+        async with AsyncSessionLocal() as session:
+            await session.execute(text(
+                "INSERT OR IGNORE INTO organizations (id, name, owner_id, created_at) "
+                "VALUES ('00000000-0000-0000-0000-000000000001', 'Default Organization', NULL, datetime('now'))"
+            ))
+            await session.commit()
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(_insert())

@@ -49,10 +49,8 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_workspaces_organization_id", "workspaces", ["organization_id"])
-    op.create_index(
-        "uq_workspaces_org_name", "workspaces",
-        ["organization_id", "name"], unique=True,
-    )
+    # Note: ORM does not declare UniqueConstraint on (organization_id, name),
+    # so no unique index is created here — avoids alembic check drift.
 
     # Step 4: add columns to projects (HIER-03, nullable first for SQLite)
     with op.batch_alter_table("projects", schema=None) as batch_op:
@@ -65,7 +63,7 @@ def upgrade() -> None:
         f"WHERE organization_id IS NULL"
     )
 
-    # Step 6: add FK constraints + index (D-05, D-08)
+    # Step 6: add FK constraints + indexes (D-05, D-08)
     with op.batch_alter_table("projects", schema=None) as batch_op:
         batch_op.create_foreign_key(
             "fk_projects_organization_id",
@@ -78,17 +76,18 @@ def upgrade() -> None:
             ondelete="SET NULL",
         )
     op.create_index("ix_projects_organization_id", "projects", ["organization_id"])
+    op.create_index("ix_projects_workspace_id", "projects", ["workspace_id"])
 
 
 def downgrade() -> None:
     # Reverse order
+    op.drop_index("ix_projects_workspace_id", table_name="projects")
     op.drop_index("ix_projects_organization_id", table_name="projects")
     with op.batch_alter_table("projects", schema=None) as batch_op:
         batch_op.drop_constraint("fk_projects_workspace_id", type_="foreignkey")
         batch_op.drop_constraint("fk_projects_organization_id", type_="foreignkey")
         batch_op.drop_column("workspace_id")
         batch_op.drop_column("organization_id")
-    op.drop_index("uq_workspaces_org_name", table_name="workspaces")
     op.drop_index("ix_workspaces_organization_id", table_name="workspaces")
     op.drop_table("workspaces")
     op.drop_table("organizations")
