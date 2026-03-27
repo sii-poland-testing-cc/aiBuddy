@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.db.types import JsonType
@@ -369,6 +369,230 @@ class ArtifactLifecycle(Base):
         String, nullable=False, default="promoted"
     )
     # "draft" | "active" | "ready" | "promoted" | "archived" | "conflict_pending"
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class PromotionLock(Base):
+    """
+    Application-level promotion lock for SQLite (no SELECT … FOR UPDATE).
+
+    One row per (project_id, target_context_id) while a promotion is in progress.
+    INSERT fails on unique constraint if another promotion is already running.
+    The row is deleted when the promotion completes or fails.
+    PostgreSQL deployments use SELECT … FOR UPDATE instead.
+    """
+    __tablename__ = "promotion_locks"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "target_context_id",
+            name="uq_promotion_lock_project_target",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_context_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("work_contexts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    acquired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    acquired_by: Mapped[str] = mapped_column(
+        String, nullable=False, default="system"
+    )
+
+
+class ArtifactVersion(Base):
+    """
+    Immutable version history for artifact items.
+
+    Every edit creates a new version — never overwrites.  Visibility rows point
+    to a specific version, pinning the exact state that was promoted.  Subsequent
+    edits in the source context create new versions that are NOT automatically
+    visible at promoted levels — they require a new promotion cycle.  This
+    guarantees Domain stability (Design Decision D12).
+    """
+    __tablename__ = "artifact_versions"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "artifact_type", "artifact_item_id", "version_number",
+            name="uq_artifact_version_item_ver",
+        ),
+        Index(
+            "ix_artifact_ver_item_version_desc",
+            "project_id", "artifact_type", "artifact_item_id", "version_number",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_type: Mapped[str] = mapped_column(String, nullable=False)
+    # "graph_node" | "graph_edge" | "glossary_term" | "requirement" | "audit_snapshot"
+
+    artifact_item_id: Mapped[str] = mapped_column(String, nullable=False)
+    # stable item identity (same as artifact_visibility.artifact_item_id)
+
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    # monotonic per item: 1, 2, 3…
+
+    content_snapshot: Mapped[Optional[dict]] = mapped_column(JsonType(), nullable=True)
+    # complete serialized state at this version
+
+    created_in_context_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("work_contexts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    change_summary: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # e.g. "initial version", "title updated", "merged from Story-42"
+
+    created_by: Mapped[str] = mapped_column(
+        String, nullable=False, default="system"
+    )
+    # "system" | "human" | "ai"
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class ArtifactVisibility(Base):
+    """
+    Visibility manifest for all artifact items (graph nodes, edges, glossary terms,
+    requirements, audit snapshots).
+
+    One row per (item × context where visible).  The same item may appear in
+    multiple contexts — that is the foundation of the reference-based promotion
+    model (Decision D10, "Copy Up, Not Move Up").
+
+    Semantics:
+      - When an item is CREATED in Story-107:
+        INSERT one row: source_context_id=Story-107, visible_in_context_id=Story-107
+      - When that item is PROMOTED to Epic-12:
+        INSERT second row: source_context_id=Story-107, visible_in_context_id=Epic-12,
+        lifecycle_status="promoted"
+        The original row stays unchanged.
+      - When later promoted to Domain:
+        INSERT third row: source_context_id=Story-107, visible_in_context_id=Domain-1
+        The item now has 3 visibility rows but ONE canonical data location.
+      - On CONFLICT RESOLUTION with "Edit & Merge":
+        A NEW item is created in the target context (sibling_of=original_item_id).
+        It gets its own visibility row in the target context.
+        The original item's visibility is NOT extended (it lost the merge).
+
+    The JSON blob on Project / Requirement table remains the content source of truth;
+    this table is the visibility and lifecycle source of truth.
+    """
+    __tablename__ = "artifact_visibility"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "artifact_type", "artifact_item_id", "visible_in_context_id",
+            name="uq_artifact_visibility_item_ctx",
+        ),
+        # Primary query path: "show me everything visible in context X"
+        Index(
+            "ix_artifact_vis_project_visible_type",
+            "project_id", "visible_in_context_id", "artifact_type",
+        ),
+        # "What was created in this context?"
+        Index(
+            "ix_artifact_vis_project_source_type",
+            "project_id", "source_context_id", "artifact_type",
+        ),
+        # Item history across all contexts
+        Index(
+            "ix_artifact_vis_project_type_item",
+            "project_id", "artifact_type", "artifact_item_id",
+        ),
+        # "Find everything from this source file/URL"
+        Index(
+            "ix_artifact_vis_project_origin",
+            "project_id", "source_origin",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    artifact_type: Mapped[str] = mapped_column(String, nullable=False)
+    # "graph_node" | "graph_edge" | "glossary_term" | "requirement" | "audit_snapshot"
+
+    artifact_item_id: Mapped[str] = mapped_column(String, nullable=False)
+    # canonical identifier: node.id / edge "{src}→{tgt}" /
+    # normalized term / requirement.id / snapshot.id
+
+    source_context_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("work_contexts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # the context where this item was CREATED (canonical home)
+
+    visible_in_context_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("work_contexts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # the context where this item is VISIBLE
+    # when source_context_id == visible_in_context_id: item is in its home
+    # when they differ: this is a promotion visibility reference
+
+    lifecycle_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="draft"
+    )
+    # "draft" | "active" | "ready" | "promoted" | "archived" | "conflict_pending"
+
+    sibling_of: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # if this item was created by "Edit & Merge" conflict resolution,
+    # points to the original artifact_item_id it was derived from
+    # NULL for all regular items
+
+    artifact_version_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("artifact_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # points to the specific version of this item that is visible in this context
+    # NULL for legacy rows not yet backfilled; D12 guarantees non-NULL going forward
+
+    source_origin: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # where did the knowledge come from: file path, URL, "manual"
+
+    source_origin_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # "file" | "url" | "manual" | "system"
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

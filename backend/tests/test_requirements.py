@@ -539,3 +539,630 @@ def test_flat_work_context_id_filter(app_client):
     assert len(reqs) > 0
     for r in reqs:
         assert r["work_context_id"] == epic_id
+
+
+# ─── Phase 3: D10 visibility manifest integration ────────────────────────────
+
+def test_extraction_creates_visibility_rows(app_client):
+    """
+    After extraction, each requirement must have an ArtifactVisibility 'home' row
+    with source_context_id == visible_in_context_id == work_context_id.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility
+    from sqlalchemy import select as sa_select
+
+    project_id = _create_project(app_client)
+
+    # Create work context hierarchy
+    domain_resp = app_client.get(f"/api/work-contexts/{project_id}")
+    domain_id = domain_resp.json()["contexts"][0]["id"]
+    epic_resp = app_client.post(
+        f"/api/work-contexts/{project_id}",
+        json={"level": "epic", "name": "Vis Epic", "parent_id": domain_id},
+    )
+    epic_id = epic_resp.json()["id"]
+
+    _run_extraction_with_context(app_client, project_id, epic_id)
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            stmt = sa_select(ArtifactVisibility).where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type == "requirement",
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            assert len(rows) > 0, "No visibility rows created"
+            for row in rows:
+                assert row.source_context_id == epic_id
+                assert row.visible_in_context_id == epic_id
+                assert row.lifecycle_status == "draft"
+
+    asyncio.get_event_loop().run_until_complete(_check())
+
+
+def test_extraction_without_context_creates_visibility_rows_with_null(app_client):
+    """
+    Extraction without work_context_id still creates visibility rows
+    (source_context_id and visible_in_context_id are NULL — backwards compatible).
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility
+    from sqlalchemy import select as sa_select
+
+    project_id = _create_project(app_client)
+    _run_extraction(app_client, project_id)
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            stmt = sa_select(ArtifactVisibility).where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type == "requirement",
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            assert len(rows) > 0, "No visibility rows for context-less extraction"
+            for row in rows:
+                assert row.source_context_id is None
+                assert row.visible_in_context_id is None
+                assert row.lifecycle_status == "promoted"
+
+    asyncio.get_event_loop().run_until_complete(_check())
+
+
+def test_source_origin_populated_from_source_references(app_client):
+    """
+    persist_requirements populates source_origin from source_references[0].
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.requirements_models import Requirement
+    from app.services.requirements import persist_requirements
+    from sqlalchemy import select as sa_select
+
+    project_id = _create_project(app_client)
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            await persist_requirements(db, project_id, [
+                {
+                    "id": "req-src-1",
+                    "title": "Req from file",
+                    "level": "functional_req",
+                    "source_type": "formal",
+                    "source_references": ["srs_payment.docx", "another.pdf"],
+                },
+                {
+                    "id": "req-src-2",
+                    "title": "Req from URL",
+                    "level": "functional_req",
+                    "source_type": "formal",
+                    "source_references": ["https://jira.example.com/PROJ-1"],
+                },
+                {
+                    "id": "req-src-3",
+                    "title": "Req without source",
+                    "level": "functional_req",
+                    "source_type": "implicit",
+                    "source_references": [],
+                },
+            ])
+
+        async with AsyncSessionLocal() as db:
+            r1 = await db.get(Requirement, "req-src-1")
+            assert r1.source_origin == "srs_payment.docx"
+            assert r1.source_origin_type == "file"
+
+            r2 = await db.get(Requirement, "req-src-2")
+            assert r2.source_origin == "https://jira.example.com/PROJ-1"
+            assert r2.source_origin_type == "url"
+
+            r3 = await db.get(Requirement, "req-src-3")
+            assert r3.source_origin is None
+            assert r3.source_origin_type is None
+
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+def test_find_by_source_returns_matching_requirements(app_client):
+    """find_by_source returns requirements extracted from a specific source file."""
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.services.requirements import find_by_source, persist_requirements
+
+    project_id = _create_project(app_client)
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            await persist_requirements(db, project_id, [
+                {
+                    "id": "fbs-1",
+                    "title": "Req A from SRS",
+                    "level": "functional_req",
+                    "source_type": "formal",
+                    "source_references": ["srs_v2.docx"],
+                },
+                {
+                    "id": "fbs-2",
+                    "title": "Req B from SRS",
+                    "level": "functional_req",
+                    "source_type": "formal",
+                    "source_references": ["srs_v2.docx"],
+                },
+                {
+                    "id": "fbs-3",
+                    "title": "Req from other doc",
+                    "level": "functional_req",
+                    "source_type": "formal",
+                    "source_references": ["other.pdf"],
+                },
+            ])
+
+        async with AsyncSessionLocal() as db:
+            results = await find_by_source(db, project_id, "srs_v2.docx")
+            assert len(results) == 2
+            ids = {r.id for r in results}
+            assert ids == {"fbs-1", "fbs-2"}
+
+            other = await find_by_source(db, project_id, "other.pdf")
+            assert len(other) == 1
+            assert other[0].id == "fbs-3"
+
+            none = await find_by_source(db, project_id, "nonexistent.docx")
+            assert len(none) == 0
+
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+def test_get_items_in_context_via_visibility(app_client):
+    """
+    RequirementsAdapter.get_items_in_context queries via artifact_visibility,
+    not directly by Requirement.work_context_id.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility, WorkContext
+    from app.db.requirements_models import Requirement
+    from app.lifecycle.requirements_adapter import RequirementsAdapter
+
+    project_id = _create_project(app_client)
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            # Create two contexts
+            ctx_a = WorkContext(project_id=project_id, level="epic", name="Epic A", status="active")
+            db.add(ctx_a)
+            await db.flush()
+            ctx_b = WorkContext(project_id=project_id, level="epic", name="Epic B", status="active")
+            db.add(ctx_b)
+            await db.flush()
+
+            # Create a requirement in context A
+            req = Requirement(
+                id="vis-req-1",
+                project_id=project_id,
+                title="Payment FR",
+                level="functional_req",
+                source_type="formal",
+                work_context_id=ctx_a.id,
+                lifecycle_status="draft",
+            )
+            db.add(req)
+            await db.flush()
+
+            # Home visibility row (context A)
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id="vis-req-1",
+                source_context_id=ctx_a.id,
+                visible_in_context_id=ctx_a.id,
+                lifecycle_status="draft",
+            ))
+            # Promoted visibility row (context B) — item visible in B too
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id="vis-req-1",
+                source_context_id=ctx_a.id,
+                visible_in_context_id=ctx_b.id,
+                lifecycle_status="promoted",
+            ))
+            await db.commit()
+
+        # Query via adapter
+        async with AsyncSessionLocal() as db:
+            adapter = RequirementsAdapter(db)
+
+            # Context A should see the requirement
+            items_a = await adapter.get_items_in_context(project_id, ctx_a.id)
+            assert len(items_a) == 1
+            assert items_a[0]["id"] == "vis-req-1"
+
+            # Context B should also see it (via visibility row, NOT via work_context_id)
+            items_b = await adapter.get_items_in_context(project_id, ctx_b.id)
+            assert len(items_b) == 1
+            assert items_b[0]["id"] == "vis-req-1"
+
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+def test_re_extraction_wipes_old_visibility_rows(app_client):
+    """
+    Running extraction twice should wipe old visibility rows and create fresh ones.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility
+    from sqlalchemy import select as sa_select, func
+
+    project_id = _create_project(app_client)
+
+    # First extraction
+    _run_extraction(app_client, project_id)
+
+    async def _count_vis():
+        async with AsyncSessionLocal() as db:
+            stmt = sa_select(func.count()).select_from(ArtifactVisibility).where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type == "requirement",
+            )
+            return (await db.execute(stmt)).scalar()
+
+    count_1 = asyncio.get_event_loop().run_until_complete(_count_vis())
+    assert count_1 > 0
+
+    # Second extraction (full re-extract wipes and recreates)
+    _run_extraction(app_client, project_id)
+
+    count_2 = asyncio.get_event_loop().run_until_complete(_count_vis())
+    assert count_2 == count_1, (
+        f"Expected same count after re-extract ({count_1}), got {count_2}"
+    )
+
+
+# ─── Phase 7: Visibility-based query tests ───────────────────────────────────
+
+def test_list_requirements_uses_visibility_join(app_client):
+    """
+    GET /api/requirements/{project_id} returns requirements visible via
+    ArtifactVisibility JOIN, not via direct Requirement.work_context_id.
+    A requirement promoted from context A to context B is visible in B
+    without changing its work_context_id.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility, WorkContext
+    from app.db.requirements_models import Requirement
+
+    project_id = _create_project(app_client)
+
+    async def _setup():
+        async with AsyncSessionLocal() as db:
+            ctx_a = WorkContext(project_id=project_id, level="epic", name="Story A", status="active")
+            db.add(ctx_a)
+            await db.flush()
+            ctx_b = WorkContext(project_id=project_id, level="epic", name="Epic B", status="active")
+            db.add(ctx_b)
+            await db.flush()
+
+            req = Requirement(
+                id="vis-join-req",
+                project_id=project_id,
+                title="Visible via JOIN",
+                level="functional_req",
+                source_type="formal",
+                work_context_id=ctx_a.id,
+                lifecycle_status="promoted",
+            )
+            db.add(req)
+            await db.flush()
+
+            # Home visibility row (context A)
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id="vis-join-req",
+                source_context_id=ctx_a.id,
+                visible_in_context_id=ctx_a.id,
+                lifecycle_status="draft",
+            ))
+            # Promoted to context B
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id="vis-join-req",
+                source_context_id=ctx_a.id,
+                visible_in_context_id=ctx_b.id,
+                lifecycle_status="promoted",
+            ))
+            await db.commit()
+            return ctx_a.id, ctx_b.id
+
+    ctx_a_id, ctx_b_id = asyncio.get_event_loop().run_until_complete(_setup())
+
+    # Query context B — should see the requirement via visibility JOIN
+    resp = app_client.get(
+        f"/api/requirements/{project_id}/flat?work_context_id={ctx_b_id}"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["requirements"][0]["id"] == "vis-join-req"
+
+    # Query context A with include_pending — should see via home visibility row
+    resp_a = app_client.get(
+        f"/api/requirements/{project_id}/flat?work_context_id={ctx_a_id}&include_pending=true"
+    )
+    assert resp_a.status_code == 200
+    assert resp_a.json()["total"] == 1
+
+
+def test_promoted_items_visible_at_both_source_and_target(app_client):
+    """
+    A requirement promoted from source context to target context is visible
+    at BOTH contexts simultaneously (no data duplication — same canonical item).
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility, WorkContext
+    from app.db.requirements_models import Requirement
+
+    project_id = _create_project(app_client)
+
+    async def _setup():
+        async with AsyncSessionLocal() as db:
+            src = WorkContext(project_id=project_id, level="story", name="Story Src", status="ready")
+            db.add(src)
+            await db.flush()
+            tgt = WorkContext(project_id=project_id, level="epic", name="Epic Tgt", status="active")
+            db.add(tgt)
+            await db.flush()
+
+            req = Requirement(
+                id="dual-vis-req",
+                project_id=project_id,
+                title="Dual visibility req",
+                level="functional_req",
+                source_type="formal",
+                work_context_id=src.id,
+                lifecycle_status="promoted",
+            )
+            db.add(req)
+            await db.flush()
+
+            # Visible at source (promoted)
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id="dual-vis-req",
+                source_context_id=src.id,
+                visible_in_context_id=src.id,
+                lifecycle_status="promoted",
+            ))
+            # Visible at target (promoted)
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id="dual-vis-req",
+                source_context_id=src.id,
+                visible_in_context_id=tgt.id,
+                lifecycle_status="promoted",
+            ))
+            await db.commit()
+            return src.id, tgt.id
+
+    src_id, tgt_id = asyncio.get_event_loop().run_until_complete(_setup())
+
+    # Both contexts see the same requirement
+    resp_src = app_client.get(f"/api/requirements/{project_id}/flat?work_context_id={src_id}")
+    resp_tgt = app_client.get(f"/api/requirements/{project_id}/flat?work_context_id={tgt_id}")
+
+    assert resp_src.status_code == 200
+    assert resp_tgt.status_code == 200
+    assert resp_src.json()["total"] == 1
+    assert resp_tgt.json()["total"] == 1
+    assert resp_src.json()["requirements"][0]["id"] == "dual-vis-req"
+    assert resp_tgt.json()["requirements"][0]["id"] == "dual-vis-req"
+
+
+def test_default_query_returns_promoted_only(app_client):
+    """
+    Default query (no work_context_id) returns same results as pre-refactor:
+    only lifecycle_status="promoted" items.
+    """
+    project_id = _create_project(app_client)
+    _run_extraction(app_client, project_id)
+
+    resp = app_client.get(f"/api/requirements/{project_id}/flat")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Extraction without work_context creates "promoted" visibility rows
+    assert data["total"] > 0
+
+    # All items should have lifecycle_status="promoted"
+    for req in data["requirements"]:
+        assert req["lifecycle_status"] == "promoted"
+
+
+def test_archived_and_conflict_pending_excluded(app_client):
+    """
+    Requirements with archived or conflict_pending visibility status
+    are excluded from default queries.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility, WorkContext
+    from app.db.requirements_models import Requirement
+
+    project_id = _create_project(app_client)
+
+    async def _setup():
+        async with AsyncSessionLocal() as db:
+            ctx = WorkContext(project_id=project_id, level="epic", name="Excl Test", status="active")
+            db.add(ctx)
+            await db.flush()
+
+            for i, status in enumerate(["promoted", "archived", "conflict_pending"]):
+                req = Requirement(
+                    id=f"excl-req-{i}",
+                    project_id=project_id,
+                    title=f"Req {status}",
+                    level="functional_req",
+                    source_type="formal",
+                    work_context_id=ctx.id,
+                    lifecycle_status=status,
+                )
+                db.add(req)
+                await db.flush()
+                db.add(ArtifactVisibility(
+                    project_id=project_id,
+                    artifact_type="requirement",
+                    artifact_item_id=f"excl-req-{i}",
+                    source_context_id=ctx.id,
+                    visible_in_context_id=ctx.id,
+                    lifecycle_status=status,
+                ))
+            await db.commit()
+            return ctx.id
+
+    ctx_id = asyncio.get_event_loop().run_until_complete(_setup())
+
+    resp = app_client.get(f"/api/requirements/{project_id}/flat?work_context_id={ctx_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["requirements"][0]["id"] == "excl-req-0"
+
+
+def test_source_impact_endpoint(app_client):
+    """
+    GET /api/artifacts/{project_id}/by-source returns items from a specific source.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility
+
+    project_id = _create_project(app_client)
+
+    async def _setup():
+        async with AsyncSessionLocal() as db:
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="graph_node",
+                artifact_item_id="node-1",
+                lifecycle_status="promoted",
+                source_origin="srs_v3.docx",
+                source_origin_type="file",
+            ))
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="glossary_term",
+                artifact_item_id="payment",
+                lifecycle_status="promoted",
+                source_origin="srs_v3.docx",
+                source_origin_type="file",
+            ))
+            db.add(ArtifactVisibility(
+                project_id=project_id,
+                artifact_type="graph_node",
+                artifact_item_id="node-2",
+                lifecycle_status="promoted",
+                source_origin="other.pdf",
+                source_origin_type="file",
+            ))
+            await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(_setup())
+
+    resp = app_client.get(
+        f"/api/artifacts/{project_id}/by-source?source_origin=srs_v3.docx"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["source_origin"] == "srs_v3.docx"
+    assert "graph_node" in data["by_type"]
+    assert "glossary_term" in data["by_type"]
+    assert len(data["by_type"]["graph_node"]) == 1
+    assert len(data["by_type"]["glossary_term"]) == 1
+
+    # Filter by artifact_type
+    resp2 = app_client.get(
+        f"/api/artifacts/{project_id}/by-source?source_origin=srs_v3.docx&artifact_type=graph_node"
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["total"] == 1
+
+    # No results for nonexistent source
+    resp3 = app_client.get(
+        f"/api/artifacts/{project_id}/by-source?source_origin=nonexistent.pdf"
+    )
+    assert resp3.status_code == 200
+    assert resp3.json()["total"] == 0
+
+
+def test_hierarchical_query_via_visibility(app_client):
+    """
+    GET /api/requirements/{project_id} (hierarchical) also uses visibility JOIN.
+    """
+    import asyncio
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility, WorkContext
+    from app.db.requirements_models import Requirement
+
+    project_id = _create_project(app_client)
+
+    async def _setup():
+        async with AsyncSessionLocal() as db:
+            ctx = WorkContext(project_id=project_id, level="epic", name="Hier Test", status="active")
+            db.add(ctx)
+            await db.flush()
+
+            feature = Requirement(
+                id="hier-feat",
+                project_id=project_id,
+                title="Feature X",
+                level="feature",
+                source_type="formal",
+                work_context_id=ctx.id,
+                lifecycle_status="promoted",
+            )
+            db.add(feature)
+            await db.flush()
+
+            child = Requirement(
+                id="hier-req",
+                project_id=project_id,
+                parent_id="hier-feat",
+                title="FR under Feature X",
+                level="functional_req",
+                source_type="formal",
+                work_context_id=ctx.id,
+                lifecycle_status="promoted",
+            )
+            db.add(child)
+            await db.flush()
+
+            for req_id in ["hier-feat", "hier-req"]:
+                db.add(ArtifactVisibility(
+                    project_id=project_id,
+                    artifact_type="requirement",
+                    artifact_item_id=req_id,
+                    source_context_id=ctx.id,
+                    visible_in_context_id=ctx.id,
+                    lifecycle_status="promoted",
+                ))
+            await db.commit()
+            return ctx.id
+
+    ctx_id = asyncio.get_event_loop().run_until_complete(_setup())
+
+    resp = app_client.get(f"/api/requirements/{project_id}?work_context_id={ctx_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["features"]) == 1
+    assert data["features"][0]["id"] == "hier-feat"
+    assert len(data["features"][0].get("children", [])) == 1

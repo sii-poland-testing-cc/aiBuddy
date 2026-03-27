@@ -159,4 +159,91 @@ describe("WorkContextBar", () => {
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByTestId("work-context-panel")).not.toBeInTheDocument();
   });
+
+  // ── Lifecycle action button tests ─────────────────────────────────────────
+
+  it("shows no lifecycle button at domain level (null contextId)", () => {
+    renderBar({ currentContextId: null });
+    expect(screen.queryByTestId("lifecycle-action-btn")).not.toBeInTheDocument();
+  });
+
+  it("shows 'Activate' button for draft context", () => {
+    renderBar({ currentContextId: "s1" }); // STORY is draft
+    const btn = screen.getByTestId("lifecycle-action-btn");
+    expect(btn).toHaveTextContent("Activate");
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("clicking Activate calls updateContext with status active", async () => {
+    const updateContext = vi.fn().mockResolvedValue({});
+    renderBar({ currentContextId: "s1", updateContext });
+    await userEvent.click(screen.getByTestId("lifecycle-action-btn"));
+    expect(updateContext).toHaveBeenCalledWith("s1", { status: "active" });
+  });
+
+  it("shows 'Mark as Ready' button for active context", () => {
+    renderBar({ currentContextId: "e1" }); // EPIC is active
+    const btn = screen.getByTestId("lifecycle-action-btn");
+    expect(btn).toHaveTextContent("Mark as Ready ✓");
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("clicking Mark as Ready calls updateContext with status ready", async () => {
+    const updateContext = vi.fn().mockResolvedValue({});
+    renderBar({ currentContextId: "e1", updateContext });
+    await userEvent.click(screen.getByTestId("lifecycle-action-btn"));
+    expect(updateContext).toHaveBeenCalledWith("e1", { status: "ready" });
+  });
+
+  it("shows enabled 'Promote ↑ to [parent]' button for ready context", () => {
+    const readyEpic: WorkContext = { id: "e2", name: "Ready Epic", level: "epic", status: "ready", parent_id: "d1" };
+    renderBar({ contexts: [DOMAIN, readyEpic], currentContextId: "e2" });
+    const btn = screen.getByTestId("lifecycle-action-btn");
+    expect(btn).toHaveTextContent("Promote ↑ to Payment Domain");
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("clicking Promote calls onPromote with the context", async () => {
+    const onPromote = vi.fn();
+    const readyEpic: WorkContext = { id: "e2", name: "Ready Epic", level: "epic", status: "ready", parent_id: "d1" };
+    renderBar({ contexts: [DOMAIN, readyEpic], currentContextId: "e2", onPromote });
+    await userEvent.click(screen.getByTestId("lifecycle-action-btn"));
+    expect(onPromote).toHaveBeenCalledWith(readyEpic);
+  });
+
+  it("shows '✓ Promoted' label for promoted context", () => {
+    const promotedEpic: WorkContext = { id: "e3", name: "Done Epic", level: "epic", status: "promoted", parent_id: "d1" };
+    renderBar({ contexts: [DOMAIN, promotedEpic], currentContextId: "e3" });
+    const el = screen.getByTestId("lifecycle-action-btn");
+    expect(el).toHaveTextContent("✓ Promoted");
+  });
+
+  it("shows enabled 'Resolve Conflicts' button for conflict_pending context", () => {
+    const conflictEpic: WorkContext = { id: "e4", name: "Conflict Epic", level: "epic", status: "conflict_pending", parent_id: "d1" };
+    renderBar({ contexts: [DOMAIN, conflictEpic], currentContextId: "e4", pendingConflicts: 3 });
+    const btn = screen.getByTestId("lifecycle-action-btn");
+    expect(btn).toHaveTextContent("Resolve Conflicts (3)");
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("clicking Resolve Conflicts calls onOpenConflicts", async () => {
+    const onOpenConflicts = vi.fn();
+    const conflictEpic: WorkContext = { id: "e4", name: "Conflict Epic", level: "epic", status: "conflict_pending", parent_id: "d1" };
+    renderBar({ contexts: [DOMAIN, conflictEpic], currentContextId: "e4", pendingConflicts: 3, onOpenConflicts });
+    await userEvent.click(screen.getByTestId("lifecycle-action-btn"));
+    expect(onOpenConflicts).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Archive view tests ────────────────────────────────────────────────────
+
+  it("shows 'Archive view' label when isArchiveView is true", () => {
+    const promotedEpic: WorkContext = { id: "e3", name: "Done Epic", level: "epic", status: "promoted", parent_id: "d1" };
+    renderBar({ contexts: [DOMAIN, promotedEpic], currentContextId: "e3", isArchiveView: true });
+    expect(screen.getByTestId("archive-view-label")).toHaveTextContent("Archive view");
+  });
+
+  it("does not show 'Archive view' label when isArchiveView is false", () => {
+    renderBar({ currentContextId: "e1" });
+    expect(screen.queryByTestId("archive-view-label")).not.toBeInTheDocument();
+  });
 });

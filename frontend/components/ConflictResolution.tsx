@@ -175,7 +175,7 @@ function ConflictDiffPanel({
             className="border-b border-buddy-border sticky top-0 bg-buddy-elevated"
             style={{ padding: "5px 10px", fontSize: 10, color: "#8a7a68" }}
           >
-            Current ({conflict.target_context_name ?? "target"})
+            Current ({conflict.target_context_name ?? "target"}{conflict.existing_version != null ? `, v${conflict.existing_version}` : ""})
           </div>
           <div style={{ padding: "8px 10px" }}>
             {fields.map((field) => {
@@ -217,7 +217,7 @@ function ConflictDiffPanel({
             className="border-b border-buddy-border sticky top-0 bg-buddy-elevated"
             style={{ padding: "5px 10px", fontSize: 10, color: "#8a7a68" }}
           >
-            Incoming ({conflict.source_context_name ?? "source"})
+            Incoming ({conflict.source_context_name ?? "source"}{conflict.incoming_version != null ? `, v${conflict.incoming_version}` : ""})
           </div>
           <div style={{ padding: "8px 10px" }}>
             {fields.map((field) => {
@@ -243,6 +243,14 @@ function ConflictDiffPanel({
       {/* Edit & Merge textarea */}
       {editMode && (
         <div style={{ marginBottom: 10 }}>
+          <div
+            data-testid="sibling-note"
+            className="border border-buddy-gold/20 rounded-[4px] text-buddy-text-muted"
+            style={{ padding: "6px 10px", fontSize: 10, marginBottom: 8, background: "rgba(200,144,42,0.06)" }}
+          >
+            This will create a new version in <strong className="text-buddy-text-dim">{conflict.target_context_name ?? "target"}</strong>.
+            The original in <strong className="text-buddy-text-dim">{conflict.source_context_name ?? "source"}</strong> remains unchanged.
+          </div>
           <div className="text-buddy-text-muted" style={{ fontSize: 10, marginBottom: 4 }}>
             Edit merged value (JSON):
           </div>
@@ -355,6 +363,11 @@ export default function ConflictResolution({
   const [editMode, setEditMode] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
+  const [siblingInfo, setSiblingInfo] = useState<{
+    itemLabel: string;
+    targetName: string;
+    sourceName: string;
+  } | null>(null);
 
   // Refresh when opened
   useEffect(() => {
@@ -407,6 +420,21 @@ export default function ConflictResolution({
     setResolveError(null);
     try {
       await resolve(selectedConflict.id, resolution, resolvedValue, noteText || null);
+      // Show sibling info after Edit & Merge resolution
+      if (resolution === "edited") {
+        const itemLabel =
+          (selectedConflict.incoming_value?.title as string) ??
+          (selectedConflict.incoming_value?.label as string) ??
+          (selectedConflict.incoming_value?.term as string) ??
+          selectedConflict.artifact_item_id;
+        setSiblingInfo({
+          itemLabel,
+          targetName: selectedConflict.target_context_name ?? "target",
+          sourceName: selectedConflict.source_context_name ?? "source",
+        });
+      } else {
+        setSiblingInfo(null);
+      }
       setSelectedConflictId(null);
       setNoteText("");
       setEditMode(false);
@@ -568,6 +596,25 @@ export default function ConflictResolution({
                 style={{ padding: "6px 16px", fontSize: 11, background: "rgba(200,90,58,0.06)" }}
               >
                 ⚠ {resolveError}
+              </div>
+            )}
+            {siblingInfo && !selectedConflict && (
+              <div
+                data-testid="sibling-confirmation"
+                className="border-b border-buddy-success/20 flex-shrink-0 flex items-center gap-2"
+                style={{ padding: "6px 16px", fontSize: 11, background: "rgba(74,158,107,0.06)", color: "#4a9e6b" }}
+              >
+                <span>
+                  ✓ New version created in &quot;{siblingInfo.targetName}&quot;.
+                  Based on &quot;{siblingInfo.itemLabel}&quot; from &quot;{siblingInfo.sourceName}&quot;.
+                </span>
+                <button
+                  onClick={() => setSiblingInfo(null)}
+                  className="ml-auto text-buddy-success/60 hover:text-buddy-success transition-colors"
+                  style={{ fontSize: 12 }}
+                >
+                  ✕
+                </button>
               </div>
             )}
             {selectedConflict ? (

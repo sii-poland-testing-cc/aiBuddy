@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { layoutModalNodes, isNodeVisible } from "../lib/mindMapLayout";
 import type { ModalNode } from "../lib/mindMapLayout";
+import { useItemVersionInfo } from "../lib/useVersionInfo";
+import type { VersionEntry } from "../lib/useVersionInfo";
 
 interface ModalEdge {
   source: string;
@@ -22,6 +24,7 @@ interface MindMapModalProps {
   edges: ModalEdge[];
   currentContextId?: string | null;
   contexts?: import("../lib/useWorkContext").WorkContext[];
+  projectId?: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -76,12 +79,17 @@ function getCluster(id: string, edges: ModalEdge[], visited: Set<string> = new S
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function MindMapModal({ open, onClose, nodes, edges, currentContextId, contexts }: MindMapModalProps) {
+export default function MindMapModal({ open, onClose, nodes, edges, currentContextId, contexts, projectId }: MindMapModalProps) {
   const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
   const { zoom, pan } = view;
   const [query, setQuery]       = useState("");
   const [tooltip, setTooltip]   = useState<Tooltip | null>(null);
   const [showOverlay, setShowOverlay] = useState(false);
+
+  // Version history for tooltip node (hook always called, params go null when no tooltip)
+  const { info: tooltipVersionInfo } = useItemVersionInfo(
+    projectId ?? "", "graph_node", tooltip?.node.id ?? null, currentContextId,
+  );
 
   // Drag state tracked in refs to avoid re-renders during drag
   const dragging      = useRef(false);
@@ -612,6 +620,49 @@ export default function MindMapModal({ open, onClose, nodes, edges, currentConte
           {tooltip.node.desc && (
             <div className="text-buddy-text-muted" style={{ fontSize: 11, lineHeight: 1.5 }}>
               {tooltip.node.desc}
+            </div>
+          )}
+          {tooltip.node.promoted_to_context_id && (
+            <div style={{ fontSize: 10, marginTop: 4, color: "#4a9e6b" }}>
+              ↑ Promoted to {contexts?.find(c => c.id === tooltip.node.promoted_to_context_id)?.name ?? "parent"}
+            </div>
+          )}
+          {tooltip.node.conflict_pending && (
+            <div style={{ fontSize: 10, marginTop: 2, color: "#c85a3a" }}>
+              ⚠ Conflict pending
+            </div>
+          )}
+          {tooltip.node.source_origin && (
+            <div className="text-buddy-text-faint" style={{ fontSize: 9, marginTop: 4 }}>
+              Source: {tooltip.node.source_origin}
+            </div>
+          )}
+          {/* Version drift badge */}
+          {tooltipVersionInfo?.has_newer && (
+            <div
+              data-testid="mm-version-drift"
+              style={{ fontSize: 9, marginTop: 4, color: "#60a5fa" }}
+            >
+              ↻ v{tooltipVersionInfo.current_version} available (showing v{tooltipVersionInfo.pinned_version})
+            </div>
+          )}
+          {/* Version history */}
+          {tooltipVersionInfo && tooltipVersionInfo.versions.length > 0 && (
+            <div style={{ marginTop: 6, borderTop: "1px solid #2a2520", paddingTop: 4 }}>
+              <div className="text-buddy-text-dim" style={{ fontSize: 9, marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                History
+              </div>
+              {tooltipVersionInfo.versions.slice(0, 5).map((v) => (
+                <div key={v.version_number} className="text-buddy-text-faint" style={{ fontSize: 9, lineHeight: 1.5 }}>
+                  <span style={{ color: "#a09078", fontWeight: 600 }}>v{v.version_number}</span>
+                  {v.change_summary ? `: ${v.change_summary}` : ""}
+                </div>
+              ))}
+              {tooltipVersionInfo.versions.length > 5 && (
+                <div className="text-buddy-text-faint" style={{ fontSize: 9 }}>
+                  +{tooltipVersionInfo.versions.length - 5} more…
+                </div>
+              )}
             </div>
           )}
         </div>

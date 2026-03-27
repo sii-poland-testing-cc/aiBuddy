@@ -8,6 +8,13 @@ export interface GlossaryTerm {
   related_terms?: string[];
   work_context_id?: string | null;
   lifecycle_status?: string | null;
+  source_origin?: string | null;
+  promoted_to_context_id?: string | null;
+  conflict_pending?: boolean;
+  /** Version pinned in current viewing context (from drift data). */
+  pinned_version?: number | null;
+  /** Latest available version. */
+  current_version?: number | null;
 }
 
 interface GlossaryProps {
@@ -62,10 +69,40 @@ export default function Glossary({ items, onTermClick, currentContextId, context
             }}
           >
             <div className="flex items-center gap-2 mb-1">
-              {item.lifecycle_status === "conflict_pending" && (
+              {(item.lifecycle_status === "conflict_pending" || item.conflict_pending) && (
                 <span title="Conflict pending" style={{ color: "#c85a3a", fontSize: 11 }}>⚠</span>
               )}
               <span className="font-semibold text-buddy-gold-light text-[13px]">{item.term}</span>
+              {item.promoted_to_context_id && (
+                <span
+                  data-testid="glossary-promoted-badge"
+                  style={{ fontSize: 9, padding: "0px 4px", borderRadius: 3, background: "rgba(74,158,107,0.1)", color: "#4a9e6b", border: "1px solid rgba(74,158,107,0.25)" }}
+                >
+                  ↑ Promoted
+                </span>
+              )}
+              {item.pinned_version != null && item.current_version != null && item.current_version > item.pinned_version && (
+                <span
+                  data-testid="glossary-version-drift"
+                  style={{
+                    fontSize: 9, padding: "0px 5px", borderRadius: 3,
+                    background: "rgba(96,165,250,0.1)", color: "#60a5fa",
+                    border: "1px solid rgba(96,165,250,0.25)",
+                  }}
+                  title={`Showing v${item.pinned_version}, latest is v${item.current_version}`}
+                >
+                  ↻ v{item.current_version} (v{item.pinned_version})
+                </span>
+              )}
+              {item.source_origin && (
+                <span
+                  className="text-buddy-text-faint"
+                  style={{ fontSize: 9, marginLeft: "auto" }}
+                  title={`Source: ${item.source_origin}`}
+                >
+                  📄 {item.source_origin}
+                </span>
+              )}
             </div>
             <p className="text-[#c8b89a] text-xs leading-relaxed m-0 mb-1.5">
               {item.definition}

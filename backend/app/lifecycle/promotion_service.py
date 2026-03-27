@@ -1,5 +1,5 @@
 """
-Promotion Service — Phase 5.
+Promotion Service — Phase 5 + Phase 8.4 (version pinning & locking).
 
 Executes Story → Epic → Domain artifact merges for all artifact types.
 Each artifact type is promoted in its own DB transaction (per-type isolation).
@@ -10,6 +10,13 @@ Partial promotion semantics:
     and their lifecycle_status is set to "conflict_pending"
   - promote_epic_to_domain is blocked if any pending conflicts remain for
     ANY promoted child story of the epic
+
+Phase 8.4 additions (D12 version pinning):
+  - Promoted visibility rows are pinned to the current version at promotion time
+  - Re-promotion detects version drift: skip (same), update (no conflict), queue (conflict)
+  - Pessimistic locking: PostgreSQL uses SELECT … FOR UPDATE on WorkContext;
+    SQLite uses a promotion_locks table as fallback
+  - Preview includes version deltas
 
 Usage:
     service = PromotionService(db)
@@ -24,16 +31,24 @@ from typing import Any, Optional, Type
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import AsyncSessionLocal
-from app.db.models import ArtifactAuditLog, ArtifactLifecycle, PromotionConflict, WorkContext
-from app.db.requirements_models import Requirement
+from app.db.models import (
+    ArtifactAuditLog,
+    ArtifactVersion,
+    ArtifactVisibility,
+    PromotionConflict,
+    PromotionLock,
+    WorkContext,
+)
 from app.lifecycle.conflict_service import count_pending_conflicts, queue_conflicts
 from app.lifecycle.glossary_adapter import GlossaryAdapter
 from app.lifecycle.graph_adapter import GraphEdgeAdapter, GraphNodeAdapter
 from app.lifecycle.interface import ArtifactLifecycleAdapter, ArtifactType, ConflictItem
 from app.lifecycle.requirements_adapter import RequirementsAdapter
+from app.services.versioning import get_current_version
 
 logger = logging.getLogger("ai_buddy.promotion_service")
 
@@ -161,6 +176,8 @@ class PromotionService:
     ) -> PromotionResult:
         """
         Dry-run: shows what would promote vs conflict, without committing.
+        Phase 8.4: includes version_deltas in summary — items where the source
+        version has drifted since the last promotion.
         """
         ctx = await self._load_context(project_id, ctx_id)
         if ctx is None:
@@ -178,11 +195,19 @@ class PromotionService:
                 adapter = adapter_class(db)
                 items = await adapter.get_items_in_context(project_id, ctx_id)
                 if not items:
-                    summary[artifact_type.value] = {"items_found": 0, "promoted": 0, "conflicts": 0}
+                    summary[artifact_type.value] = {
+                        "items_found": 0, "promoted": 0, "conflicts": 0, "version_deltas": 0,
+                    }
                     continue
                 promoted_items, conflict_items = await adapter.merge_into_target(
                     project_id, ctx_id, parent.id, items
                 )
+
+                # Phase 8.4: count version deltas for already-promoted items
+                version_deltas = await _count_version_deltas(
+                    db, project_id, artifact_type.value, ctx_id, parent.id
+                )
+
                 total_promoted += len(promoted_items)
                 total_conflicts += len(conflict_items)
                 all_conflicts.extend(conflict_items)
@@ -190,6 +215,7 @@ class PromotionService:
                     "items_found": len(items),
                     "promoted": len(promoted_items),
                     "conflicts": len(conflict_items),
+                    "version_deltas": version_deltas,
                 }
 
         return PromotionResult(
@@ -205,26 +231,32 @@ class PromotionService:
         self, project_id: str, source_ctx: WorkContext, target_ctx: WorkContext
     ) -> PromotionResult:
         """Core promotion loop shared by story→epic and epic→domain."""
-        total_promoted = 0
-        total_conflicts = 0
-        all_conflicts: list[ConflictItem] = []
-        summary: dict[str, dict] = {}
+        # Acquire pessimistic lock on target context
+        await _acquire_promotion_lock(self.db, project_id, target_ctx.id)
 
-        for artifact_type, adapter_class in _ARTIFACT_TYPES:
-            promoted, conflict_items, type_summary = await self._promote_artifact_type(
-                adapter_class, artifact_type, project_id, source_ctx.id, target_ctx.id
+        try:
+            total_promoted = 0
+            total_conflicts = 0
+            all_conflicts: list[ConflictItem] = []
+            summary: dict[str, dict] = {}
+
+            for artifact_type, adapter_class in _ARTIFACT_TYPES:
+                promoted, conflict_items, type_summary = await self._promote_artifact_type(
+                    adapter_class, artifact_type, project_id, source_ctx.id, target_ctx.id
+                )
+                total_promoted += promoted
+                total_conflicts += len(conflict_items)
+                all_conflicts.extend(conflict_items)
+                summary[artifact_type.value] = type_summary
+
+            return PromotionResult(
+                promoted_count=total_promoted,
+                conflict_count=total_conflicts,
+                conflicts=all_conflicts,
+                artifact_type_summary=summary,
             )
-            total_promoted += promoted
-            total_conflicts += len(conflict_items)
-            all_conflicts.extend(conflict_items)
-            summary[artifact_type.value] = type_summary
-
-        return PromotionResult(
-            promoted_count=total_promoted,
-            conflict_count=total_conflicts,
-            conflicts=all_conflicts,
-            artifact_type_summary=summary,
-        )
+        finally:
+            await _release_promotion_lock(self.db, project_id, target_ctx.id)
 
     async def _promote_artifact_type(
         self,
@@ -264,7 +296,7 @@ class PromotionService:
                 # Persist clean promoted items
                 if promoted_items:
                     await _persist_promoted_items(
-                        db, artifact_type, project_id, target_ctx_id, promoted_items, now
+                        db, artifact_type, project_id, source_ctx_id, target_ctx_id, promoted_items, now
                     )
 
                 # Queue conflicts and mark conflict_pending
@@ -274,7 +306,7 @@ class PromotionService:
                         source_ctx_id, target_ctx_id
                     )
                     await _mark_conflict_pending_items(
-                        db, artifact_type, project_id, conflict_items, now
+                        db, artifact_type, project_id, source_ctx_id, conflict_items, now
                     )
 
                 await db.commit()
@@ -385,32 +417,30 @@ class PromotionService:
         promoted_count = 0
 
         for conflict in resolved_conflicts:
-            target_ctx_id = conflict.target_context_id
-            if not target_ctx_id:
+            if not conflict.target_context_id:
                 continue
 
             artifact_type_str = conflict.artifact_type
             artifact_item_id = conflict.artifact_item_id
+            source_ctx_id = conflict.source_context_id
 
-            if artifact_type_str == ArtifactType.REQUIREMENT.value:
-                req = await self.db.get(Requirement, artifact_item_id)
-                if req and req.project_id == project_id and req.lifecycle_status == "conflict_pending":
-                    req.work_context_id = target_ctx_id
-                    req.lifecycle_status = "promoted"
-                    req.updated_at = now
-                    promoted_count += 1
-            else:
-                lc_stmt = select(ArtifactLifecycle).where(
-                    ArtifactLifecycle.project_id == project_id,
-                    ArtifactLifecycle.artifact_type == artifact_type_str,
-                    ArtifactLifecycle.artifact_item_id == artifact_item_id,
+            # Adapters' apply_resolution() already created visibility rows
+            # in the target context (for use_incoming/merge).
+            # Here we only clean up: clear conflict_pending on source-context
+            # visibility row so the item is no longer "stuck".
+            if source_ctx_id:
+                vis_stmt = select(ArtifactVisibility).where(
+                    ArtifactVisibility.project_id == project_id,
+                    ArtifactVisibility.artifact_type == artifact_type_str,
+                    ArtifactVisibility.artifact_item_id == artifact_item_id,
+                    ArtifactVisibility.visible_in_context_id == source_ctx_id,
                 )
-                row = (await self.db.execute(lc_stmt)).scalars().first()
-                if row and row.lifecycle_status == "conflict_pending":
-                    row.work_context_id = target_ctx_id
-                    row.lifecycle_status = "promoted"
-                    row.updated_at = now
-                    promoted_count += 1
+                src_row = (await self.db.execute(vis_stmt)).scalars().first()
+                if src_row and src_row.lifecycle_status == "conflict_pending":
+                    src_row.lifecycle_status = "active"
+                    src_row.updated_at = now
+
+            promoted_count += 1
 
             self.db.add(ArtifactAuditLog(
                 id=str(uuid.uuid4()),
@@ -418,7 +448,7 @@ class PromotionService:
                 artifact_type=artifact_type_str,
                 artifact_item_id=artifact_item_id,
                 event_type="promoted",
-                work_context_id=target_ctx_id,
+                work_context_id=conflict.target_context_id,
                 new_value={"lifecycle_status": "promoted", "via_conflict_resolution": True},
                 actor="system",
                 created_at=now,
@@ -431,6 +461,26 @@ class PromotionService:
             conflict_count=0,
             conflicts=[],
         )
+
+    async def re_promote(
+        self, project_id: str, source_ctx_id: str, target_ctx_id: str
+    ) -> "PromotionResult":
+        """
+        Re-promotion: for items already promoted to target, check if the source
+        version has been updated since the original promotion.
+
+        For each promoted visibility row in the target:
+          - Same version → skip (no-op)
+          - New version, no conflict → update pinned version
+          - New version, conflict → queue for resolution
+        """
+        await _acquire_promotion_lock(self.db, project_id, target_ctx_id)
+        try:
+            return await _re_promote_items(
+                self.db, project_id, source_ctx_id, target_ctx_id
+            )
+        finally:
+            await _release_promotion_lock(self.db, project_id, target_ctx_id)
 
     async def _count_pending_for_epic(self, project_id: str, epic_id: str) -> int:
         """
@@ -456,7 +506,7 @@ class PromotionService:
 # ── Standalone helpers (used by _promote_artifact_type) ───────────────────────
 
 def _get_manifest_item_id(artifact_type: ArtifactType, item: dict[str, Any]) -> str:
-    """Derive the ArtifactLifecycle.artifact_item_id from an item dict."""
+    """Derive the artifact_item_id from an item dict."""
     if artifact_type == ArtifactType.GRAPH_NODE:
         return str(item.get("id", "")).strip()
     if artifact_type == ArtifactType.GRAPH_EDGE:
@@ -471,91 +521,315 @@ async def _persist_promoted_items(
     db: AsyncSession,
     artifact_type: ArtifactType,
     project_id: str,
+    source_ctx_id: str,
     target_ctx_id: str,
     promoted_items: list[dict[str, Any]],
     now: datetime,
 ) -> None:
     """
-    Move promoted items into the target context and mark as 'promoted'.
+    Create visibility rows for promoted items in the target context.
 
-    For requirements (row-stored): UPDATE Requirement ORM rows.
-    For graph/glossary (manifest): UPDATE ArtifactLifecycle manifest rows.
+    D10 semantics: promotion = INSERT a new ArtifactVisibility row
+    (same artifact_item_id, source_context_id = original source,
+     visible_in_context_id = target context, lifecycle_status = 'promoted').
+    NO data copying. NO moving. ONE INSERT per item.
+
+    D12 version pinning (Phase 8.4): each promoted visibility row is pinned
+    to the current version of the item at promotion time.
     """
     type_str = artifact_type.value
 
-    if artifact_type == ArtifactType.REQUIREMENT:
-        for item in promoted_items:
-            req = await db.get(Requirement, item["id"])
-            if req and req.project_id == project_id:
-                req.work_context_id = target_ctx_id
-                req.lifecycle_status = "promoted"
-                req.updated_at = now
-                db.add(ArtifactAuditLog(
-                    id=str(uuid.uuid4()),
-                    project_id=project_id,
-                    artifact_type=type_str,
-                    artifact_item_id=item["id"],
-                    event_type="promoted",
-                    work_context_id=target_ctx_id,
-                    new_value={"lifecycle_status": "promoted", "target_context_id": target_ctx_id},
-                    actor="system",
-                    created_at=now,
-                ))
-    else:
-        for item in promoted_items:
+    for item in promoted_items:
+        if artifact_type == ArtifactType.REQUIREMENT:
+            item_id = str(item.get("id", "")).strip()
+        else:
             item_id = _get_manifest_item_id(artifact_type, item)
-            if not item_id:
-                continue
-            stmt = select(ArtifactLifecycle).where(
-                ArtifactLifecycle.project_id == project_id,
-                ArtifactLifecycle.artifact_type == type_str,
-                ArtifactLifecycle.artifact_item_id == item_id,
-            )
-            row = (await db.execute(stmt)).scalars().first()
-            if row:
-                row.work_context_id = target_ctx_id
-                row.lifecycle_status = "promoted"
-                row.updated_at = now
-            db.add(ArtifactAuditLog(
-                id=str(uuid.uuid4()),
-                project_id=project_id,
-                artifact_type=type_str,
-                artifact_item_id=item_id,
-                event_type="promoted",
-                work_context_id=target_ctx_id,
-                new_value={"lifecycle_status": "promoted", "target_context_id": target_ctx_id},
-                actor="system",
-                created_at=now,
-            ))
+        if not item_id:
+            continue
+
+        # Preserve canonical source: look up original source_context_id
+        # from the existing visibility row in the source context.
+        # This is critical for chained promotion (Story→Epic→Domain):
+        # the domain visibility row should point to the Story, not the Epic.
+        orig_source_stmt = select(ArtifactVisibility.source_context_id).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == type_str,
+            ArtifactVisibility.artifact_item_id == item_id,
+            ArtifactVisibility.visible_in_context_id == source_ctx_id,
+        )
+        canonical_source = (await db.execute(orig_source_stmt)).scalar()
+
+        # D12: pin to current version at promotion time
+        current_ver = await get_current_version(db, project_id, type_str, item_id)
+        version_id = current_ver.id if current_ver else None
+
+        db.add(ArtifactVisibility(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            artifact_type=type_str,
+            artifact_item_id=item_id,
+            source_context_id=canonical_source or source_ctx_id,
+            visible_in_context_id=target_ctx_id,
+            lifecycle_status="promoted",
+            artifact_version_id=version_id,
+            created_at=now,
+        ))
+        db.add(ArtifactAuditLog(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            artifact_type=type_str,
+            artifact_item_id=item_id,
+            event_type="promoted",
+            work_context_id=target_ctx_id,
+            new_value={
+                "lifecycle_status": "promoted",
+                "target_context_id": target_ctx_id,
+                "pinned_version_id": version_id,
+                "pinned_version_number": current_ver.version_number if current_ver else None,
+            },
+            actor="system",
+            created_at=now,
+        ))
 
 
 async def _mark_conflict_pending_items(
     db: AsyncSession,
     artifact_type: ArtifactType,
     project_id: str,
+    source_ctx_id: str,
     conflict_items: list[ConflictItem],
     now: datetime,
 ) -> None:
     """
-    Set lifecycle_status = 'conflict_pending' on items that failed promotion
-    due to conflicts.
+    Set lifecycle_status = 'conflict_pending' on the source-context visibility
+    rows for items that failed promotion due to conflicts.
     """
     type_str = artifact_type.value
 
-    if artifact_type == ArtifactType.REQUIREMENT:
-        for c in conflict_items:
-            req = await db.get(Requirement, c.artifact_item_id)
-            if req and req.project_id == project_id:
-                req.lifecycle_status = "conflict_pending"
-                req.updated_at = now
-    else:
-        for c in conflict_items:
-            stmt = select(ArtifactLifecycle).where(
-                ArtifactLifecycle.project_id == project_id,
-                ArtifactLifecycle.artifact_type == type_str,
-                ArtifactLifecycle.artifact_item_id == c.artifact_item_id,
+    for c in conflict_items:
+        stmt = select(ArtifactVisibility).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == type_str,
+            ArtifactVisibility.artifact_item_id == c.artifact_item_id,
+            ArtifactVisibility.visible_in_context_id == source_ctx_id,
+        )
+        row = (await db.execute(stmt)).scalars().first()
+        if row:
+            row.lifecycle_status = "conflict_pending"
+            row.updated_at = now
+
+
+# ── Pessimistic Locking (Phase 8.4) ──────────────────────────────────────────
+
+
+def _is_sqlite(db: AsyncSession) -> bool:
+    """Check if the underlying engine is SQLite (no FOR UPDATE support)."""
+    url = str(db.bind.url) if db.bind else ""
+    return "sqlite" in url
+
+
+async def _acquire_promotion_lock(
+    db: AsyncSession, project_id: str, target_ctx_id: str
+) -> None:
+    """
+    Acquire a pessimistic lock on the target context for promotion.
+
+    PostgreSQL: SELECT … FOR UPDATE on the WorkContext row.
+    SQLite: INSERT into promotion_locks table (unique constraint blocks concurrent).
+    """
+    if _is_sqlite(db):
+        lock = PromotionLock(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            target_context_id=target_ctx_id,
+        )
+        try:
+            db.add(lock)
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=f"Another promotion is already in progress for target context '{target_ctx_id}'.",
             )
-            row = (await db.execute(stmt)).scalars().first()
-            if row:
-                row.lifecycle_status = "conflict_pending"
-                row.updated_at = now
+    else:
+        # PostgreSQL: SELECT … FOR UPDATE on WorkContext row
+        stmt = (
+            select(WorkContext)
+            .where(WorkContext.id == target_ctx_id)
+            .with_for_update()
+        )
+        result = await db.execute(stmt)
+        if result.scalars().first() is None:
+            raise HTTPException(404, f"Target context '{target_ctx_id}' not found.")
+
+
+async def _release_promotion_lock(
+    db: AsyncSession, project_id: str, target_ctx_id: str
+) -> None:
+    """Release the promotion lock (SQLite only; PostgreSQL releases on commit/rollback)."""
+    if _is_sqlite(db):
+        stmt = select(PromotionLock).where(
+            PromotionLock.project_id == project_id,
+            PromotionLock.target_context_id == target_ctx_id,
+        )
+        lock_row = (await db.execute(stmt)).scalars().first()
+        if lock_row:
+            await db.delete(lock_row)
+            await db.flush()
+
+
+async def _count_version_deltas(
+    db: AsyncSession,
+    project_id: str,
+    artifact_type: str,
+    source_ctx_id: str,
+    target_ctx_id: str,
+) -> int:
+    """
+    Count items already promoted from source to target where the pinned version
+    differs from the current version in source. Used by preview_promotion.
+    """
+    stmt = select(ArtifactVisibility).where(
+        ArtifactVisibility.project_id == project_id,
+        ArtifactVisibility.artifact_type == artifact_type,
+        ArtifactVisibility.source_context_id == source_ctx_id,
+        ArtifactVisibility.visible_in_context_id == target_ctx_id,
+        ArtifactVisibility.lifecycle_status == "promoted",
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    deltas = 0
+    for row in rows:
+        current_ver = await get_current_version(
+            db, project_id, row.artifact_type, row.artifact_item_id
+        )
+        if current_ver and row.artifact_version_id != current_ver.id:
+            deltas += 1
+    return deltas
+
+
+# ── Re-Promotion (Phase 8.4) ─────────────────────────────────────────────────
+
+
+async def _re_promote_items(
+    db: AsyncSession,
+    project_id: str,
+    source_ctx_id: str,
+    target_ctx_id: str,
+) -> PromotionResult:
+    """
+    Re-promotion logic: for items already promoted from source to target,
+    check if the source version has drifted since the original promotion.
+
+    For each promoted item:
+      - pinned version == current version → skip
+      - pinned version != current version, no conflict → update pinned version
+      - pinned version != current version, conflict → queue for resolution
+    """
+    # Find all promoted visibility rows in target that originated from source
+    stmt = select(ArtifactVisibility).where(
+        ArtifactVisibility.project_id == project_id,
+        ArtifactVisibility.source_context_id == source_ctx_id,
+        ArtifactVisibility.visible_in_context_id == target_ctx_id,
+        ArtifactVisibility.lifecycle_status == "promoted",
+    )
+    target_rows = (await db.execute(stmt)).scalars().all()
+
+    if not target_rows:
+        return PromotionResult(promoted_count=0, conflict_count=0)
+
+    now = datetime.now(timezone.utc)
+    updated_count = 0
+    conflict_count = 0
+
+    # Build adapter lookup for conflict detection
+    adapter_map: dict[str, ArtifactLifecycleAdapter] = {}
+    for _, adapter_class in _ARTIFACT_TYPES:
+        a = adapter_class(db)
+        adapter_map[a.artifact_type.value] = a
+
+    for row in target_rows:
+        current_ver = await get_current_version(
+            db, project_id, row.artifact_type, row.artifact_item_id
+        )
+        if current_ver is None:
+            continue
+
+        # Same version → skip
+        if row.artifact_version_id == current_ver.id:
+            continue
+
+        # Version drifted — check for conflict with existing target content
+        adapter = adapter_map.get(row.artifact_type)
+        if adapter is None:
+            continue
+
+        # Get existing items in target (excluding this item's own promoted row)
+        existing_items = await adapter.get_items_in_context(project_id, target_ctx_id)
+
+        new_snapshot = current_ver.content_snapshot or {}
+        has_conflict = False
+        conflict_reason = ""
+
+        for ex in existing_items:
+            # Skip self-comparison (same item_id)
+            ex_id = _get_manifest_item_id(
+                adapter.artifact_type, ex
+            ) if adapter.artifact_type != ArtifactType.REQUIREMENT else str(ex.get("id", ""))
+            if ex_id == row.artifact_item_id:
+                continue
+            c, reason = adapter.detect_conflict(new_snapshot, ex)
+            if c:
+                has_conflict = True
+                conflict_reason = reason
+                break
+
+        if has_conflict:
+            # Queue conflict for the re-promoted item
+            # Get old snapshot for conflict record
+            old_ver = await db.get(ArtifactVersion, row.artifact_version_id) if row.artifact_version_id else None
+            old_snapshot = old_ver.content_snapshot if old_ver else {}
+
+            conflict_id = str(uuid.uuid4())
+            db.add(PromotionConflict(
+                id=conflict_id,
+                project_id=project_id,
+                artifact_type=row.artifact_type,
+                artifact_item_id=row.artifact_item_id,
+                source_context_id=source_ctx_id,
+                target_context_id=target_ctx_id,
+                incoming_value=new_snapshot,
+                existing_value=old_snapshot,
+                conflict_reason=f"re_promotion_version_drift: {conflict_reason}",
+                status="pending",
+                created_at=now,
+            ))
+            conflict_count += 1
+        else:
+            # No conflict → update pinned version
+            row.artifact_version_id = current_ver.id
+            row.updated_at = now
+            updated_count += 1
+
+            db.add(ArtifactAuditLog(
+                id=str(uuid.uuid4()),
+                project_id=project_id,
+                artifact_type=row.artifact_type,
+                artifact_item_id=row.artifact_item_id,
+                event_type="re_promoted",
+                work_context_id=target_ctx_id,
+                new_value={
+                    "pinned_version_id": current_ver.id,
+                    "pinned_version_number": current_ver.version_number,
+                },
+                actor="system",
+                created_at=now,
+            ))
+
+    await db.commit()
+
+    return PromotionResult(
+        promoted_count=updated_count,
+        conflict_count=conflict_count,
+    )

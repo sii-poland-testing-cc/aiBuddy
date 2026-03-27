@@ -1,5 +1,5 @@
 """
-Audit snapshot adapter stub — Phase 2 (not yet implemented).
+Audit snapshot adapter — Phase 2 stub + Phase 8.3 get_items_in_context.
 
 Note (per D7 / §2.6.1): AuditSnapshot IS wrapped in the lifecycle model.
 Conflict rule (Phase 3/4 will implement):
@@ -10,6 +10,10 @@ Conflict rule (Phase 3/4 will implement):
 
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import ArtifactVersion, ArtifactVisibility
 from app.lifecycle.interface import (
     ArtifactLifecycleAdapter,
     ArtifactType,
@@ -26,10 +30,29 @@ class AuditSnapshotAdapter(ArtifactLifecycleAdapter):
 
     artifact_type = ArtifactType.AUDIT_SNAPSHOT
 
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
     async def get_items_in_context(
         self, project_id: str, work_context_id: str
     ) -> list[dict[str, Any]]:
-        raise NotImplementedError("AuditSnapshotAdapter.get_items_in_context — Phase 3")
+        """
+        Return audit snapshots VISIBLE in the given work context.
+
+        D12: JOINs artifact_visibility → artifact_versions and returns
+        content from the pinned version snapshot.
+        """
+        stmt = (
+            select(ArtifactVersion.content_snapshot)
+            .join(ArtifactVisibility, ArtifactVisibility.artifact_version_id == ArtifactVersion.id)
+            .where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type == "audit_snapshot",
+                ArtifactVisibility.visible_in_context_id == work_context_id,
+            )
+        )
+        snapshots = (await self.db.execute(stmt)).scalars().all()
+        return list(snapshots)
 
     async def merge_into_target(
         self,

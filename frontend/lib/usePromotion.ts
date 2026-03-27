@@ -6,7 +6,13 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 export interface PromotionResult {
   promoted_count: number;
   conflict_count: number;
-  artifact_type_summary: Record<string, { items_found: number; promoted: number; conflicts: number }>;
+  artifact_type_summary: Record<string, {
+    items_found: number;
+    promoted: number;
+    conflicts: number;
+    /** Count of items where pinned version differs from current (Phase 8.4). */
+    version_deltas?: number;
+  }>;
 }
 
 export function usePromotion(projectId: string) {

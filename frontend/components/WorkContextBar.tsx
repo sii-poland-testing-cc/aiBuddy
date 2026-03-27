@@ -65,6 +65,7 @@ export interface WorkContextBarProps {
   pendingConflicts?: number;
   onOpenConflicts?: () => void;
   onPromote?: (ctx: WorkContext) => void;
+  isArchiveView?: boolean;
 }
 
 export type { ItemCounts };
@@ -85,6 +86,7 @@ export default function WorkContextBar({
   pendingConflicts,
   onOpenConflicts,
   onPromote,
+  isArchiveView = false,
 }: WorkContextBarProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -164,6 +166,84 @@ export default function WorkContextBar({
       {currentCtx && (
         <StatusBadge status={currentCtx.status} />
       )}
+
+      {/* ── Archive view label ── */}
+      {isArchiveView && (
+        <span
+          data-testid="archive-view-label"
+          className="inline-flex items-center text-buddy-text-faint flex-shrink-0"
+          style={{ fontSize: 10, letterSpacing: "0.04em" }}
+        >
+          Archive view
+        </span>
+      )}
+
+      {/* ── Lifecycle action button ── */}
+      {currentCtx && (() => {
+        const parentCtx = currentCtx.parent_id
+          ? contexts.find((c) => c.id === currentCtx.parent_id)
+          : null;
+        const parentName = parentCtx?.name ?? "parent";
+
+        switch (currentCtx.status) {
+          case "draft":
+            return (
+              <button
+                data-testid="lifecycle-action-btn"
+                onClick={() => updateContext(currentCtx.id, { status: "active" })}
+                className="flex items-center gap-1 border border-blue-400/40 text-blue-400 bg-blue-400/10 hover:bg-blue-400/20 rounded-[4px] transition-colors flex-shrink-0"
+                style={{ padding: "3px 8px", fontSize: 11 }}
+              >
+                Activate
+              </button>
+            );
+          case "active":
+            return (
+              <button
+                data-testid="lifecycle-action-btn"
+                onClick={() => updateContext(currentCtx.id, { status: "ready" })}
+                className="flex items-center gap-1 border border-buddy-gold/40 text-buddy-gold bg-buddy-gold/10 hover:bg-buddy-gold/20 rounded-[4px] transition-colors flex-shrink-0"
+                style={{ padding: "3px 8px", fontSize: 11 }}
+              >
+                Mark as Ready ✓
+              </button>
+            );
+          case "ready":
+            return (
+              <button
+                data-testid="lifecycle-action-btn"
+                onClick={() => onPromote?.(currentCtx)}
+                className="flex items-center gap-1 border border-buddy-success/40 text-buddy-success bg-buddy-success/10 hover:bg-buddy-success/20 rounded-[4px] transition-colors flex-shrink-0"
+                style={{ padding: "3px 8px", fontSize: 11 }}
+              >
+                Promote ↑ to {parentName}
+              </button>
+            );
+          case "promoted":
+            return (
+              <span
+                data-testid="lifecycle-action-btn"
+                className="inline-flex items-center gap-1 border border-buddy-success/30 text-buddy-success bg-buddy-success/10 rounded-[4px] flex-shrink-0"
+                style={{ padding: "3px 8px", fontSize: 11 }}
+              >
+                ✓ Promoted
+              </span>
+            );
+          case "conflict_pending":
+            return (
+              <button
+                data-testid="lifecycle-action-btn"
+                onClick={onOpenConflicts}
+                className="flex items-center gap-1 border border-buddy-error/40 text-buddy-error bg-buddy-error/10 hover:bg-buddy-error/20 rounded-[4px] transition-colors flex-shrink-0"
+                style={{ padding: "3px 8px", fontSize: 11 }}
+              >
+                Resolve Conflicts{(pendingConflicts ?? 0) > 0 ? ` (${pendingConflicts})` : ""}
+              </button>
+            );
+          default:
+            return null;
+        }
+      })()}
 
       {/* ── Conflict badge ── */}
       {(pendingConflicts ?? 0) > 0 && (

@@ -1,15 +1,16 @@
 """
-test_migration_006.py — Phase 8: backfill migration tests.
+test_migration_006.py — Phase 8: backfill migration tests (D10 REVISIT).
 
 These tests run the migration logic (upgrade / downgrade functions) against
 an in-memory SQLite database that has been seeded with realistic pre-migration
 data. They do NOT use the app's test DB (conftest) — they build their own
 clean SQLAlchemy connection so the migration functions are called in isolation.
+
+All manifest rows now go into artifact_visibility (not artifact_lifecycle).
 """
 
 import importlib.util
 import json
-import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,7 @@ _spec = importlib.util.spec_from_file_location("migration_006", _MIGRATION_PATH)
 _migration = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_migration)  # type: ignore[union-attr]
 
-_insert_manifest_item = _migration._insert_manifest_item
+_insert_visibility_item = _migration._insert_visibility_item
 _insert_audit_log = _migration._insert_audit_log
 _now_iso = _migration._now_iso
 
@@ -110,16 +111,20 @@ def _build_schema(conn):
         )
     """))
     conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS artifact_lifecycle (
+        CREATE TABLE IF NOT EXISTS artifact_visibility (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             artifact_type TEXT NOT NULL,
             artifact_item_id TEXT NOT NULL,
-            work_context_id TEXT REFERENCES work_contexts(id) ON DELETE SET NULL,
-            lifecycle_status TEXT NOT NULL DEFAULT 'promoted',
+            source_context_id TEXT REFERENCES work_contexts(id) ON DELETE SET NULL,
+            visible_in_context_id TEXT REFERENCES work_contexts(id) ON DELETE SET NULL,
+            lifecycle_status TEXT NOT NULL DEFAULT 'draft',
+            sibling_of TEXT,
+            source_origin TEXT,
+            source_origin_type TEXT,
             created_at TEXT,
             updated_at TEXT,
-            UNIQUE(project_id, artifact_type, artifact_item_id)
+            UNIQUE(project_id, artifact_type, artifact_item_id, visible_in_context_id)
         )
     """))
     conn.execute(text("""
@@ -141,13 +146,13 @@ def _build_schema(conn):
     conn.commit()
 
 
-def _insert_project(conn, mind_map=None, glossary=None):
+def _insert_project(conn, mind_map=None, glossary=None, context_files=None):
     pid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         text(
-            "INSERT INTO projects (id, name, description, created_at, mind_map, glossary, context_built_at) "
-            "VALUES (:id, :name, NULL, :now, :mm, :gl, :cba)"
+            "INSERT INTO projects (id, name, description, created_at, mind_map, glossary, context_built_at, context_files) "
+            "VALUES (:id, :name, NULL, :now, :mm, :gl, :cba, :cf)"
         ),
         {
             "id": pid,
@@ -156,20 +161,26 @@ def _insert_project(conn, mind_map=None, glossary=None):
             "mm": json.dumps(mind_map) if mind_map else None,
             "gl": json.dumps(glossary) if glossary else None,
             "cba": now if (mind_map or glossary) else None,
+            "cf": json.dumps(context_files) if context_files else None,
         },
     )
     conn.commit()
     return pid
 
 
-def _insert_requirement(conn, project_id):
+def _insert_requirement(conn, project_id, source_references=None):
     rid = str(uuid.uuid4())
     conn.execute(
         text(
-            "INSERT INTO requirements (id, project_id, level, title, created_at, lifecycle_status) "
-            "VALUES (:id, :pid, 'functional_req', 'Test Req', :now, 'promoted')"
+            "INSERT INTO requirements (id, project_id, level, title, created_at, lifecycle_status, source_references) "
+            "VALUES (:id, :pid, 'functional_req', 'Test Req', :now, 'promoted', :sr)"
         ),
-        {"id": rid, "pid": project_id, "now": datetime.now(timezone.utc).isoformat()},
+        {
+            "id": rid,
+            "pid": project_id,
+            "now": datetime.now(timezone.utc).isoformat(),
+            "sr": json.dumps(source_references) if source_references else None,
+        },
     )
     conn.commit()
     return rid
@@ -192,7 +203,7 @@ def _run_migration_logic(conn):
     """Execute the same logic as the 006 upgrade() using the provided connection."""
 
     projects = conn.execute(
-        text("SELECT id, mind_map, glossary, context_built_at, created_at FROM projects")
+        text("SELECT id, mind_map, glossary, context_built_at, created_at, context_files FROM projects")
     ).fetchall()
 
     promoted_at_default = _now_iso()
@@ -203,6 +214,24 @@ def _run_migration_logic(conn):
         glossary_raw = project[2]
         context_built_at = project[3]
         created_at = project[4]
+        context_files_raw = project[5]
+
+        # Derive source_origin for graph/glossary items from context_files
+        context_source_origin = None
+        context_source_origin_type = None
+        if context_files_raw:
+            try:
+                cf = json.loads(context_files_raw) if isinstance(context_files_raw, str) else context_files_raw
+                if cf and isinstance(cf, list):
+                    first = cf[0]
+                    if isinstance(first, dict):
+                        context_source_origin = first.get("name")
+                    else:
+                        context_source_origin = str(first)
+                    if context_source_origin:
+                        context_source_origin_type = "file"
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         existing_domain = conn.execute(
             text("SELECT id FROM work_contexts WHERE project_id = :pid AND level = 'domain' LIMIT 1"),
@@ -251,14 +280,20 @@ def _run_migration_logic(conn):
             for node in nodes:
                 item_id = node.get("id")
                 if item_id:
-                    _insert_manifest_item(conn, project_id, "graph_node", item_id, domain_id, now_str)
+                    _insert_visibility_item(
+                        conn, project_id, "graph_node", item_id, domain_id,
+                        context_source_origin, context_source_origin_type, now_str,
+                    )
                     _insert_audit_log(conn, project_id, "graph_node", item_id, domain_id, now_str)
 
             for edge in edges:
                 src, tgt = edge.get("source"), edge.get("target")
                 if src and tgt:
                     item_id = f"{src}→{tgt}"
-                    _insert_manifest_item(conn, project_id, "graph_edge", item_id, domain_id, now_str)
+                    _insert_visibility_item(
+                        conn, project_id, "graph_edge", item_id, domain_id,
+                        context_source_origin, context_source_origin_type, now_str,
+                    )
                     _insert_audit_log(conn, project_id, "graph_edge", item_id, domain_id, now_str)
 
         if glossary_raw:
@@ -271,8 +306,27 @@ def _run_migration_logic(conn):
                 term = term_obj.get("term")
                 if term:
                     item_id = term.lower().replace(" ", "_")
-                    _insert_manifest_item(conn, project_id, "glossary_term", item_id, domain_id, now_str)
+                    _insert_visibility_item(
+                        conn, project_id, "glossary_term", item_id, domain_id,
+                        context_source_origin, context_source_origin_type, now_str,
+                    )
                     _insert_audit_log(conn, project_id, "glossary_term", item_id, domain_id, now_str)
+
+        # Backfill requirement visibility rows
+        req_rows = conn.execute(
+            text("SELECT id, source_references FROM requirements WHERE project_id = :pid"),
+            {"pid": project_id},
+        ).fetchall()
+
+        for req_row in req_rows:
+            req_id = req_row[0]
+            source_refs_raw = req_row[1]
+            req_origin, req_origin_type = _migration._derive_source_origin_from_refs(source_refs_raw)
+            _insert_visibility_item(
+                conn, project_id, "requirement", req_id, domain_id,
+                req_origin, req_origin_type, now_str,
+            )
+            _insert_audit_log(conn, project_id, "requirement", req_id, domain_id, now_str)
 
         conn.commit()
 
@@ -337,8 +391,8 @@ class TestMigration006:
         assert row[0] is not None, "work_context_id should be set"
         assert row[1] == "promoted"
 
-    def test_manifest_rows_created_for_mind_map(self):
-        """ArtifactLifecycle rows created for graph nodes + edges."""
+    def test_visibility_rows_created_for_mind_map(self):
+        """ArtifactVisibility rows created for graph nodes + edges."""
         _, conn = self._fresh()
         mind_map = {
             "nodes": [{"id": "n1", "label": "Payment", "type": "process"},
@@ -350,19 +404,19 @@ class TestMigration006:
         _run_migration_logic(conn)
 
         nodes_count = conn.execute(
-            text("SELECT COUNT(*) FROM artifact_lifecycle WHERE project_id = :pid AND artifact_type = 'graph_node'"),
+            text("SELECT COUNT(*) FROM artifact_visibility WHERE project_id = :pid AND artifact_type = 'graph_node'"),
             {"pid": pid},
         ).scalar()
         assert nodes_count == 2
 
         edges_count = conn.execute(
-            text("SELECT COUNT(*) FROM artifact_lifecycle WHERE project_id = :pid AND artifact_type = 'graph_edge'"),
+            text("SELECT COUNT(*) FROM artifact_visibility WHERE project_id = :pid AND artifact_type = 'graph_edge'"),
             {"pid": pid},
         ).scalar()
         assert edges_count == 1
 
-    def test_manifest_rows_created_for_glossary(self):
-        """ArtifactLifecycle rows created for glossary terms."""
+    def test_visibility_rows_created_for_glossary(self):
+        """ArtifactVisibility rows created for glossary terms."""
         _, conn = self._fresh()
         glossary = [
             {"term": "Payment Gateway", "definition": "System for processing payments."},
@@ -373,13 +427,13 @@ class TestMigration006:
         _run_migration_logic(conn)
 
         count = conn.execute(
-            text("SELECT COUNT(*) FROM artifact_lifecycle WHERE project_id = :pid AND artifact_type = 'glossary_term'"),
+            text("SELECT COUNT(*) FROM artifact_visibility WHERE project_id = :pid AND artifact_type = 'glossary_term'"),
             {"pid": pid},
         ).scalar()
         assert count == 2
 
-    def test_manifest_lifecycle_status_is_promoted(self):
-        """All manifest rows have lifecycle_status='promoted'."""
+    def test_visibility_lifecycle_status_is_promoted(self):
+        """All visibility rows have lifecycle_status='promoted'."""
         _, conn = self._fresh()
         mind_map = {"nodes": [{"id": "e1", "label": "Auth"}], "edges": []}
         pid = _insert_project(conn, mind_map=mind_map)
@@ -387,12 +441,12 @@ class TestMigration006:
         _run_migration_logic(conn)
 
         rows = conn.execute(
-            text("SELECT lifecycle_status FROM artifact_lifecycle WHERE project_id = :pid"),
+            text("SELECT lifecycle_status FROM artifact_visibility WHERE project_id = :pid"),
             {"pid": pid},
         ).fetchall()
         assert all(r[0] == "promoted" for r in rows)
 
-    def test_audit_log_emitted_per_manifest_item(self):
+    def test_audit_log_emitted_per_visibility_item(self):
         """ArtifactAuditLog rows emitted for each backfilled artifact."""
         _, conn = self._fresh()
         mind_map = {"nodes": [{"id": "n1", "label": "A"}, {"id": "n2", "label": "B"}], "edges": []}
@@ -425,11 +479,11 @@ class TestMigration006:
         ).scalar()
         assert domain_count == 1, "Should have exactly 1 domain after idempotent run"
 
-        manifest_count = conn.execute(
-            text("SELECT COUNT(*) FROM artifact_lifecycle WHERE project_id = :pid"),
+        visibility_count = conn.execute(
+            text("SELECT COUNT(*) FROM artifact_visibility WHERE project_id = :pid"),
             {"pid": pid},
         ).scalar()
-        assert manifest_count == 1, "Should have exactly 1 manifest row after idempotent run"
+        assert visibility_count == 1, "Should have exactly 1 visibility row after idempotent run"
 
         audit_count = conn.execute(
             text(
@@ -454,27 +508,27 @@ class TestMigration006:
         ).scalar()
         assert domain_count == 1
 
-        manifest_count = conn.execute(
-            text("SELECT COUNT(*) FROM artifact_lifecycle WHERE project_id = :pid"),
+        visibility_count = conn.execute(
+            text("SELECT COUNT(*) FROM artifact_visibility WHERE project_id = :pid"),
             {"pid": pid},
         ).scalar()
-        assert manifest_count == 0, "No manifest rows for project with no artefacts"
+        assert visibility_count == 0, "No visibility rows for project with no artefacts"
 
     def test_artifacts_reachable_via_domain_query(self):
-        """After migration, all manifest items can be joined to their domain."""
+        """After migration, all visibility items can be joined to their domain."""
         _, conn = self._fresh()
         mind_map = {"nodes": [{"id": "n1", "label": "A"}, {"id": "n2", "label": "B"}], "edges": []}
         pid = _insert_project(conn, mind_map=mind_map)
 
         _run_migration_logic(conn)
 
-        # Join artifact_lifecycle to work_contexts via work_context_id
+        # Join artifact_visibility to work_contexts via visible_in_context_id
         rows = conn.execute(
             text("""
-                SELECT al.artifact_item_id, wc.level, wc.name
-                FROM artifact_lifecycle al
-                JOIN work_contexts wc ON al.work_context_id = wc.id
-                WHERE al.project_id = :pid
+                SELECT av.artifact_item_id, wc.level, wc.name
+                FROM artifact_visibility av
+                JOIN work_contexts wc ON av.visible_in_context_id = wc.id
+                WHERE av.project_id = :pid
             """),
             {"pid": pid},
         ).fetchall()
@@ -528,3 +582,201 @@ class TestMigration006:
             {"pid": pid},
         ).scalar()
         assert domain_count == 1, "Should still have exactly 1 domain"
+
+    # ── New D10 tests ─────────────────────────────────────────────────────────
+
+    def test_visibility_has_source_and_visible_context_ids(self):
+        """Each visibility row has source_context_id = visible_in_context_id = domain."""
+        _, conn = self._fresh()
+        mind_map = {"nodes": [{"id": "n1", "label": "A"}], "edges": []}
+        pid = _insert_project(conn, mind_map=mind_map)
+
+        _run_migration_logic(conn)
+
+        row = conn.execute(
+            text(
+                "SELECT source_context_id, visible_in_context_id FROM artifact_visibility "
+                "WHERE project_id = :pid AND artifact_type = 'graph_node'"
+            ),
+            {"pid": pid},
+        ).fetchone()
+        assert row is not None
+        assert row[0] is not None, "source_context_id should be set"
+        assert row[1] is not None, "visible_in_context_id should be set"
+        assert row[0] == row[1], "source and visible should both point to domain"
+
+        # Verify it's actually the domain
+        domain_id = conn.execute(
+            text("SELECT id FROM work_contexts WHERE project_id = :pid AND level = 'domain'"),
+            {"pid": pid},
+        ).scalar()
+        assert row[0] == domain_id
+
+    def test_source_origin_populated_from_context_files(self):
+        """Graph/glossary visibility rows get source_origin from context_files."""
+        _, conn = self._fresh()
+        mind_map = {"nodes": [{"id": "n1", "label": "A"}], "edges": []}
+        pid = _insert_project(conn, mind_map=mind_map, context_files=["srs_v3.docx", "design.pdf"])
+
+        _run_migration_logic(conn)
+
+        row = conn.execute(
+            text(
+                "SELECT source_origin, source_origin_type FROM artifact_visibility "
+                "WHERE project_id = :pid AND artifact_type = 'graph_node'"
+            ),
+            {"pid": pid},
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "srs_v3.docx"
+        assert row[1] == "file"
+
+    def test_source_origin_populated_from_context_files_dict_format(self):
+        """context_files in [{name: ...}] format also works."""
+        _, conn = self._fresh()
+        mind_map = {"nodes": [{"id": "n1", "label": "A"}], "edges": []}
+        pid = _insert_project(conn, mind_map=mind_map, context_files=[{"name": "spec.docx", "indexed_at": "2026-01-01"}])
+
+        _run_migration_logic(conn)
+
+        row = conn.execute(
+            text(
+                "SELECT source_origin FROM artifact_visibility "
+                "WHERE project_id = :pid AND artifact_type = 'graph_node'"
+            ),
+            {"pid": pid},
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "spec.docx"
+
+    def test_requirement_visibility_rows_created(self):
+        """Requirements get their own visibility rows in artifact_visibility."""
+        _, conn = self._fresh()
+        pid = _insert_project(conn)
+        rid = _insert_requirement(conn, pid, source_references=["srs_v3.docx"])
+
+        _run_migration_logic(conn)
+
+        row = conn.execute(
+            text(
+                "SELECT artifact_item_id, artifact_type, lifecycle_status, "
+                "       source_origin, source_origin_type, source_context_id, visible_in_context_id "
+                "FROM artifact_visibility "
+                "WHERE project_id = :pid AND artifact_type = 'requirement'"
+            ),
+            {"pid": pid},
+        ).fetchone()
+        assert row is not None
+        assert row[0] == rid, "artifact_item_id should be requirement id"
+        assert row[1] == "requirement"
+        assert row[2] == "promoted"
+        assert row[3] == "srs_v3.docx", "source_origin from source_references"
+        assert row[4] == "file"
+        assert row[5] == row[6], "source == visible (home row)"
+
+    def test_requirement_source_origin_url(self):
+        """Requirement with URL source_references gets source_origin_type='url'."""
+        _, conn = self._fresh()
+        pid = _insert_project(conn)
+        rid = _insert_requirement(conn, pid, source_references=["https://jira.example.com/PROJ-123"])
+
+        _run_migration_logic(conn)
+
+        row = conn.execute(
+            text(
+                "SELECT source_origin, source_origin_type FROM artifact_visibility "
+                "WHERE project_id = :pid AND artifact_type = 'requirement'"
+            ),
+            {"pid": pid},
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "https://jira.example.com/PROJ-123"
+        assert row[1] == "url"
+
+    def test_requirement_no_source_references(self):
+        """Requirement with no source_references gets NULL source_origin."""
+        _, conn = self._fresh()
+        pid = _insert_project(conn)
+        _insert_requirement(conn, pid, source_references=None)
+
+        _run_migration_logic(conn)
+
+        row = conn.execute(
+            text(
+                "SELECT source_origin, source_origin_type FROM artifact_visibility "
+                "WHERE project_id = :pid AND artifact_type = 'requirement'"
+            ),
+            {"pid": pid},
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None
+        assert row[1] is None
+
+    def test_unified_query_returns_correct_results(self):
+        """The Phase 7 unified query pattern works on backfilled data."""
+        _, conn = self._fresh()
+        mind_map = {
+            "nodes": [{"id": "n1", "label": "A"}, {"id": "n2", "label": "B"}],
+            "edges": [{"source": "n1", "target": "n2", "label": "uses"}],
+        }
+        glossary = [{"term": "SLA", "definition": "Service level agreement."}]
+        pid = _insert_project(conn, mind_map=mind_map, glossary=glossary)
+        rid = _insert_requirement(conn, pid, source_references=["doc.docx"])
+
+        _run_migration_logic(conn)
+
+        domain_id = conn.execute(
+            text("SELECT id FROM work_contexts WHERE project_id = :pid AND level = 'domain'"),
+            {"pid": pid},
+        ).scalar()
+
+        # Simulate the Phase 7 query: "show me all graph_nodes visible in domain"
+        nodes = conn.execute(
+            text("""
+                SELECT av.artifact_item_id
+                FROM artifact_visibility av
+                WHERE av.project_id = :pid
+                  AND av.visible_in_context_id = :ctx
+                  AND av.artifact_type = 'graph_node'
+                  AND av.lifecycle_status NOT IN ('archived', 'conflict_pending', 'superseded')
+            """),
+            {"pid": pid, "ctx": domain_id},
+        ).fetchall()
+        assert len(nodes) == 2
+        assert {r[0] for r in nodes} == {"n1", "n2"}
+
+        # Requirements via visibility JOIN
+        reqs = conn.execute(
+            text("""
+                SELECT r.id
+                FROM requirements r
+                JOIN artifact_visibility av
+                  ON av.artifact_item_id = r.id
+                  AND av.artifact_type = 'requirement'
+                  AND av.project_id = r.project_id
+                WHERE av.visible_in_context_id = :ctx
+                  AND av.lifecycle_status = 'promoted'
+            """),
+            {"ctx": domain_id},
+        ).fetchall()
+        assert len(reqs) == 1
+        assert reqs[0][0] == rid
+
+    def test_no_source_origin_when_no_context_files(self):
+        """Graph nodes get NULL source_origin when project has no context_files."""
+        _, conn = self._fresh()
+        mind_map = {"nodes": [{"id": "n1", "label": "A"}], "edges": []}
+        pid = _insert_project(conn, mind_map=mind_map, context_files=None)
+
+        _run_migration_logic(conn)
+
+        row = conn.execute(
+            text(
+                "SELECT source_origin, source_origin_type FROM artifact_visibility "
+                "WHERE project_id = :pid AND artifact_type = 'graph_node'"
+            ),
+            {"pid": pid},
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None
+        assert row[1] is None

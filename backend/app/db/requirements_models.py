@@ -113,6 +113,12 @@ class Requirement(Base):
     )
     # "draft" | "active" | "ready" | "promoted" | "archived" | "conflict_pending"
 
+    # Source tracking — which uploaded file this requirement was extracted from
+    source_origin: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # file path, URL, or "manual"
+    source_origin_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # "file" | "url" | "manual" | "system"
+
     # Relationships
     children: Mapped[List["Requirement"]] = relationship(
         "Requirement",

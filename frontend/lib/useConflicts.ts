@@ -22,6 +22,10 @@ export interface Conflict {
   source_context_level: string | null;
   target_context_name: string | null;
   target_context_level: string | null;
+  /** Pinned version in target context (existing side). */
+  existing_version?: number | null;
+  /** Current/latest version (incoming side). */
+  incoming_version?: number | null;
 }
 
 export type ResolutionType = "accept_new" | "keep_old" | "edited" | "defer";

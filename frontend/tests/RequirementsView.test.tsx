@@ -316,3 +316,28 @@ describe("RequirementsView — ModuleGroup collapse", () => {
     expect(screen.getAllByTestId("req-module-group").length).toBeGreaterThan(0);
   });
 });
+
+describe("RequirementsView — source origin", () => {
+  it("shows source origin badge when source_references is set", () => {
+    const req = makeReq({ id: "r9", source_references: ["srs_v3.docx"] });
+    renderView({ requirements: [req], stats: { ...STATS, total: 1 } });
+    const badge = screen.getByTestId("req-source-origin");
+    expect(badge).toHaveTextContent("srs_v3.docx");
+    expect(badge).toHaveAttribute("title", "Source: srs_v3.docx");
+  });
+
+  it("does not show source origin badge when source_references is null", () => {
+    const req = makeReq({ id: "r10", source_references: null });
+    renderView({ requirements: [req], stats: { ...STATS, total: 1 } });
+    expect(screen.queryByTestId("req-source-origin")).not.toBeInTheDocument();
+  });
+
+  it("renders URL source as a link", () => {
+    const req = makeReq({ id: "r11", source_references: ["https://jira.example.com/PROJ-123"] });
+    renderView({ requirements: [req], stats: { ...STATS, total: 1 } });
+    const badge = screen.getByTestId("req-source-origin");
+    const link = badge.querySelector("a");
+    expect(link).toHaveAttribute("href", "https://jira.example.com/PROJ-123");
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+});

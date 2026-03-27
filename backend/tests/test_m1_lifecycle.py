@@ -1,19 +1,22 @@
 """
-Phase 4 — ArtifactLifecycle manifest tests for M1 context build.
+Phase 4 — ArtifactVisibility manifest tests for M1 context build (D10 model).
 
 Tests verify that:
-- Graph nodes/edges and glossary terms are registered in artifact_lifecycle
+- Graph nodes/edges and glossary terms are registered in artifact_visibility
 - lifecycle_status is "promoted" when no work_context_id
 - lifecycle_status is "draft" when work_context_id provided
+- Visibility rows have correct source_context_id and visible_in_context_id
+- source_origin is populated from source documents
 - Append mode upserts (no duplicates)
-- Rebuild mode clears and re-registers manifest rows
+- Rebuild mode clears and re-registers visibility rows
 - ArtifactAuditLog rows emitted for new items
+- find_by_source returns correct items
 - GraphNodeAdapter, GraphEdgeAdapter, GlossaryAdapter conflict detection
+- get_items_in_context queries via visibility manifest
 """
 
 import asyncio
 import json
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -77,7 +80,6 @@ def _build(client, project_id: str, work_context_id=None, mode: str = "append"):
          path.open("rb") as fh:
         r = client.post(url, files={"files": (path.name, fh, _DOCX_MIME)})
     assert r.status_code == 200, f"Build failed: {r.text[:300]}"
-    # Consume SSE stream
     for line in r.text.splitlines():
         if line.startswith("data: "):
             payload = line[6:].strip()
@@ -91,14 +93,15 @@ def _build(client, project_id: str, work_context_id=None, mode: str = "append"):
                 pass
 
 
-def _get_manifest_rows(project_id: str) -> list:
+def _get_visibility_rows(project_id: str) -> list:
     from app.db.engine import AsyncSessionLocal
-    from app.db.models import ArtifactLifecycle
+    from app.db.models import ArtifactVisibility
 
     async def _q():
         async with AsyncSessionLocal() as db:
-            stmt = sa_select(ArtifactLifecycle).where(
-                ArtifactLifecycle.project_id == project_id
+            stmt = sa_select(ArtifactVisibility).where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type.in_(["graph_node", "graph_edge", "glossary_term"]),
             )
             return (await db.execute(stmt)).scalars().all()
 
@@ -124,31 +127,30 @@ def _get_audit_log_rows(project_id: str) -> list:
 # ─── Tests: lifecycle_status ─────────────────────────────────────────────────
 
 def test_build_without_work_context_id_registers_promoted(app_client):
-    """M1 build without work_context_id → all manifest rows have lifecycle_status='promoted'."""
+    """M1 build without work_context_id → all visibility rows have lifecycle_status='promoted'."""
     pid = _create_project(app_client, "test-promoted")
     _build(app_client, pid)
 
-    rows = _get_manifest_rows(pid)
-    assert len(rows) > 0, "Expected manifest rows after M1 build"
+    rows = _get_visibility_rows(pid)
+    assert len(rows) > 0, "Expected visibility rows after M1 build"
     for r in rows:
         assert r.lifecycle_status == "promoted", (
             f"Expected 'promoted' for {r.artifact_type}:{r.artifact_item_id}, got {r.lifecycle_status!r}"
         )
-        assert r.work_context_id is None
+        assert r.source_context_id is None
+        assert r.visible_in_context_id is None
 
 
 def test_build_with_work_context_id_registers_draft(app_client):
-    """M1 build with work_context_id → all manifest rows have lifecycle_status='draft'."""
+    """M1 build with work_context_id → all visibility rows have lifecycle_status='draft'."""
     pid = _create_project(app_client, "test-draft")
 
-    # Get the auto-created default domain
     domain_resp = app_client.get(f"/api/work-contexts/{pid}")
     assert domain_resp.status_code == 200
     domains = domain_resp.json()["contexts"]
     assert len(domains) > 0
     domain_id = domains[0]["id"]
 
-    # Create an epic under the domain
     epic_resp = app_client.post(
         f"/api/work-contexts/{pid}",
         json={"level": "epic", "name": "M1 Context Epic", "parent_id": domain_id},
@@ -158,21 +160,22 @@ def test_build_with_work_context_id_registers_draft(app_client):
 
     _build(app_client, pid, work_context_id=epic_id)
 
-    rows = _get_manifest_rows(pid)
-    assert len(rows) > 0, "Expected manifest rows"
+    rows = _get_visibility_rows(pid)
+    assert len(rows) > 0, "Expected visibility rows"
     for r in rows:
         assert r.lifecycle_status == "draft", (
             f"Expected 'draft', got {r.lifecycle_status!r} for {r.artifact_type}:{r.artifact_item_id}"
         )
-        assert r.work_context_id == epic_id
+        assert r.source_context_id == epic_id
+        assert r.visible_in_context_id == epic_id
 
 
 def test_manifest_has_graph_nodes_edges_and_glossary(app_client):
-    """Manifest rows must cover all three artifact types after a build."""
+    """Visibility rows must cover all three artifact types after a build."""
     pid = _create_project(app_client, "test-types")
     _build(app_client, pid)
 
-    rows = _get_manifest_rows(pid)
+    rows = _get_visibility_rows(pid)
     types = {r.artifact_type for r in rows}
     assert "graph_node" in types, f"Missing graph_node in {types}"
     assert "graph_edge" in types, f"Missing graph_edge in {types}"
@@ -192,34 +195,213 @@ def test_audit_log_emitted_for_new_items(app_client):
 
 
 def test_append_mode_no_duplicates(app_client):
-    """Append mode upserts — building twice with same docs must not double manifest rows."""
+    """Append mode upserts — building twice with same docs must not double visibility rows."""
     pid = _create_project(app_client, "test-append-upsert")
     _build(app_client, pid, mode="append")
-    count_after_first = len(_get_manifest_rows(pid))
+    count_after_first = len(_get_visibility_rows(pid))
 
     _build(app_client, pid, mode="append")
-    count_after_second = len(_get_manifest_rows(pid))
+    count_after_second = len(_get_visibility_rows(pid))
 
     assert count_after_second == count_after_first, (
-        f"Manifest grew on second append: {count_after_first} → {count_after_second} (expected same)"
+        f"Visibility grew on second append: {count_after_first} → {count_after_second} (expected same)"
     )
 
 
 def test_rebuild_mode_clears_and_reregisters(app_client):
-    """Rebuild mode clears all manifest rows then re-registers fresh ones."""
-    pid = _create_project(app_client, "test-rebuild-manifest")
+    """Rebuild mode clears all visibility rows then re-registers fresh ones."""
+    pid = _create_project(app_client, "test-rebuild-vis")
     _build(app_client, pid, mode="append")
-    count_after_append = len(_get_manifest_rows(pid))
+    count_after_append = len(_get_visibility_rows(pid))
     assert count_after_append > 0
 
     _build(app_client, pid, mode="rebuild")
-    count_after_rebuild = len(_get_manifest_rows(pid))
-    assert count_after_rebuild > 0, "Expected manifest rows after rebuild"
-    # After rebuild the count should equal the re-registered count
-    # (same mock data → same count as after first append)
+    count_after_rebuild = len(_get_visibility_rows(pid))
+    assert count_after_rebuild > 0, "Expected visibility rows after rebuild"
     assert count_after_rebuild == count_after_append, (
-        f"Expected {count_after_append} manifest rows after rebuild, got {count_after_rebuild}"
+        f"Expected {count_after_append} visibility rows after rebuild, got {count_after_rebuild}"
     )
+
+
+# ─── Tests: source_origin populated ──────────────────────────────────────────
+
+def test_source_origin_populated(app_client):
+    """Visibility rows have source_origin set to the input document filename."""
+    pid = _create_project(app_client, "test-source-origin")
+    _build(app_client, pid)
+
+    rows = _get_visibility_rows(pid)
+    assert len(rows) > 0
+    for r in rows:
+        assert r.source_origin is not None, (
+            f"source_origin not set for {r.artifact_type}:{r.artifact_item_id}"
+        )
+        assert r.source_origin.endswith(".docx"), (
+            f"Expected .docx source_origin, got {r.source_origin!r}"
+        )
+        assert r.source_origin_type == "file"
+
+
+# ─── Tests: find_by_source ───────────────────────────────────────────────────
+
+def test_find_by_source_returns_items(app_client):
+    """find_by_source returns graph/glossary items from a specific source file."""
+    from app.db.engine import AsyncSessionLocal
+    from app.services.context_lifecycle import find_by_source
+
+    pid = _create_project(app_client, "test-find-source")
+    _build(app_client, pid)
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            items = await find_by_source(db, pid, "srs_payment_module.docx")
+            assert len(items) > 0
+            types = {i["artifact_type"] for i in items}
+            assert "graph_node" in types or "glossary_term" in types
+
+            # Filter by type
+            nodes_only = await find_by_source(db, pid, "srs_payment_module.docx", artifact_type="graph_node")
+            for item in nodes_only:
+                assert item["artifact_type"] == "graph_node"
+
+            # Nonexistent source returns empty
+            empty = await find_by_source(db, pid, "nonexistent.pdf")
+            assert len(empty) == 0
+
+    asyncio.get_event_loop().run_until_complete(_check())
+
+
+# ─── Tests: get_items_in_context via visibility ──────────────────────────────
+
+def test_graph_node_adapter_get_items_via_visibility(app_client):
+    """GraphNodeAdapter.get_items_in_context queries via artifact_visibility + artifact_versions."""
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVersion, ArtifactVisibility, WorkContext, Project
+    from app.lifecycle.graph_adapter import GraphNodeAdapter
+
+    pid = _create_project(app_client, "test-node-vis-query")
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            # Create two contexts
+            ctx_a = WorkContext(project_id=pid, level="epic", name="Epic A", status="active")
+            db.add(ctx_a)
+            await db.flush()
+            ctx_b = WorkContext(project_id=pid, level="epic", name="Epic B", status="active")
+            db.add(ctx_b)
+            await db.flush()
+
+            # Set up mind_map JSON on the project (kept for fallback compat)
+            project = await db.get(Project, pid)
+            project.mind_map = {
+                "nodes": [
+                    {"id": "n1", "label": "Node One", "type": "system"},
+                    {"id": "n2", "label": "Node Two", "type": "actor"},
+                ],
+                "edges": [],
+            }
+            await db.flush()
+
+            # D12: Create version snapshots for each node
+            import uuid as _uuid
+            ver_n1_id = str(_uuid.uuid4())
+            db.add(ArtifactVersion(
+                id=ver_n1_id, project_id=pid, artifact_type="graph_node",
+                artifact_item_id="n1", version_number=1,
+                content_snapshot={"id": "n1", "label": "Node One", "type": "system"},
+                created_in_context_id=ctx_a.id, change_summary="initial version",
+                created_by="system",
+            ))
+            ver_n2_id = str(_uuid.uuid4())
+            db.add(ArtifactVersion(
+                id=ver_n2_id, project_id=pid, artifact_type="graph_node",
+                artifact_item_id="n2", version_number=1,
+                content_snapshot={"id": "n2", "label": "Node Two", "type": "actor"},
+                created_in_context_id=ctx_b.id, change_summary="initial version",
+                created_by="system",
+            ))
+
+            # Visibility: n1 visible in ctx_a, n2 visible in ctx_b (with version IDs)
+            db.add(ArtifactVisibility(
+                project_id=pid, artifact_type="graph_node",
+                artifact_item_id="n1",
+                source_context_id=ctx_a.id, visible_in_context_id=ctx_a.id,
+                lifecycle_status="draft",
+                artifact_version_id=ver_n1_id,
+            ))
+            db.add(ArtifactVisibility(
+                project_id=pid, artifact_type="graph_node",
+                artifact_item_id="n2",
+                source_context_id=ctx_b.id, visible_in_context_id=ctx_b.id,
+                lifecycle_status="draft",
+                artifact_version_id=ver_n2_id,
+            ))
+            await db.commit()
+
+        async with AsyncSessionLocal() as db:
+            adapter = GraphNodeAdapter(db)
+
+            items_a = await adapter.get_items_in_context(pid, ctx_a.id)
+            assert len(items_a) == 1
+            assert items_a[0]["id"] == "n1"
+
+            items_b = await adapter.get_items_in_context(pid, ctx_b.id)
+            assert len(items_b) == 1
+            assert items_b[0]["id"] == "n2"
+
+    asyncio.get_event_loop().run_until_complete(_run())
+
+
+def test_glossary_adapter_get_items_via_visibility(app_client):
+    """GlossaryAdapter.get_items_in_context queries via artifact_visibility + artifact_versions."""
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVersion, ArtifactVisibility, WorkContext, Project
+    from app.lifecycle.glossary_adapter import GlossaryAdapter
+
+    pid = _create_project(app_client, "test-glossary-vis-query")
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            ctx = WorkContext(project_id=pid, level="epic", name="Epic", status="active")
+            db.add(ctx)
+            await db.flush()
+
+            project = await db.get(Project, pid)
+            project.glossary = [
+                {"term": "Payment", "definition": "Money transfer"},
+                {"term": "Refund", "definition": "Return of funds"},
+            ]
+            await db.flush()
+
+            # D12: Create version snapshot for "payment"
+            import uuid as _uuid
+            ver_id = str(_uuid.uuid4())
+            db.add(ArtifactVersion(
+                id=ver_id, project_id=pid, artifact_type="glossary_term",
+                artifact_item_id="payment", version_number=1,
+                content_snapshot={"term": "Payment", "definition": "Money transfer",
+                                  "related_terms": None, "source": None},
+                created_in_context_id=ctx.id, change_summary="initial version",
+                created_by="system",
+            ))
+
+            # Only "payment" visible in ctx (with version ID)
+            db.add(ArtifactVisibility(
+                project_id=pid, artifact_type="glossary_term",
+                artifact_item_id="payment",
+                source_context_id=ctx.id, visible_in_context_id=ctx.id,
+                lifecycle_status="draft",
+                artifact_version_id=ver_id,
+            ))
+            await db.commit()
+
+        async with AsyncSessionLocal() as db:
+            adapter = GlossaryAdapter(db)
+            items = await adapter.get_items_in_context(pid, ctx.id)
+            assert len(items) == 1
+            assert items[0]["term"] == "Payment"
+
+    asyncio.get_event_loop().run_until_complete(_run())
 
 
 # ─── Tests: adapter detect_conflict ──────────────────────────────────────────

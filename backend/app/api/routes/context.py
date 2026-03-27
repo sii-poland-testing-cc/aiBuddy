@@ -31,7 +31,7 @@ from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
-from app.db.models import ArtifactLifecycle, Project
+from app.db.models import ArtifactVisibility, Project
 from app.rag.context_builder import context_builder as _context_builder
 from app.services.context_lifecycle import (
     clear_manifest_for_project,
@@ -418,19 +418,22 @@ async def _run_m1(
         except Exception as db_exc:
             logger.error("Failed to persist M1 artefacts for '%s': %s", project_id, db_exc)
 
-        # ── Register / update ArtifactLifecycle manifest ──────────────────────
+        # ── Register / update ArtifactVisibility manifest ──────────────────────
         try:
             async with AsyncSessionLocal() as db:
                 if mode == "rebuild":
                     await clear_manifest_for_project(db, project_id)
+                source_fnames = [Path(p).name for p in file_paths]
                 await register_graph_items(
                     db, project_id, work_context_id,
                     result["mind_map"].get("nodes", []),
                     result["mind_map"].get("edges", []),
+                    source_files=source_fnames,
                 )
                 await register_glossary_items(
                     db, project_id, work_context_id,
                     result.get("glossary", []),
+                    source_files=source_fnames,
                 )
         except Exception as lc_exc:
             logger.error("Failed to register lifecycle manifest for '%s': %s", project_id, lc_exc)
@@ -603,6 +606,7 @@ async def context_status(project_id: str, db: AsyncSession = Depends(get_db)):
 async def get_mindmap(
     project_id: str,
     work_context_id: Optional[str] = Query(None),
+    source_context_id: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     # Load full mind map (cache-first, DB fallback)
@@ -620,7 +624,8 @@ async def get_mindmap(
 
     # If no work_context_id: filter via manifest table (promoted items only).
     # Fallback to full data when no manifest rows exist (pre-Phase-4 projects).
-    filtered = await _filter_mindmap_by_manifest(db, project_id, mind_map, work_context_id)
+    # source_context_id: archive view — show all items CREATED in this context.
+    filtered = await _filter_mindmap_by_manifest(db, project_id, mind_map, work_context_id, source_context_id)
     return filtered
 
 
@@ -629,27 +634,46 @@ async def _filter_mindmap_by_manifest(
     project_id: str,
     mind_map: dict,
     work_context_id: Optional[str],
+    source_context_id: Optional[str] = None,
 ) -> dict:
-    """Filter mind map nodes/edges using the ArtifactLifecycle manifest.
+    """Filter mind map nodes/edges using the ArtifactVisibility manifest.
 
     - No work_context_id: return promoted items only; fall back to full data if no manifest rows.
-    - With work_context_id: return items for that context.
+    - With work_context_id: return items visible in that context.
+    - With source_context_id: archive view — return items CREATED in that context (any status).
     """
-    node_stmt = select(ArtifactLifecycle).where(
-        ArtifactLifecycle.project_id == project_id,
-        ArtifactLifecycle.artifact_type == "graph_node",
-    )
-    edge_stmt = select(ArtifactLifecycle).where(
-        ArtifactLifecycle.project_id == project_id,
-        ArtifactLifecycle.artifact_type == "graph_edge",
-    )
+    _excluded = ("archived", "conflict_pending", "superseded")
 
-    if work_context_id is not None:
-        node_stmt = node_stmt.where(ArtifactLifecycle.work_context_id == work_context_id)
-        edge_stmt = edge_stmt.where(ArtifactLifecycle.work_context_id == work_context_id)
+    if source_context_id is not None:
+        # Archive view: all items created in this context, regardless of status
+        node_stmt = select(ArtifactVisibility).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == "graph_node",
+            ArtifactVisibility.source_context_id == source_context_id,
+        )
+        edge_stmt = select(ArtifactVisibility).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == "graph_edge",
+            ArtifactVisibility.source_context_id == source_context_id,
+        )
     else:
-        node_stmt = node_stmt.where(ArtifactLifecycle.lifecycle_status == "promoted")
-        edge_stmt = edge_stmt.where(ArtifactLifecycle.lifecycle_status == "promoted")
+        node_stmt = select(ArtifactVisibility).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == "graph_node",
+            ArtifactVisibility.lifecycle_status.notin_(_excluded),
+        )
+        edge_stmt = select(ArtifactVisibility).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == "graph_edge",
+            ArtifactVisibility.lifecycle_status.notin_(_excluded),
+        )
+
+        if work_context_id is not None:
+            node_stmt = node_stmt.where(ArtifactVisibility.visible_in_context_id == work_context_id)
+            edge_stmt = edge_stmt.where(ArtifactVisibility.visible_in_context_id == work_context_id)
+        else:
+            node_stmt = node_stmt.where(ArtifactVisibility.lifecycle_status == "promoted")
+            edge_stmt = edge_stmt.where(ArtifactVisibility.lifecycle_status == "promoted")
 
     node_rows = (await db.execute(node_stmt)).scalars().all()
     edge_rows = (await db.execute(edge_stmt)).scalars().all()
@@ -661,7 +685,28 @@ async def _filter_mindmap_by_manifest(
     allowed_node_ids = {r.artifact_item_id for r in node_rows}
     allowed_edge_keys = {r.artifact_item_id for r in edge_rows}
 
-    nodes = [n for n in mind_map.get("nodes", []) if n["id"] in allowed_node_ids]
+    # Build node-level metadata for archive view (promoted-to info, source_origin)
+    node_meta = {}
+    if source_context_id is not None:
+        for r in node_rows:
+            meta: dict = {}
+            if r.source_origin:
+                meta["source_origin"] = r.source_origin
+            if r.visible_in_context_id != r.source_context_id:
+                meta["promoted_to_context_id"] = r.visible_in_context_id
+            if r.lifecycle_status == "conflict_pending":
+                meta["conflict_pending"] = True
+            if meta:
+                node_meta[r.artifact_item_id] = meta
+
+    nodes = []
+    for n in mind_map.get("nodes", []):
+        if n["id"] in allowed_node_ids:
+            if n["id"] in node_meta:
+                nodes.append({**n, **node_meta[n["id"]]})
+            else:
+                nodes.append(n)
+
     edges = [e for e in mind_map.get("edges", [])
              if f"{e['source']}→{e['target']}" in allowed_edge_keys]
     return {"nodes": nodes, "edges": edges}
@@ -673,6 +718,7 @@ async def _filter_mindmap_by_manifest(
 async def get_glossary(
     project_id: str,
     work_context_id: Optional[str] = Query(None),
+    source_context_id: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     # Load full glossary (cache-first, DB fallback)
@@ -689,7 +735,7 @@ async def get_glossary(
         glossary = _context_store[project_id]["glossary"]
 
     # Filter via manifest table; fallback to full data when no manifest rows exist
-    return await _filter_glossary_by_manifest(db, project_id, glossary, work_context_id)
+    return await _filter_glossary_by_manifest(db, project_id, glossary, work_context_id, source_context_id)
 
 
 async def _filter_glossary_by_manifest(
@@ -697,16 +743,28 @@ async def _filter_glossary_by_manifest(
     project_id: str,
     glossary: list,
     work_context_id: Optional[str],
+    source_context_id: Optional[str] = None,
 ) -> list:
-    """Filter glossary terms using the ArtifactLifecycle manifest."""
-    stmt = select(ArtifactLifecycle).where(
-        ArtifactLifecycle.project_id == project_id,
-        ArtifactLifecycle.artifact_type == "glossary_term",
-    )
-    if work_context_id is not None:
-        stmt = stmt.where(ArtifactLifecycle.work_context_id == work_context_id)
+    """Filter glossary terms using the ArtifactVisibility manifest."""
+    _excluded = ("archived", "conflict_pending", "superseded")
+
+    if source_context_id is not None:
+        # Archive view: all items created in this context
+        stmt = select(ArtifactVisibility).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == "glossary_term",
+            ArtifactVisibility.source_context_id == source_context_id,
+        )
     else:
-        stmt = stmt.where(ArtifactLifecycle.lifecycle_status == "promoted")
+        stmt = select(ArtifactVisibility).where(
+            ArtifactVisibility.project_id == project_id,
+            ArtifactVisibility.artifact_type == "glossary_term",
+            ArtifactVisibility.lifecycle_status.notin_(_excluded),
+        )
+        if work_context_id is not None:
+            stmt = stmt.where(ArtifactVisibility.visible_in_context_id == work_context_id)
+        else:
+            stmt = stmt.where(ArtifactVisibility.lifecycle_status == "promoted")
 
     rows = (await db.execute(stmt)).scalars().all()
 
@@ -715,8 +773,33 @@ async def _filter_glossary_by_manifest(
         return glossary
 
     allowed_terms = {r.artifact_item_id for r in rows}
-    return [t for t in glossary if t.get("term", "").lower().replace(" ", "_") in allowed_terms
-            or t.get("term", "") in allowed_terms]
+
+    # Build per-term metadata for archive view
+    term_meta: dict = {}
+    if source_context_id is not None:
+        for r in rows:
+            meta: dict = {}
+            if r.source_origin:
+                meta["source_origin"] = r.source_origin
+            if r.visible_in_context_id != r.source_context_id:
+                meta["promoted_to_context_id"] = r.visible_in_context_id
+            if r.lifecycle_status == "conflict_pending":
+                meta["conflict_pending"] = True
+            if meta:
+                term_meta[r.artifact_item_id] = meta
+
+    result = []
+    for t in glossary:
+        norm = t.get("term", "").lower().replace(" ", "_")
+        raw = t.get("term", "")
+        if norm in allowed_terms or raw in allowed_terms:
+            key = norm if norm in term_meta else (raw if raw in term_meta else None)
+            if key:
+                result.append({**t, **term_meta[key]})
+            else:
+                result.append(t)
+
+    return result
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

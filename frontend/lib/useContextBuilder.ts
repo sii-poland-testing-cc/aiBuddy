@@ -62,7 +62,14 @@ export interface ContextResult {
 
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
-export function useContextBuilder(projectId: string) {
+export interface UseContextBuilderOptions {
+  workContextId?: string | null;
+  sourceContextId?: string | null;
+}
+
+export function useContextBuilder(projectId: string, options?: UseContextBuilderOptions) {
+  const workContextId = options?.workContextId ?? null;
+  const sourceContextId = options?.sourceContextId ?? null;
   const ops = useContext(ProjectOperationsContext);
 
   const [localIsBuilding, setIsBuilding] = useState(false);
@@ -98,9 +105,15 @@ export function useContextBuilder(projectId: string) {
 
   const fetchArtefacts = useCallback(async () => {
     try {
+      let ctxParam = "";
+      if (sourceContextId) {
+        ctxParam = `?source_context_id=${encodeURIComponent(sourceContextId)}`;
+      } else if (workContextId) {
+        ctxParam = `?work_context_id=${encodeURIComponent(workContextId)}`;
+      }
       const [mmRes, glRes] = await Promise.all([
-        fetch(`${API_BASE}/api/context/${encodeURIComponent(projectId)}/mindmap`),
-        fetch(`${API_BASE}/api/context/${encodeURIComponent(projectId)}/glossary`),
+        fetch(`${API_BASE}/api/context/${encodeURIComponent(projectId)}/mindmap${ctxParam}`),
+        fetch(`${API_BASE}/api/context/${encodeURIComponent(projectId)}/glossary${ctxParam}`),
       ]);
       if (!mmRes.ok || !glRes.ok) return;
       const [mind_map, glossary] = await Promise.all([mmRes.json(), glRes.json()]);
@@ -118,7 +131,7 @@ export function useContextBuilder(projectId: string) {
     } catch {
       /* fail silently */
     }
-  }, [projectId]);
+  }, [projectId, workContextId, sourceContextId]);
 
   const buildContext = useCallback(async (files: File[], mode: "append" | "rebuild" = "append") => {
     if (isBuilding) return;

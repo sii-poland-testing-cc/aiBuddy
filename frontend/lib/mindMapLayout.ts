@@ -11,6 +11,13 @@ export interface ModalNode {
   y: number;
   depth: number;
   desc?: string;
+  source_origin?: string;
+  promoted_to_context_id?: string;
+  conflict_pending?: boolean;
+  /** Version pinned in the current viewing context (from drift endpoint). */
+  pinned_version?: number | null;
+  /** Latest version available for this item. */
+  current_version?: number | null;
 }
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
@@ -64,6 +71,9 @@ export function layoutModalNodes(apiNodes: ApiNode[], apiEdges: ApiEdge[]): Moda
       y: pos?.y ?? 0,
       depth: depth[n.id] ?? 0,
       desc: n.description,
+      source_origin: n.source_origin,
+      promoted_to_context_id: n.promoted_to_context_id,
+      conflict_pending: n.conflict_pending,
     };
   });
 }

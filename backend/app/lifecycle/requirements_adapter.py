@@ -1,10 +1,18 @@
 """
-Requirements lifecycle adapter — Phase 3 implementation.
+Requirements lifecycle adapter — Phase 3 + D12 versioning (D10 visibility model).
 
 Conflict rules:
   1. Same external_id with title similarity < 0.70 → conflict ("title_mismatch")
   2. Same external_id with description similarity < 0.50 → conflict ("description_mismatch")
   3. Different external_id but same title (case-insensitive) → conflict ("duplicate_title")
+
+Visibility model (D12):
+  get_items_in_context() JOINs artifact_visibility → artifact_versions and
+  returns content from the pinned version snapshot (not from live Requirement rows).
+  This returns items CREATED here AND items PROMOTED here from children.
+
+  merge_into_target() creates visibility rows (not requirement copies).
+  For conflicts: queues them without creating visibility.
 """
 
 import uuid
@@ -15,13 +23,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ArtifactAuditLog, PromotionConflict
+from app.db.models import ArtifactAuditLog, ArtifactVersion, ArtifactVisibility, PromotionConflict
 from app.db.requirements_models import Requirement
 from app.lifecycle.interface import (
     ArtifactLifecycleAdapter,
     ArtifactType,
     ConflictItem,
 )
+from app.services.versioning import create_version, get_current_version
 
 
 def _similarity(a: str, b: str) -> float:
@@ -39,29 +48,75 @@ class RequirementsAdapter(ArtifactLifecycleAdapter):
     async def get_items_in_context(
         self, project_id: str, work_context_id: str
     ) -> list[dict[str, Any]]:
-        """Return all requirements belonging to the given work context."""
+        """
+        Return all requirements VISIBLE in the given work context.
+
+        D12: JOINs artifact_visibility → artifact_versions and returns
+        content from the pinned version snapshot (not from live Requirement rows).
+        Falls back to live data for pre-visibility or pre-versioning compat.
+        """
+        # Primary path: JOIN visibility → versions for snapshot content
+        stmt = (
+            select(ArtifactVersion, ArtifactVisibility)
+            .join(ArtifactVersion, ArtifactVisibility.artifact_version_id == ArtifactVersion.id)
+            .where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type == "requirement",
+                ArtifactVisibility.visible_in_context_id == work_context_id,
+            )
+        )
+        rows = (await self.db.execute(stmt)).all()
+        if rows:
+            return [self._snapshot_to_dict(ver.content_snapshot, vis) for ver, vis in rows]
+
+        # Fallback: no versioned visibility rows → check direct work_context_id
+        # (backwards compat for requirements created before visibility/versioning)
+        return await self._get_items_direct(project_id, work_context_id)
+
+    async def _get_items_direct(
+        self, project_id: str, work_context_id: str
+    ) -> list[dict[str, Any]]:
+        """Fallback: query requirements directly by work_context_id (pre-visibility compat)."""
         stmt = select(Requirement).where(
             Requirement.project_id == project_id,
             Requirement.work_context_id == work_context_id,
         )
         rows = (await self.db.execute(stmt)).scalars().all()
-        return [
-            {
-                "id": r.id,
-                "project_id": r.project_id,
-                "parent_id": r.parent_id,
-                "level": r.level,
-                "external_id": r.external_id,
-                "title": r.title,
-                "description": r.description or "",
-                "source_type": r.source_type,
-                "taxonomy": r.taxonomy,
-                "confidence": r.confidence,
-                "work_context_id": r.work_context_id,
-                "lifecycle_status": r.lifecycle_status,
-            }
-            for r in rows
-        ]
+        return [self._req_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _snapshot_to_dict(
+        snapshot: dict[str, Any], vis: ArtifactVisibility
+    ) -> dict[str, Any]:
+        """Build requirement dict from version snapshot + visibility metadata."""
+        result = dict(snapshot)
+        # Fill in metadata fields from visibility (not stored in snapshot)
+        result.setdefault("project_id", vis.project_id)
+        result.setdefault("parent_id", None)
+        result.setdefault("work_context_id", vis.source_context_id)
+        result.setdefault("lifecycle_status", vis.lifecycle_status)
+        result.setdefault("source_origin", vis.source_origin)
+        result.setdefault("source_origin_type", vis.source_origin_type)
+        return result
+
+    @staticmethod
+    def _req_to_dict(r: Requirement) -> dict[str, Any]:
+        return {
+            "id": r.id,
+            "project_id": r.project_id,
+            "parent_id": r.parent_id,
+            "level": r.level,
+            "external_id": r.external_id,
+            "title": r.title,
+            "description": r.description or "",
+            "source_type": r.source_type,
+            "taxonomy": r.taxonomy,
+            "confidence": r.confidence,
+            "work_context_id": r.work_context_id,
+            "lifecycle_status": r.lifecycle_status,
+            "source_origin": r.source_origin,
+            "source_origin_type": r.source_origin_type,
+        }
 
     def detect_conflict(
         self, incoming: dict[str, Any], existing: dict[str, Any]
@@ -107,8 +162,11 @@ class RequirementsAdapter(ArtifactLifecycleAdapter):
     ) -> tuple[list[dict[str, Any]], list[ConflictItem]]:
         """
         Merge requirements from source context into target context.
-        Compares each incoming item against all existing items in the target context.
-        Returns (promoted_items, conflicts).
+
+        D10 visibility model: does NOT copy requirement rows.
+        For clean items: INSERT artifact_visibility row with
+        visible_in_context_id = target_context_id.
+        For conflicts: queue them without creating visibility.
         """
         existing = await self.get_items_in_context(project_id, target_context_id)
 
@@ -143,32 +201,89 @@ class RequirementsAdapter(ArtifactLifecycleAdapter):
         """
         Apply a human resolution to a pending conflict.
 
-        resolution:
-          "keep_existing"  — discard incoming; mark conflict resolved
-          "use_incoming"   — update existing requirement with incoming values
-          "merge"          — caller provides resolved_value to write
+        D10 sibling semantics:
+          "keep_existing"  — close conflict, no visibility change
+          "use_incoming"   — INSERT visibility row for incoming item in target;
+                            supersede existing item's visibility at target level
+          "merge"          — CREATE new requirement row (sibling) with new UUID;
+                            sibling_of points to original; original stays untouched
         """
         conflict = await self.db.get(PromotionConflict, conflict_id)
         if not conflict or conflict.project_id != project_id:
             raise ValueError(f"Conflict {conflict_id!r} not found for project {project_id!r}")
 
         now = datetime.now(timezone.utc)
+        target_ctx_id = conflict.target_context_id
 
-        if resolution == "use_incoming" and resolved_value:
-            req = await self.db.get(Requirement, resolved_value.get("id", ""))
-            if req and req.project_id == project_id:
-                req.title = resolved_value.get("title", req.title)
-                req.description = resolved_value.get("description", req.description)
-                req.external_id = resolved_value.get("external_id", req.external_id)
-                req.updated_at = now
+        if resolution == "use_incoming":
+            # Supersede existing item's visibility at target level
+            existing_item_id = (conflict.existing_value or {}).get("id")
+            if existing_item_id:
+                await _supersede_visibility(
+                    self.db, project_id, "requirement", existing_item_id, target_ctx_id, now
+                )
+            # Make the incoming item visible in the target context
+            incoming_item_id = conflict.artifact_item_id
+            source_ctx_id = conflict.source_context_id
+
+            # D12: pin to current version
+            current_ver = await get_current_version(
+                self.db, project_id, "requirement", incoming_item_id
+            )
+            self.db.add(ArtifactVisibility(
+                id=str(uuid.uuid4()),
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id=incoming_item_id,
+                source_context_id=source_ctx_id,
+                visible_in_context_id=target_ctx_id,
+                lifecycle_status="promoted",
+                artifact_version_id=current_ver.id if current_ver else None,
+                created_at=now,
+            ))
+
         elif resolution == "merge" and resolved_value:
-            req_id = resolved_value.get("id", "")
-            req = await self.db.get(Requirement, req_id)
-            if req and req.project_id == project_id:
-                for field in ("title", "description", "external_id", "taxonomy"):
-                    if field in resolved_value:
-                        setattr(req, field, resolved_value[field])
-                req.updated_at = now
+            # Create a new requirement row as a sibling of the original
+            original_item_id = conflict.artifact_item_id
+            new_req_id = str(uuid.uuid4())
+            new_req = Requirement(
+                id=new_req_id,
+                project_id=project_id,
+                parent_id=None,
+                level=resolved_value.get("level", "functional_req"),
+                external_id=resolved_value.get("external_id"),
+                title=resolved_value.get("title", ""),
+                description=resolved_value.get("description", ""),
+                source_type=resolved_value.get("source_type", "formal"),
+                taxonomy=resolved_value.get("taxonomy"),
+                confidence=resolved_value.get("confidence"),
+                work_context_id=target_ctx_id,
+                lifecycle_status="promoted",
+                created_at=now,
+            )
+            self.db.add(new_req)
+
+            # D12: create v1 for the new sibling
+            sibling_ver = await create_version(
+                self.db, project_id, "requirement", new_req_id,
+                resolved_value, target_ctx_id, "merged from conflict resolution",
+            )
+
+            # Visibility row for the new sibling in the target context
+            self.db.add(ArtifactVisibility(
+                id=str(uuid.uuid4()),
+                project_id=project_id,
+                artifact_type="requirement",
+                artifact_item_id=new_req_id,
+                source_context_id=target_ctx_id,
+                visible_in_context_id=target_ctx_id,
+                lifecycle_status="promoted",
+                sibling_of=original_item_id,
+                artifact_version_id=sibling_ver.id,
+                created_at=now,
+            ))
+
+        # elif resolution == "keep_existing": no visibility change needed
 
         status_map = {
             "keep_existing": "resolved_keep_old",
@@ -191,3 +306,25 @@ class RequirementsAdapter(ArtifactLifecycleAdapter):
         ))
 
         await self.db.commit()
+
+
+async def _supersede_visibility(
+    db: AsyncSession,
+    project_id: str,
+    artifact_type: str,
+    item_id: str,
+    target_ctx_id: str,
+    now: datetime,
+) -> None:
+    """Mark existing item's visibility row as 'superseded' in the target context."""
+    stmt = select(ArtifactVisibility).where(
+        ArtifactVisibility.project_id == project_id,
+        ArtifactVisibility.artifact_type == artifact_type,
+        ArtifactVisibility.artifact_item_id == item_id,
+        ArtifactVisibility.visible_in_context_id == target_ctx_id,
+        ArtifactVisibility.lifecycle_status != "superseded",
+    )
+    row = (await db.execute(stmt)).scalars().first()
+    if row:
+        row.lifecycle_status = "superseded"
+        row.updated_at = now

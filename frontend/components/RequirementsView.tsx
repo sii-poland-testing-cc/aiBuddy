@@ -176,6 +176,32 @@ function RequirementCard({ req, onMarkReviewed, currentContextId, contexts }: Ca
             </span>
           );
         })()}
+        {req.source_references && req.source_references.length > 0 && (
+          <span
+            data-testid="req-source-origin"
+            className="text-buddy-text-faint"
+            style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "rgba(42,37,32,0.3)", border: "1px solid #2a2520" }}
+            title={`Source: ${req.source_references.join(", ")}`}
+          >
+            {req.source_references[0].startsWith("http")
+              ? <a href={req.source_references[0]} target="_blank" rel="noopener noreferrer" className="hover:text-buddy-gold transition-colors">📄 {req.source_references[0].split("/").pop()}</a>
+              : <>📄 {req.source_references[0]}</>
+            }
+          </span>
+        )}
+        {req.pinned_version != null && req.current_version != null && req.current_version > req.pinned_version && (
+          <span
+            data-testid="version-drift-badge"
+            style={{
+              fontSize: 9, padding: "1px 6px", borderRadius: 3,
+              background: "rgba(96,165,250,0.1)", color: "#60a5fa",
+              border: "1px solid rgba(96,165,250,0.25)",
+            }}
+            title={`Showing v${req.pinned_version}, latest is v${req.current_version}`}
+          >
+            ↻ v{req.current_version} available (showing v{req.pinned_version})
+          </span>
+        )}
         {req.needs_review && (
           <span
             style={{

@@ -426,3 +426,304 @@ def test_actor_id_null_allowed(app_client):
     # The ResolveRequest has no actor_id field — this is intentional
     r = app_client.post(f"/api/conflicts/{pid}/{cid}/resolve", json={"resolution": "keep_old"})
     assert r.status_code == 200
+
+
+# ── D10 visibility / sibling tests ──────────────────────────────────────────
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def _insert_visibility_row(project_id, artifact_type, item_id, ctx_id, status="active"):
+    """Insert a visibility row for an item in a context."""
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility
+
+    async def _q():
+        async with AsyncSessionLocal() as db:
+            db.add(ArtifactVisibility(
+                id=str(uuid.uuid4()),
+                project_id=project_id,
+                artifact_type=artifact_type,
+                artifact_item_id=item_id,
+                source_context_id=ctx_id,
+                visible_in_context_id=ctx_id,
+                lifecycle_status=status,
+                created_at=datetime.now(timezone.utc),
+            ))
+            await db.commit()
+
+    _run(_q())
+
+
+def _get_visibility_status(project_id, artifact_type, item_id, ctx_id):
+    """Get lifecycle_status of a visibility row."""
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility
+    from sqlalchemy import select
+
+    async def _q():
+        async with AsyncSessionLocal() as db:
+            stmt = select(ArtifactVisibility).where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type == artifact_type,
+                ArtifactVisibility.artifact_item_id == item_id,
+                ArtifactVisibility.visible_in_context_id == ctx_id,
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            return [r.lifecycle_status for r in rows]
+
+    return _run(_q())
+
+
+def _get_visibility_rows_with_sibling(project_id, artifact_type, ctx_id):
+    """Get all visibility rows with sibling_of set in a context."""
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactVisibility
+    from sqlalchemy import select
+
+    async def _q():
+        async with AsyncSessionLocal() as db:
+            stmt = select(ArtifactVisibility).where(
+                ArtifactVisibility.project_id == project_id,
+                ArtifactVisibility.artifact_type == artifact_type,
+                ArtifactVisibility.visible_in_context_id == ctx_id,
+                ArtifactVisibility.sibling_of.isnot(None),
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            return [
+                {"item_id": r.artifact_item_id, "sibling_of": r.sibling_of, "status": r.lifecycle_status}
+                for r in rows
+            ]
+
+    return _run(_q())
+
+
+def _get_audit_log_new_values(project_id, item_id, event_type="conflict_resolved"):
+    """Get new_value dicts from audit log entries."""
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import ArtifactAuditLog
+    from sqlalchemy import select
+
+    async def _q():
+        async with AsyncSessionLocal() as db:
+            stmt = select(ArtifactAuditLog).where(
+                ArtifactAuditLog.project_id == project_id,
+                ArtifactAuditLog.artifact_item_id == item_id,
+                ArtifactAuditLog.event_type == event_type,
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            return [r.new_value for r in rows]
+
+    return _run(_q())
+
+
+def _seed_project_mindmap(project_id, nodes, edges=None):
+    """Set mind_map on the project."""
+    from app.db.engine import AsyncSessionLocal
+    from app.db.models import Project
+
+    async def _q():
+        async with AsyncSessionLocal() as db:
+            project = await db.get(Project, project_id)
+            project.mind_map = {"nodes": nodes, "edges": edges or []}
+            await db.commit()
+
+    _run(_q())
+
+
+def test_accept_new_supersedes_existing_visibility(app_client):
+    """
+    D10: accept_new supersedes the existing item's visibility row
+    at the target level and creates a new one for the incoming item.
+    """
+    pid = _make_project(app_client, "d10-supersede")
+    domain = _get_domain(app_client, pid)
+    epic = _create_epic(app_client, pid, domain["id"])
+    story = _create_story(app_client, pid, epic["id"])
+
+    item_id = "req-supersede-test"
+    existing_id = str(uuid.uuid4())
+
+    # Create existing visibility row at epic level (the item that will be superseded)
+    _insert_visibility_row(pid, "requirement", existing_id, epic["id"])
+
+    cid = _insert_conflict(
+        pid, story["id"], epic["id"],
+        artifact_type="requirement",
+        artifact_item_id=item_id,
+        incoming={"id": item_id, "title": "New Title"},
+        existing={"id": existing_id, "title": "Old Title"},
+    )
+
+    r = _resolve(app_client, pid, cid, "accept_new")
+    assert r.status_code == 200
+
+    # Existing item should be superseded
+    statuses = _get_visibility_status(pid, "requirement", existing_id, epic["id"])
+    assert "superseded" in statuses
+
+    # Incoming item should have a promoted visibility row
+    incoming_statuses = _get_visibility_status(pid, "requirement", item_id, epic["id"])
+    assert "promoted" in incoming_statuses
+
+
+def test_keep_old_no_visibility_change(app_client):
+    """D10: keep_old closes the conflict without any visibility changes."""
+    pid = _make_project(app_client, "d10-keep-old")
+    domain = _get_domain(app_client, pid)
+    epic = _create_epic(app_client, pid, domain["id"])
+    story = _create_story(app_client, pid, epic["id"])
+
+    item_id = str(uuid.uuid4())
+    cid = _insert_conflict(pid, story["id"], epic["id"], artifact_item_id=item_id)
+
+    r = _resolve(app_client, pid, cid, "keep_old")
+    assert r.status_code == 200
+
+    # No visibility row should exist for the incoming item in the epic
+    statuses = _get_visibility_status(pid, "requirement", item_id, epic["id"])
+    assert len(statuses) == 0
+
+
+def test_edited_creates_sibling_requirement(app_client):
+    """
+    D10: edited resolution creates a SIBLING requirement with new UUID,
+    sibling_of pointing to the original. The original stays untouched.
+    """
+    pid = _make_project(app_client, "d10-sibling-req")
+    domain = _get_domain(app_client, pid)
+    epic = _create_epic(app_client, pid, domain["id"])
+    story = _create_story(app_client, pid, epic["id"])
+
+    item_id = str(uuid.uuid4())
+    cid = _insert_conflict(
+        pid, story["id"], epic["id"],
+        artifact_type="requirement",
+        artifact_item_id=item_id,
+        incoming={"id": item_id, "title": "Original Title"},
+    )
+
+    r = _resolve(app_client, pid, cid, "edited", resolved_value={
+        "id": item_id, "title": "Merged Title", "description": "Combined desc"
+    })
+    assert r.status_code == 200
+
+    # A sibling visibility row should exist in the epic with sibling_of set
+    siblings = _get_visibility_rows_with_sibling(pid, "requirement", epic["id"])
+    assert len(siblings) >= 1
+    sibling = siblings[0]
+    assert sibling["sibling_of"] == item_id
+    assert sibling["status"] == "promoted"
+    # Sibling has a DIFFERENT item_id than the original
+    assert sibling["item_id"] != item_id
+
+
+def test_edited_graph_node_creates_sibling(app_client):
+    """
+    D10: edited resolution on a graph node creates a sibling node
+    in the JSON blob (append, not overwrite).
+    """
+    pid = _make_project(app_client, "d10-sibling-node")
+    domain = _get_domain(app_client, pid)
+    epic = _create_epic(app_client, pid, domain["id"])
+    story = _create_story(app_client, pid, epic["id"])
+
+    # Seed mind map with existing node
+    _seed_project_mindmap(pid, [{"id": "e1", "label": "Payment", "type": "data"}])
+    _insert_visibility_row(pid, "graph_node", "e1", epic["id"])
+
+    cid = _insert_conflict(
+        pid, story["id"], epic["id"],
+        artifact_type="graph_node",
+        artifact_item_id="e1",
+        incoming={"id": "e1", "label": "Invoice", "type": "data"},
+        existing={"id": "e1", "label": "Payment", "type": "data"},
+        conflict_reason="label_mismatch: 'Payment' → 'Invoice'",
+    )
+
+    r = _resolve(app_client, pid, cid, "edited", resolved_value={
+        "id": "e1", "label": "Payment & Invoice"
+    })
+    assert r.status_code == 200
+
+    # Sibling visibility row exists in epic
+    siblings = _get_visibility_rows_with_sibling(pid, "graph_node", epic["id"])
+    assert len(siblings) >= 1
+    sibling = siblings[0]
+    assert sibling["sibling_of"] == "e1"
+    assert sibling["item_id"] != "e1"  # new id
+
+    # Original e1 at epic level should be superseded
+    statuses = _get_visibility_status(pid, "graph_node", "e1", epic["id"])
+    assert "superseded" in statuses
+
+    # The JSON blob should have BOTH the original and sibling nodes (append)
+    async def _check_blob():
+        from app.db.engine import AsyncSessionLocal
+        from app.db.models import Project
+        async with AsyncSessionLocal() as db:
+            project = await db.get(Project, pid)
+            return project.mind_map.get("nodes", [])
+
+    nodes = _run(_check_blob())
+    # Original node still exists + sibling was appended
+    assert len(nodes) >= 2
+    node_ids = [n["id"] for n in nodes]
+    assert "e1" in node_ids  # original untouched
+    sibling_node = [n for n in nodes if n["id"] == sibling["item_id"]]
+    assert len(sibling_node) == 1
+    assert sibling_node[0]["label"] == "Payment & Invoice"
+
+
+def test_edited_sibling_audit_trail(app_client):
+    """
+    D10: edited resolution records both original_item_id and sibling_item_id
+    in the audit log for traceability.
+    """
+    pid = _make_project(app_client, "d10-sibling-audit")
+    domain = _get_domain(app_client, pid)
+    epic = _create_epic(app_client, pid, domain["id"])
+    story = _create_story(app_client, pid, epic["id"])
+
+    _seed_project_mindmap(pid, [{"id": "n1", "label": "Old", "type": "data"}])
+    _insert_visibility_row(pid, "graph_node", "n1", epic["id"])
+
+    cid = _insert_conflict(
+        pid, story["id"], epic["id"],
+        artifact_type="graph_node",
+        artifact_item_id="n1",
+        incoming={"id": "n1", "label": "New", "type": "data"},
+        existing={"id": "n1", "label": "Old", "type": "data"},
+    )
+
+    r = _resolve(app_client, pid, cid, "edited", resolved_value={"id": "n1", "label": "Merged"})
+    assert r.status_code == 200
+
+    # Audit log should contain sibling_item_id and original_item_id
+    audit_entries = _get_audit_log_new_values(pid, "n1")
+    assert len(audit_entries) >= 1
+    entry = audit_entries[0]
+    assert entry.get("original_item_id") == "n1"
+    assert "sibling_item_id" in entry
+    assert entry["sibling_item_id"] != "n1"
+
+
+def test_defer_keeps_conflict_pending(app_client):
+    """D10: defer leaves the conflict as deferred, no visibility changes."""
+    pid = _make_project(app_client, "d10-defer")
+    domain = _get_domain(app_client, pid)
+    epic = _create_epic(app_client, pid, domain["id"])
+    story = _create_story(app_client, pid, epic["id"])
+
+    item_id = str(uuid.uuid4())
+    cid = _insert_conflict(pid, story["id"], epic["id"], artifact_item_id=item_id)
+
+    r = _resolve(app_client, pid, cid, "defer")
+    assert r.status_code == 200
+    assert r.json()["conflict"]["status"] == "deferred"
+
+    # No visibility row for the item in epic
+    statuses = _get_visibility_status(pid, "requirement", item_id, epic["id"])
+    assert len(statuses) == 0

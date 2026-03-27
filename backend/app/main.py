@@ -26,6 +26,8 @@ from app.api.routes.requirements import router as requirements_router
 from app.api.routes.work_contexts import router as work_contexts_router
 from app.api.routes.promotion import router as promotion_router
 from app.api.routes.conflicts import router as conflicts_router
+from app.api.routes.artifacts import router as artifacts_router
+from app.api.routes.versions import router as versions_router
 from app.core.config import settings
 from app.db.engine import init_db
 
@@ -72,6 +74,8 @@ app.include_router(mapping_router,       prefix="/api/mapping",       tags=["map
 app.include_router(work_contexts_router, prefix="/api/work-contexts", tags=["Work Contexts"])
 app.include_router(promotion_router,     prefix="/api/promotion",     tags=["Promotion"])
 app.include_router(conflicts_router,     prefix="/api/conflicts",     tags=["Conflicts"])
+app.include_router(artifacts_router,     prefix="/api/artifacts",     tags=["Artifacts"])
+app.include_router(versions_router,      prefix="/api/versions",      tags=["Versioning"])
 
 
 @app.get("/health")

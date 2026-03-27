@@ -100,6 +100,11 @@ export default function PromotionPreview({
                       s.promoted > 0 ? (
                         <div key={type} className="text-buddy-text-muted" style={{ fontSize: 11 }}>
                           • {ARTIFACT_LABELS[type] ?? type}: {s.promoted}
+                          {s.version_deltas ? (
+                            <span style={{ marginLeft: 6, fontSize: 10, color: "#60a5fa" }}>
+                              ({s.version_deltas} version update{s.version_deltas !== 1 ? "s" : ""})
+                            </span>
+                          ) : null}
                         </div>
                       ) : null
                     )}

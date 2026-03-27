@@ -10,6 +10,11 @@ export interface MindMapNode {
   x?: number;
   y?: number;
   description?: string;
+  source_origin?: string;
+  promoted_to_context_id?: string;
+  conflict_pending?: boolean;
+  pinned_version?: number | null;
+  current_version?: number | null;
 }
 
 export interface MindMapEdge {

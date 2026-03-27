@@ -66,26 +66,6 @@ export default function ProjectPage() {
 
   // ── Hooks ───────────────────────────────────────────────────────────────────
   const {
-    messages, progress, isLoading, error: chatError,
-    latestSnapshotId, send, stop, clearError, addStatusMessage, addUserMessage,
-  } = useAIBuddyChat({ projectId, tier });
-
-  const {
-    result: ctxResult, status: contextStatus,
-    isBuilding, buildContext, fetchStatus,
-    statusError: contextStatusError, clearStatusError: clearContextStatusError,
-    noopMessage: contextNoopMessage, clearNoopMessage: clearContextNoopMessage,
-  } = useContextBuilder(projectId);
-
-  const { uploadFiles } = useProjectFiles(projectId);
-  const { heatmap, retry: retryHeatmap } = useHeatmap(projectId);
-  const {
-    isRunning: isMappingRunning,
-    progress: mappingProgress,
-    lastRunAt: lastMappingDate,
-    runMapping,
-  } = useMapping(projectId, retryHeatmap);
-  const {
     contexts: workContexts,
     currentContextId,
     setContext: setCurrentContextId,
@@ -95,6 +75,35 @@ export default function ProjectPage() {
     archiveContext: archiveWorkContext,
     refresh: refreshWorkContexts,
   } = useWorkContext(projectId);
+
+  const {
+    messages, progress, isLoading, error: chatError,
+    latestSnapshotId, send, stop, clearError, addStatusMessage, addUserMessage,
+  } = useAIBuddyChat({ projectId, tier });
+
+  // Detect promoted context → archive view uses source_context_id
+  const currentCtx = currentContextId ? workContexts.find((c) => c.id === currentContextId) : null;
+  const isArchiveView = currentCtx?.status === "promoted";
+  const archiveSourceContextId = isArchiveView ? currentContextId : null;
+
+  const {
+    result: ctxResult, status: contextStatus,
+    isBuilding, buildContext, fetchStatus,
+    statusError: contextStatusError, clearStatusError: clearContextStatusError,
+    noopMessage: contextNoopMessage, clearNoopMessage: clearContextNoopMessage,
+  } = useContextBuilder(projectId, {
+    workContextId: isArchiveView ? null : currentContextId,
+    sourceContextId: archiveSourceContextId,
+  });
+
+  const { uploadFiles } = useProjectFiles(projectId);
+  const { heatmap, retry: retryHeatmap } = useHeatmap(projectId);
+  const {
+    isRunning: isMappingRunning,
+    progress: mappingProgress,
+    lastRunAt: lastMappingDate,
+    runMapping,
+  } = useMapping(projectId, retryHeatmap);
 
   // ── Promotion & Conflicts ────────────────────────────────────────────────────
   const { pendingCount: pendingConflicts, refresh: refreshConflicts } = useConflicts(projectId);
@@ -111,7 +120,8 @@ export default function ProjectPage() {
     isExtracting, extractionProgress,
     extractRequirements, patchRequirement,
   } = useRequirements(projectId, {
-    workContextId: currentContextId,
+    workContextId: isArchiveView ? null : currentContextId,
+    sourceContextId: archiveSourceContextId,
     includePending: currentContextId != null,
   });
 
@@ -348,6 +358,7 @@ export default function ProjectPage() {
         pendingConflicts={pendingConflicts}
         onOpenConflicts={() => setConflictViewOpen(true)}
         onPromote={handlePromoteContext}
+        isArchiveView={isArchiveView}
       />
 
       {/* ── Main: chat + artifact + utility ────────────────────────────────── */}
@@ -545,6 +556,7 @@ export default function ProjectPage() {
         edges={mindMapEdges.map((e) => ({ source: e.source, target: e.target }))}
         currentContextId={currentContextId}
         contexts={workContexts}
+        projectId={projectId}
       />
 
       {/* ── Promotion Preview Modal ─────────────────────────────────────────── */}

@@ -36,8 +36,13 @@ export interface Requirement {
   needs_review: boolean;
   review_reason: string | null;
   taxonomy: { module?: string; risk_level?: string; business_domain?: string } | null;
+  source_references?: string[] | null;
   work_context_id?: string | null;
   lifecycle_status?: string | null;
+  /** Version pinned in current viewing context (injected by drift data). */
+  pinned_version?: number | null;
+  /** Latest available version. */
+  current_version?: number | null;
 }
 
 export interface RequirementsStats {
@@ -56,11 +61,12 @@ export interface ExtractionProgress {
 
 export interface UseRequirementsOptions {
   workContextId?: string | null;
+  sourceContextId?: string | null;
   includePending?: boolean;
 }
 
 export function useRequirements(projectId: string, options: UseRequirementsOptions = {}) {
-  const { workContextId, includePending = false } = options;
+  const { workContextId, sourceContextId, includePending = false } = options;
   const ops = useContext(ProjectOperationsContext);
 
   const [requirements, setRequirements] = useState<Requirement[]>([]);
@@ -83,7 +89,11 @@ export function useRequirements(projectId: string, options: UseRequirementsOptio
     setError(null);
     try {
       const params = new URLSearchParams();
-      if (workContextId) params.set("work_context_id", workContextId);
+      if (sourceContextId) {
+        params.set("source_context_id", sourceContextId);
+      } else if (workContextId) {
+        params.set("work_context_id", workContextId);
+      }
       if (includePending) params.set("include_pending", "true");
       const qs = params.toString() ? `?${params.toString()}` : "";
       const [flatRes, statsRes] = await Promise.all([
@@ -119,7 +129,7 @@ export function useRequirements(projectId: string, options: UseRequirementsOptio
     } finally {
       setLoading(false);
     }
-  }, [projectId, workContextId, includePending]);
+  }, [projectId, workContextId, sourceContextId, includePending]);
 
   const extractRequirements = useCallback(async (message = "") => {
     if (!projectId || isExtracting) return;

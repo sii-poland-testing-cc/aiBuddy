@@ -28,9 +28,10 @@ from app.api.streaming import stream_with_keepalive
 from app.core.config import settings
 from app.core.llm import get_llm
 from app.db.engine import AsyncSessionLocal, get_db
-from app.db.models import Project
+from app.db.models import ArtifactAuditLog, ArtifactVisibility, Project
 from app.db.requirements_models import Requirement
 from app.services.requirements import persist_gaps, persist_requirements
+from app.services.versioning import create_version_and_update_home
 
 logger = logging.getLogger("ai_buddy.requirements_api")
 
@@ -131,41 +132,26 @@ async def list_requirements(
     needs_review: Optional[bool] = None,
     lifecycle_status: Optional[str] = None,
     work_context_id: Optional[str] = None,
+    source_context_id: Optional[str] = None,
     include_pending: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     """
     List requirements as a hierarchical tree (features → reqs → ACs).
 
-    Default (no work_context_id): returns only lifecycle_status="promoted" (Domain view).
-    With work_context_id: returns items for that specific context.
+    Uses ArtifactVisibility JOIN as the canonical query path ("what is visible
+    at this level"). Falls back to direct Requirement table query when no
+    visibility rows exist (pre-Phase-3 backwards compat).
+
+    Default (no work_context_id): promoted items visible at Domain level (NULL context).
+    With work_context_id: items visible in that specific context.
     With include_pending=True: also includes draft/active/ready items.
     Explicit lifecycle_status overrides the default filter.
     """
-    stmt = (
-        select(Requirement)
-        .where(Requirement.project_id == project_id)
-        .order_by(Requirement.created_at)
+    rows = await _query_requirements_via_visibility(
+        db, project_id, work_context_id, lifecycle_status, include_pending,
+        level=level, needs_review=needs_review, source_context_id=source_context_id,
     )
-    if level:
-        stmt = stmt.where(Requirement.level == level)
-    if needs_review is not None:
-        stmt = stmt.where(Requirement.needs_review == needs_review)
-
-    if lifecycle_status is not None:
-        # Explicit override — honour it as-is
-        stmt = stmt.where(Requirement.lifecycle_status == lifecycle_status)
-    elif work_context_id is not None:
-        # Context-scoped view
-        stmt = stmt.where(Requirement.work_context_id == work_context_id)
-        if not include_pending:
-            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
-    else:
-        # Default Domain view: promoted items only
-        if not include_pending:
-            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
-
-    rows = (await db.execute(stmt)).scalars().all()
 
     if not rows:
         return {"project_id": project_id, "features": [], "total": 0}
@@ -213,28 +199,17 @@ async def list_requirements_flat(
     """
     Return all requirements as a flat list (for audits and matching).
 
-    Default: returns only lifecycle_status="promoted" (Domain view).
-    With work_context_id: returns items for that context.
+    Uses ArtifactVisibility JOIN as the canonical query path.
+    Falls back to direct query when no visibility rows exist.
+
+    Default: promoted items visible at Domain level (NULL context).
+    With work_context_id: items visible in that context.
     With include_pending=True: also includes draft/active/ready items.
     Explicit lifecycle_status overrides the default filter.
     """
-    stmt = (
-        select(Requirement)
-        .where(Requirement.project_id == project_id)
-        .order_by(Requirement.level, Requirement.created_at)
+    rows = await _query_requirements_via_visibility(
+        db, project_id, work_context_id, lifecycle_status, include_pending,
     )
-
-    if lifecycle_status is not None:
-        stmt = stmt.where(Requirement.lifecycle_status == lifecycle_status)
-    elif work_context_id is not None:
-        stmt = stmt.where(Requirement.work_context_id == work_context_id)
-        if not include_pending:
-            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
-    else:
-        if not include_pending:
-            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
-
-    rows = (await db.execute(stmt)).scalars().all()
 
     return {
         "project_id": project_id,
@@ -337,13 +312,54 @@ async def update_requirement(
     for key, value in update_data.items():
         setattr(req, key, value)
 
-    req.updated_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    req.updated_at = now
 
     # If explicitly confirming, mark as human reviewed
     if body.human_reviewed is True:
         req.human_reviewed = True
         req.needs_review = False
         req.review_reason = None
+
+    # ── D12: Create new version + update home visibility row ─────────────
+    changed_fields = list(update_data.keys())
+    summary = f"updated: {', '.join(changed_fields)}" if changed_fields else "updated"
+    content_snapshot = {
+        "id": req.id,
+        "title": req.title,
+        "description": req.description,
+        "level": req.level,
+        "external_id": req.external_id,
+        "source_type": req.source_type,
+        "source_references": req.source_references,
+        "taxonomy": req.taxonomy,
+        "confidence": req.confidence,
+        "completeness_score": req.completeness_score,
+    }
+
+    await create_version_and_update_home(
+        db,
+        project_id=project_id,
+        artifact_type="requirement",
+        artifact_item_id=requirement_id,
+        content_snapshot=content_snapshot,
+        context_id=req.work_context_id,
+        change_summary=summary,
+        created_by="human",
+    )
+
+    # Audit log for the edit
+    db.add(ArtifactAuditLog(
+        project_id=project_id,
+        artifact_type="requirement",
+        artifact_item_id=requirement_id,
+        event_type="updated",
+        work_context_id=req.work_context_id,
+        old_value={k: str(v) for k, v in update_data.items()},
+        new_value=content_snapshot,
+        actor="human",
+        created_at=now,
+    ))
 
     await db.commit()
     await db.refresh(req)
@@ -366,6 +382,111 @@ async def delete_requirements(
     return {"deleted": result.rowcount}
 
 
+# ─── Visibility query helper ──────────────────────────────────────────────────
+
+_EXCLUDED_STATUSES = ("archived", "conflict_pending", "superseded")
+
+
+async def _query_requirements_via_visibility(
+    db: AsyncSession,
+    project_id: str,
+    work_context_id: Optional[str] = None,
+    lifecycle_status: Optional[str] = None,
+    include_pending: bool = False,
+    level: Optional[str] = None,
+    needs_review: Optional[bool] = None,
+    source_context_id: Optional[str] = None,
+) -> list:
+    """
+    Canonical requirement query via ArtifactVisibility JOIN.
+
+    Falls back to direct Requirement table query when no visibility rows exist
+    for this project (pre-Phase-3 backwards compatibility).
+
+    source_context_id: archive view — return items CREATED in this context (any status).
+    """
+    # Build visibility JOIN query
+    stmt = (
+        select(Requirement)
+        .join(
+            ArtifactVisibility,
+            (ArtifactVisibility.artifact_item_id == Requirement.id)
+            & (ArtifactVisibility.artifact_type == "requirement")
+            & (ArtifactVisibility.project_id == Requirement.project_id),
+        )
+        .where(Requirement.project_id == project_id)
+    )
+
+    if source_context_id is not None:
+        # Archive view: all items CREATED in this context, any lifecycle status
+        stmt = stmt.where(ArtifactVisibility.source_context_id == source_context_id)
+    elif lifecycle_status is not None:
+        # Explicit override — honour it as-is
+        stmt = stmt.where(ArtifactVisibility.lifecycle_status == lifecycle_status)
+    elif work_context_id is not None:
+        stmt = stmt.where(ArtifactVisibility.visible_in_context_id == work_context_id)
+        stmt = stmt.where(ArtifactVisibility.lifecycle_status.notin_(_EXCLUDED_STATUSES))
+        if not include_pending:
+            stmt = stmt.where(ArtifactVisibility.lifecycle_status == "promoted")
+    else:
+        # Default Domain view: NULL context, promoted only
+        stmt = stmt.where(ArtifactVisibility.lifecycle_status.notin_(_EXCLUDED_STATUSES))
+        if not include_pending:
+            stmt = stmt.where(ArtifactVisibility.lifecycle_status == "promoted")
+
+    # Additional requirement-level filters
+    if level:
+        stmt = stmt.where(Requirement.level == level)
+    if needs_review is not None:
+        stmt = stmt.where(Requirement.needs_review == needs_review)
+
+    stmt = stmt.order_by(Requirement.created_at)
+
+    # Deduplicate: an item promoted to multiple contexts would appear multiple times
+    rows = list(dict.fromkeys((await db.execute(stmt)).scalars().all()))
+
+    if rows:
+        return rows
+
+    # Fallback: no visibility rows → direct query (pre-Phase-3 compat)
+    return await _query_requirements_direct(
+        db, project_id, work_context_id, lifecycle_status, include_pending,
+        level, needs_review,
+    )
+
+
+async def _query_requirements_direct(
+    db: AsyncSession,
+    project_id: str,
+    work_context_id: Optional[str] = None,
+    lifecycle_status: Optional[str] = None,
+    include_pending: bool = False,
+    level: Optional[str] = None,
+    needs_review: Optional[bool] = None,
+) -> list:
+    """Legacy direct query on Requirement table (no visibility JOIN)."""
+    stmt = (
+        select(Requirement)
+        .where(Requirement.project_id == project_id)
+        .order_by(Requirement.created_at)
+    )
+    if level:
+        stmt = stmt.where(Requirement.level == level)
+    if needs_review is not None:
+        stmt = stmt.where(Requirement.needs_review == needs_review)
+    if lifecycle_status is not None:
+        stmt = stmt.where(Requirement.lifecycle_status == lifecycle_status)
+    elif work_context_id is not None:
+        stmt = stmt.where(Requirement.work_context_id == work_context_id)
+        if not include_pending:
+            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
+    else:
+        if not include_pending:
+            stmt = stmt.where(Requirement.lifecycle_status == "promoted")
+
+    return list((await db.execute(stmt)).scalars().all())
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _req_to_dict(r: Requirement) -> Dict[str, Any]:
@@ -384,6 +505,7 @@ def _req_to_dict(r: Requirement) -> Dict[str, Any]:
         "human_reviewed": r.human_reviewed,
         "needs_review": r.needs_review,
         "review_reason": r.review_reason,
+        "source_references": r.source_references,
         "work_context_id": r.work_context_id,
         "lifecycle_status": r.lifecycle_status,
         "created_at": r.created_at.isoformat() if r.created_at else None,

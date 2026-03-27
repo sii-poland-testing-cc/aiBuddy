@@ -1,8 +1,8 @@
-"""Backfill existing project data into the lifecycle model (Phase 8).
+"""Backfill existing project data into the visibility model (Phase 8 — D10 REVISIT).
 
 Revision ID: 006
 Revises: 005
-Create Date: 2026-03-26
+Create Date: 2026-03-26 (original) → 2026-03-27 (D10 revisit)
 
 For every existing project that has context artefacts (mind_map / glossary)
 or requirements, this migration:
@@ -21,14 +21,23 @@ or requirements, this migration:
        lifecycle_status = "promoted"
      Only rows where work_context_id IS NULL are updated (idempotent).
 
-  4. Inserts ArtifactLifecycle manifest rows for every graph node, graph edge,
+  4. Inserts ArtifactVisibility rows for every graph node, graph edge,
      and glossary term found in Project.mind_map / Project.glossary.
-     Uses INSERT OR IGNORE so re-running the migration is safe.
+     source_context_id = visible_in_context_id = domain.id (home row).
+     Uses SELECT-then-INSERT for idempotency.
 
-  5. Emits one ArtifactAuditLog row per manifest item:
+  5. Inserts ArtifactVisibility rows for every Requirement in the project.
+     source_context_id = visible_in_context_id = domain.id.
+     source_origin derived from source_references[0] (if available).
+
+  6. Emits one ArtifactAuditLog row per visibility item:
        event_type="created", actor="system", note="backfill migration"
      Skipped if an audit-log entry for the same (project_id, artifact_type,
      artifact_item_id) already exists (idempotent).
+
+  7. Populates source_origin on visibility rows:
+     - Graph nodes/edges/glossary: first file from context_files
+     - Requirements: first entry from source_references JSON
 
 Projects with NULL mind_map / glossary are handled gracefully (skipped).
 """
@@ -53,13 +62,31 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _derive_source_origin_from_refs(source_references_raw) -> tuple:
+    """Derive (source_origin, source_origin_type) from source_references JSON."""
+    if not source_references_raw:
+        return None, None
+    try:
+        refs = json.loads(source_references_raw) if isinstance(source_references_raw, str) else source_references_raw
+    except (json.JSONDecodeError, TypeError):
+        return None, None
+    if not refs or not isinstance(refs, list):
+        return None, None
+    first_ref = str(refs[0]).strip()
+    if not first_ref:
+        return None, None
+    if first_ref.startswith("http://") or first_ref.startswith("https://"):
+        return first_ref, "url"
+    return first_ref, "file"
+
+
 def upgrade() -> None:
     bind = op.get_bind()
 
     # ── Fetch all projects ────────────────────────────────────────────────────
     projects = bind.execute(
         sa.text(
-            "SELECT id, mind_map, glossary, context_built_at, created_at "
+            "SELECT id, mind_map, glossary, context_built_at, created_at, context_files "
             "FROM projects"
         )
     ).fetchall()
@@ -68,7 +95,7 @@ def upgrade() -> None:
     total_domains = 0
     total_requirements = 0
     total_snapshots = 0
-    total_manifest = 0
+    total_visibility = 0
     total_audit = 0
 
     for project in projects:
@@ -77,6 +104,25 @@ def upgrade() -> None:
         glossary_raw = project[2]
         context_built_at = project[3]
         created_at = project[4]
+        context_files_raw = project[5]
+
+        # Derive source_origin for graph/glossary items from context_files
+        context_source_origin = None
+        context_source_origin_type = None
+        if context_files_raw:
+            try:
+                cf = json.loads(context_files_raw) if isinstance(context_files_raw, str) else context_files_raw
+                if cf and isinstance(cf, list):
+                    # context_files can be [{"name": "x.docx", ...}] or ["x.docx"]
+                    first = cf[0]
+                    if isinstance(first, dict):
+                        context_source_origin = first.get("name")
+                    else:
+                        context_source_origin = str(first)
+                    if context_source_origin:
+                        context_source_origin_type = "file"
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         # ── 1. Get or create Default Domain ──────────────────────────────────
         existing_domain = bind.execute(
@@ -110,7 +156,7 @@ def upgrade() -> None:
             )
             total_domains += 1
 
-        # ── 2. Backfill Requirements ──────────────────────────────────────────
+        # ── 2. Backfill Requirements (work_context_id) ──────────────────────
         result = bind.execute(
             sa.text(
                 "UPDATE requirements "
@@ -132,7 +178,7 @@ def upgrade() -> None:
         )
         total_snapshots += result.rowcount
 
-        # ── 4 + 5. Backfill ArtifactLifecycle manifest + AuditLog ────────────
+        # ── 4. Backfill ArtifactVisibility for graph nodes/edges/glossary ────
         now_str = _now_iso()
 
         # 4a. Graph nodes
@@ -148,10 +194,11 @@ def upgrade() -> None:
                 item_id = node.get("id")
                 if not item_id:
                     continue
-                n = _insert_manifest_item(
-                    bind, project_id, "graph_node", item_id, domain_id, now_str
+                n = _insert_visibility_item(
+                    bind, project_id, "graph_node", item_id, domain_id,
+                    context_source_origin, context_source_origin_type, now_str,
                 )
-                total_manifest += n
+                total_visibility += n
                 n = _insert_audit_log(
                     bind, project_id, "graph_node", item_id, domain_id, now_str
                 )
@@ -163,10 +210,11 @@ def upgrade() -> None:
                 if not src or not tgt:
                     continue
                 item_id = f"{src}→{tgt}"
-                n = _insert_manifest_item(
-                    bind, project_id, "graph_edge", item_id, domain_id, now_str
+                n = _insert_visibility_item(
+                    bind, project_id, "graph_edge", item_id, domain_id,
+                    context_source_origin, context_source_origin_type, now_str,
                 )
-                total_manifest += n
+                total_visibility += n
                 n = _insert_audit_log(
                     bind, project_id, "graph_edge", item_id, domain_id, now_str
                 )
@@ -185,51 +233,82 @@ def upgrade() -> None:
                     continue
                 # Normalised item_id matches context_lifecycle.py convention
                 item_id = term.lower().replace(" ", "_")
-                n = _insert_manifest_item(
-                    bind, project_id, "glossary_term", item_id, domain_id, now_str
+                n = _insert_visibility_item(
+                    bind, project_id, "glossary_term", item_id, domain_id,
+                    context_source_origin, context_source_origin_type, now_str,
                 )
-                total_manifest += n
+                total_visibility += n
                 n = _insert_audit_log(
                     bind, project_id, "glossary_term", item_id, domain_id, now_str
                 )
                 total_audit += n
 
+        # ── 5. Backfill ArtifactVisibility for Requirements ──────────────────
+        req_rows = bind.execute(
+            sa.text(
+                "SELECT id, source_references FROM requirements "
+                "WHERE project_id = :pid"
+            ),
+            {"pid": project_id},
+        ).fetchall()
+
+        for req_row in req_rows:
+            req_id = req_row[0]
+            source_refs_raw = req_row[1]
+            req_origin, req_origin_type = _derive_source_origin_from_refs(source_refs_raw)
+            n = _insert_visibility_item(
+                bind, project_id, "requirement", req_id, domain_id,
+                req_origin, req_origin_type, now_str,
+            )
+            total_visibility += n
+            n = _insert_audit_log(
+                bind, project_id, "requirement", req_id, domain_id, now_str
+            )
+            total_audit += n
+
     logger.info(
         "006 backfill complete — domains=%d requirements=%d snapshots=%d "
-        "manifest_rows=%d audit_rows=%d",
+        "visibility_rows=%d audit_rows=%d",
         total_domains, total_requirements, total_snapshots,
-        total_manifest, total_audit,
+        total_visibility, total_audit,
     )
 
 
-def _insert_manifest_item(
+def _insert_visibility_item(
     bind, project_id: str, artifact_type: str, item_id: str,
-    domain_id: str, now_str: str,
+    domain_id: str, source_origin: str | None, source_origin_type: str | None,
+    now_str: str,
 ) -> int:
-    """INSERT OR IGNORE into artifact_lifecycle; returns 1 if inserted, 0 if skipped."""
+    """INSERT into artifact_visibility if not exists; returns 1 if inserted, 0 if skipped."""
     existing = bind.execute(
         sa.text(
-            "SELECT id FROM artifact_lifecycle "
-            "WHERE project_id = :pid AND artifact_type = :at AND artifact_item_id = :iid"
+            "SELECT id FROM artifact_visibility "
+            "WHERE project_id = :pid AND artifact_type = :at "
+            "  AND artifact_item_id = :iid AND visible_in_context_id = :vid"
         ),
-        {"pid": project_id, "at": artifact_type, "iid": item_id},
+        {"pid": project_id, "at": artifact_type, "iid": item_id, "vid": domain_id},
     ).fetchone()
     if existing:
         return 0
 
     bind.execute(
         sa.text(
-            "INSERT INTO artifact_lifecycle "
-            "(id, project_id, artifact_type, artifact_item_id, work_context_id, "
-            " lifecycle_status, created_at, updated_at) "
-            "VALUES (:id, :pid, :at, :iid, :did, 'promoted', :now, NULL)"
+            "INSERT INTO artifact_visibility "
+            "(id, project_id, artifact_type, artifact_item_id, "
+            " source_context_id, visible_in_context_id, lifecycle_status, "
+            " source_origin, source_origin_type, sibling_of, created_at, updated_at) "
+            "VALUES (:id, :pid, :at, :iid, :scid, :vid, 'promoted', "
+            "        :so, :sot, NULL, :now, NULL)"
         ),
         {
             "id": str(uuid.uuid4()),
             "pid": project_id,
             "at": artifact_type,
             "iid": item_id,
-            "did": domain_id,
+            "scid": domain_id,
+            "vid": domain_id,
+            "so": source_origin,
+            "sot": source_origin_type,
             "now": now_str,
         },
     )
@@ -280,14 +359,14 @@ def downgrade() -> None:
 
     Removes:
       - All ArtifactAuditLog rows with note='backfill migration' and actor='system'
-      - All ArtifactLifecycle rows created by the backfill (work_context_id set
-        to a domain from this backfill; use inner join approach for safety)
+      - All ArtifactVisibility rows created by the backfill (source_context_id
+        pointing to a domain-level context + lifecycle_status="promoted")
       - Clears work_context_id / lifecycle_status on Requirements and AuditSnapshots
         that were set by this migration
       - Does NOT delete WorkContext rows (they may have been extended by the user)
 
     NOTE: This downgrade only targets backfill-specific rows identified by
-    note='backfill migration'. Manually-created lifecycle data is untouched.
+    note='backfill migration'. Manually-created visibility data is untouched.
     """
     bind = op.get_bind()
 
@@ -299,13 +378,13 @@ def downgrade() -> None:
         )
     )
 
-    # Clear lifecycle manifest rows that were set during backfill
-    # (identify by: work_context_id matches a domain-level context + lifecycle_status="promoted")
-    # Conservative: only remove rows where work_context_id is a domain
+    # Clear visibility rows that were set during backfill
+    # (identify by: source_context_id matches a domain-level context + lifecycle_status="promoted")
+    # Conservative: only remove rows where source_context_id is a domain
     bind.execute(
         sa.text(
-            "DELETE FROM artifact_lifecycle "
-            "WHERE work_context_id IN ("
+            "DELETE FROM artifact_visibility "
+            "WHERE source_context_id IN ("
             "  SELECT id FROM work_contexts WHERE level = 'domain'"
             ") AND lifecycle_status = 'promoted'"
         )
