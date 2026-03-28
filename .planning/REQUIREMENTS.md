@@ -44,8 +44,8 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 - [x] **AUTH-06**: JWT signed with `SECRET_KEY` from config; payload contains only `user_id` and `exp`; PyJWT library
 - [x] **AUTH-07**: `get_current_user()` FastAPI dependency resolves JWT from cookie; raises 401 if missing or invalid
 - [x] **AUTH-08**: `ENFORCE_AUTH` env flag (default `true`); when `false`, all routes bypass auth check (dev/test mode, preserves existing test suite)
-- [ ] **AUTH-09**: Frontend login page (`/login`) and register page (`/register`); redirect to `/` on success; unauthenticated users redirected to `/login`
-- [ ] **AUTH-10**: All existing frontend fetch calls updated with `credentials: "include"` for cookie transport
+- [x] **AUTH-09**: Frontend login page (`/login`) and register page (`/register`); redirect to `/` on success; unauthenticated users redirected to `/login`
+- [x] **AUTH-10**: All existing frontend fetch calls updated with `credentials: "include"` for cookie transport
 
 ### RBAC Core (Hardcoded Permissions)
 
@@ -130,8 +130,8 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 | AUTH-06 | Phase 2 | Complete |
 | AUTH-07 | Phase 2 | Complete |
 | AUTH-08 | Phase 2 | Complete |
-| AUTH-09 | Phase 2 | Pending |
-| AUTH-10 | Phase 2 | Pending |
+| AUTH-09 | Phase 2 | Complete |
+| AUTH-10 | Phase 2 | Complete |
 | RBAC-01 | Phase 3 | Pending |
 | RBAC-02 | Phase 3 | Pending |
 | RBAC-03 | Phase 3 | Pending |

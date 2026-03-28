@@ -7,7 +7,7 @@ This milestone grafts a three-tier organizational hierarchy (Organization → Wo
 ## Phases
 
 - [x] **Phase 1: DB Foundation** - Add organizations + workspaces tables; add organization_id and workspace_id FKs to projects; seed existing data; all existing tests pass (completed 2026-03-27)
-- [ ] **Phase 2: Authentication** - Users table, register/login/logout/me endpoints, JWT in httpOnly cookie, ENFORCE_AUTH flag, frontend login/register pages
+- [x] **Phase 2: Authentication** - Users table, register/login/logout/me endpoints, JWT in httpOnly cookie, ENFORCE_AUTH flag, frontend login/register pages (completed 2026-03-28)
 - [ ] **Phase 3: RBAC Core** - Permission resolver with inheritance + memoization, require_permission() Depends wired on all existing routes, IDOR protection, SSE guards
 - [ ] **Phase 4: Role Assignment API** - Assign/revoke user roles per resource, list members, superadmin bootstrap endpoint
 - [ ] **Phase 5: DB-Driven Permissions** - permissions + role_permissions tables, can_user() upgraded to DB-driven, default mappings seeded
@@ -102,7 +102,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. DB Foundation | 2/2 | Complete   | 2026-03-27 |
-| 2. Authentication | 2/3 | In progress | - |
+| 2. Authentication | 3/3 | Complete   | 2026-03-28 |
 | 3. RBAC Core | 0/TBD | Not started | - |
 | 4. Role Assignment API | 0/TBD | Not started | - |
 | 5. DB-Driven Permissions | 0/TBD | Not started | - |
