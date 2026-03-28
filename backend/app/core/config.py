@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     SECRET_KEY: str = "change-me-in-production"
     JWT_SECRET: str = "change-me-in-production"
+    ENFORCE_AUTH: bool = True
+    JWT_TTL_SECONDS: int = 86400
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000"]
