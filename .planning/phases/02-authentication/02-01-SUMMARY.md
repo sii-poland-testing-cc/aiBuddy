@@ -135,3 +135,12 @@ None — all functionality is wired with real implementations (not hardcoded/pla
 ---
 *Phase: 02-authentication*
 *Completed: 2026-03-28*
+
+## Self-Check: PASSED
+
+- FOUND: backend/app/db/auth_models.py
+- FOUND: backend/app/core/auth.py
+- FOUND: backend/migrations/versions/006_add_users_table.py
+- FOUND: commit 79a0d3a (Task 1)
+- FOUND: commit a151865 (Task 2)
+- FOUND: commit bbe438e (docs/metadata)
