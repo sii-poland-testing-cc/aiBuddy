@@ -32,11 +32,11 @@ Any user who can reach a resource should have exactly the access their role allo
 - [x] Add `workspace_id` FK to existing `projects` table; seed existing rows into a default workspace
 - [x] Alembic migration with proper FK constraints, indexes, existing data seeding
 
-#### Authentication
-- [ ] `users` table (id UUID, email unique, hashed_password, is_superadmin, created_at)
-- [ ] Email/password registration + login endpoints; JWT in httpOnly cookie (PyJWT + pwdlib/Argon2)
-- [ ] `get_current_user()` FastAPI Depends; `ENFORCE_AUTH` env flag for dev bypass
-- [ ] Frontend login/register pages; `credentials: "include"` on all fetch calls
+#### Authentication — Validated in Phase 02: authentication
+- [x] `users` table (id UUID, email unique, hashed_password, is_superadmin, created_at)
+- [x] Email/password registration + login endpoints; JWT in httpOnly cookie (PyJWT + pwdlib/Argon2)
+- [x] `get_current_user()` FastAPI Depends; `ENFORCE_AUTH` env flag for dev bypass
+- [x] Frontend login/register pages; `credentials: "include"` on all fetch calls via `apiFetch` wrapper
 
 #### RBAC Core (Hardcoded Permissions)
 - [ ] `roles` table seeded with: `org_admin`, `workspace_member`, `project_viewer`
