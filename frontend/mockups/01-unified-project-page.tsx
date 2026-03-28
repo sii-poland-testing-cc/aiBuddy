@@ -47,7 +47,7 @@
 
 export default function UnifiedProjectPageMockup() {
   // Mock state
-  const mode = "context"; // "context" | "requirements" | "analyzer"
+  const mode: string = "context"; // "context" | "requirements" | "analyzer"
   const contextReady = true;
   const sidePanelOpen = true;
 

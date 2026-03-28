@@ -35,8 +35,8 @@ export interface MindMapEdge {
 export interface GlossaryTerm {
   term: string;
   definition: string;
-  related_terms: string[];
-  source: string;
+  related_terms?: string[];
+  source?: string;
 }
 
 export interface ContextResult {
