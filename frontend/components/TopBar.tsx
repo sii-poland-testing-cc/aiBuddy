@@ -1,8 +1,18 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useProjects } from "../lib/useProjects";
 import { useContextStatuses } from "../lib/useContextStatuses";
 import { ProjectSwitcherDropdown } from "./ProjectSwitcherDropdown";
+import { useCurrentUser } from "../lib/useCurrentUser";
+import { apiFetch } from "../lib/apiFetch";
+
+function getInitials(email: string): string {
+  const local = email.split("@")[0];
+  const parts = local.split(/[._-]/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return local.slice(0, 2).toUpperCase();
+}
 
 interface TopBarProps {
   projectId: string;
@@ -14,6 +24,15 @@ interface TopBarProps {
 export default function TopBar({ projectId, onTogglePanel, panelOpen, ragReady }: TopBarProps) {
   const { projects, createProject } = useProjects();
   const statuses = useContextStatuses(projects.map((p) => p.project_id));
+  const { user } = useCurrentUser();
+  const router = useRouter();
+
+  async function handleLogout() {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+    router.push("/login");
+  }
+
+  const initials = user ? getInitials(user.email) : "??";
 
   return (
     <header
@@ -48,7 +67,7 @@ export default function TopBar({ projectId, onTogglePanel, panelOpen, ragReady }
             </span>
             <span
               className="absolute bottom-[calc(100%+6px)] left-1/2 -translate-x-1/2
-                         bg-buddy-surface3 border border-buddy-border-light text-buddy-text
+                         bg-buddy-elevated border border-buddy-border-dark text-buddy-text
                          whitespace-nowrap pointer-events-none z-[200]
                          hidden group-hover:block"
               style={{ padding: "4px 8px", borderRadius: 4, fontSize: 11 }}
@@ -76,7 +95,7 @@ export default function TopBar({ projectId, onTogglePanel, panelOpen, ragReady }
           </svg>
         </button>
 
-        {/* Avatar with tooltip */}
+        {/* Avatar with dropdown */}
         <div className="relative group">
           <div
             className="rounded-full border border-buddy-border-light
@@ -85,17 +104,61 @@ export default function TopBar({ projectId, onTogglePanel, panelOpen, ragReady }
                        transition-colors bg-buddy-border"
             style={{ width: 30, height: 30, fontSize: 11 }}
           >
-            TK
+            {initials}
           </div>
-          <span
-            className="absolute bottom-[calc(100%+6px)] left-1/2 -translate-x-1/2
-                       bg-buddy-border border border-buddy-border-light text-buddy-text
-                       whitespace-nowrap pointer-events-none z-[200]
-                       hidden group-hover:block"
-            style={{ padding: "4px 8px", borderRadius: 4, fontSize: 11 }}
+
+          {/* Dropdown — appears on hover; pt-1.5 bridges gap without breaking hover zone */}
+          <div
+            className="absolute right-0 top-full pt-1.5
+                       pointer-events-none opacity-0
+                       group-hover:pointer-events-auto group-hover:opacity-100
+                       transition-opacity z-[200]"
+            style={{ minWidth: 180 }}
           >
-            Tom Kuran
-          </span>
+          <div className="bg-buddy-elevated border border-buddy-border-dark rounded-[6px] shadow-lg">
+            {/* User email */}
+            <div
+              className="px-3 py-2 text-buddy-text-dim border-b border-buddy-border"
+              style={{ fontSize: 11 }}
+            >
+              {user?.email ?? "…"}
+            </div>
+
+            {/* Profile link */}
+            <a
+              href="/profile"
+              className="flex items-center gap-2 px-3 py-2 text-buddy-text-muted
+                         hover:bg-buddy-elevated hover:text-buddy-text transition-colors"
+              style={{ fontSize: 12 }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"
+                   stroke="currentColor" strokeWidth="1.5">
+                <circle cx="8" cy="5" r="3" />
+                <path d="M2 14c0-3.314 2.686-5 6-5s6 1.686 6 5" />
+              </svg>
+              Profil
+            </a>
+
+            {/* Divider */}
+            <div className="border-t border-buddy-border" />
+
+            {/* Logout */}
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-2 px-3 py-2 text-buddy-text-muted
+                         hover:bg-buddy-elevated hover:text-buddy-error transition-colors
+                         text-left"
+              style={{ fontSize: 12 }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"
+                   stroke="currentColor" strokeWidth="1.5">
+                <path d="M6 3H3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h3" />
+                <path d="M10 11l3-3-3-3M13 8H6" />
+              </svg>
+              Wyloguj
+            </button>
+          </div>{/* inner card */}
+          </div>{/* outer hover bridge */}
         </div>
       </div>
     </header>

@@ -73,7 +73,7 @@ completed: 2026-03-28
 - **Duration:** ~15 min
 - **Started:** 2026-03-28T10:03:11Z
 - **Completed:** 2026-03-28T10:18:00Z
-- **Tasks:** 2 of 3 completed (Task 3 is a checkpoint:human-verify)
+- **Tasks:** 3 of 3 completed (Task 3: human-verify — approved)
 - **Files modified:** 13 modified, 5 created
 
 ## Accomplishments
@@ -85,6 +85,7 @@ completed: 2026-03-28
 - Login page: email/password form, Polish copy per UI-SPEC, buddy design tokens, role="alert" on error div, credentials: include
 - Register page: same layout, auto-login after 201 response, 409/422 error handling, link to /login
 - Frontend builds without TypeScript errors
+- Task 3 (visual verification): user approved auth flow end-to-end
 
 ## Task Commits
 
@@ -92,6 +93,7 @@ Each task was committed atomically:
 
 1. **Task 1: Create apiFetch wrapper and migrate all hook fetch() calls** — `a12dc63` (feat)
 2. **Task 2: Create Next.js middleware and login/register pages** — `8f9739b` (feat)
+3. **Task 3: Visual verification of auth flow** — approved by user (checkpoint:human-verify)
 
 ## Files Created/Modified
 
@@ -135,27 +137,21 @@ Each task was committed atomically:
 
 None — login/register pages are fully wired to `/api/auth/login` and `/api/auth/register` endpoints (implemented in plan 02-02).
 
-## Checkpoint: Task 3 Awaiting
+## Out-of-Scope Additions (Post-Checkpoint)
 
-Task 3 is a `checkpoint:human-verify` — visual verification of the complete auth flow. The automated portion (Tasks 1 and 2) is complete.
+The following improvements were made outside the plan scope during the checkpoint review period:
 
-**What to verify:**
-1. Navigate to `http://localhost:3000/` — should redirect to `/login`
-2. Login page shows heading "Zaloguj się", email + password fields, gold submit button
-3. Click register link — navigates to `/register`
-4. Register page shows heading "Utwórz konto", same field layout
-5. Fill in email + password, submit — should redirect to `/`
-6. Navigate to `/login` while authenticated — should redirect to `/`
-7. Navigate to `/` — project list page loads (no redirect loop)
-8. Open DevTools > Application > Cookies — `access_token` cookie present, httpOnly=true
-9. Clear the `access_token` cookie manually — refresh page, redirected to `/login`
-10. Try logging in with wrong password — error "Nieprawidłowy e-mail lub hasło." appears
+**useCurrentUser.ts hook** — `frontend/lib/useCurrentUser.ts` created to fetch `GET /api/auth/me` and return the currently authenticated user's identity.
 
-**Prerequisites:** Backend running (`cd backend && uvicorn app.main:app --reload`), frontend running (`cd frontend && npm run dev`).
+**TopBar real user display** — `frontend/components/TopBar.tsx` updated to use `useCurrentUser` hook: hardcoded "TK"/Tom Kuran avatar replaced with real user initials, hover dropdown added with email display, "Profil" link, and "Wyloguj" button.
+
+**TopBar tests** — `frontend/tests/TopBar.test.tsx` updated with mocks for `useCurrentUser` and `apiFetch`; 3 new tests added for the real-user display and logout dropdown behavior.
+
+These additions connect the auth infrastructure to visible UI elements, completing the user-facing authentication experience.
 
 ---
 *Phase: 02-authentication*
-*Completed: 2026-03-28 (Tasks 1-2); Task 3 awaiting human verification*
+*Completed: 2026-03-28*
 
 ## Self-Check: PASSED
 
@@ -166,3 +162,4 @@ Task 3 is a `checkpoint:human-verify` — visual verification of the complete au
 - FOUND: frontend/app/(auth)/register/page.tsx
 - FOUND commit a12dc63 (Task 1)
 - FOUND commit 8f9739b (Task 2)
+- Task 3: human-verify approved by user

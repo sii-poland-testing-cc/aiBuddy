@@ -25,6 +25,15 @@ vi.mock("../lib/useContextStatuses", () => ({
   useContextStatuses: () => ({ p1: true, p2: false }),
 }));
 
+vi.mock("../lib/useCurrentUser", () => ({
+  useCurrentUser: () => ({ user: { id: "u1", email: "tom.kuran@example.com", is_superadmin: false }, loading: false }),
+}));
+
+vi.mock("../lib/apiFetch", () => ({
+  apiFetch: vi.fn().mockResolvedValue({ ok: true }),
+  API_BASE: "http://localhost:8000",
+}));
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function renderTopBar(overrides: Partial<Parameters<typeof TopBar>[0]> = {}) {
@@ -108,6 +117,25 @@ describe("TopBar", () => {
     renderTopBar({ panelOpen: true });
     const btn = screen.getByRole("button", { name: /toggle side panel/i });
     expect(btn.className).toMatch(/buddy-gold/);
+  });
+
+  it("avatar shows initials derived from current user email", () => {
+    renderTopBar();
+    // tom.kuran@example.com → "TK"
+    expect(screen.getByText("TK")).toBeInTheDocument();
+  });
+
+  it("user email appears in avatar dropdown", () => {
+    renderTopBar();
+    expect(screen.getByText("tom.kuran@example.com")).toBeInTheDocument();
+  });
+
+  it("clicking Wyloguj calls logout endpoint and redirects to /login", async () => {
+    const { apiFetch } = await import("../lib/apiFetch");
+    renderTopBar();
+    await userEvent.click(screen.getByText("Wyloguj"));
+    expect(apiFetch).toHaveBeenCalledWith("/api/auth/logout", { method: "POST" });
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/login"));
   });
 
   it("dropdown shows a settings gear button for each project", async () => {
