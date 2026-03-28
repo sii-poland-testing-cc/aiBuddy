@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 01-db-foundation-01-02-PLAN.md
-last_updated: "2026-03-27T22:49:39.613Z"
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-03-28T09:37:21.718Z"
 last_activity: 2026-03-27
 progress:
   total_phases: 6
-  completed_phases: 1
-  total_plans: 2
+  completed_phases: 0
+  total_plans: 0
   completed_plans: 2
   percent: 0
 ---
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01-db-foundation P01-01 | 2 | 2 tasks | 5 files |
 | Phase 01-db-foundation P01-02 | 15 | 2 tasks | 3 files |
+| Phase 02-authentication P01 | 5 | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,8 @@ Recent decisions affecting current work:
 - [Phase 01-db-foundation]: JWT_SECRET added to Settings as placeholder to prevent ValidationError before Phase 2 auth implementation
 - [Phase 01-db-foundation]: Removed uq_workspaces_org_name unique index from migration (ORM lacks UniqueConstraint); added ix_projects_workspace_id which ORM declares but migration omitted
 - [Phase 01-db-foundation]: Test DB seeding: autouse conftest fixture with INSERT OR IGNORE after app_client lifespan ensures FK integrity without migrations
+- [Phase 02-authentication]: JWT payload minimal: only user_id + exp (no roles/email); roles resolved per-request in Phase 3
+- [Phase 02-authentication]: AnonymousUser dataclass returned when ENFORCE_AUTH=false; callers always get .id/.email/.is_superadmin without None checks
 
 ### Pending Todos
 
@@ -84,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-27T22:35:39.311Z
-Stopped at: Completed 01-db-foundation-01-02-PLAN.md
+Last session: 2026-03-28T09:37:21.713Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None

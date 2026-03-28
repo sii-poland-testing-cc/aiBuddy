@@ -36,14 +36,14 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 
 ### Authentication
 
-- [ ] **AUTH-01**: `users` table created (id UUID, email unique, hashed_password, created_at, is_superadmin bool)
+- [x] **AUTH-01**: `users` table created (id UUID, email unique, hashed_password, created_at, is_superadmin bool)
 - [ ] **AUTH-02**: `POST /api/auth/register` — email + password; password hashed with Argon2 via pwdlib; returns 201 with user id
 - [ ] **AUTH-03**: `POST /api/auth/login` — validates credentials; returns JWT in httpOnly cookie (not response body)
 - [ ] **AUTH-04**: `POST /api/auth/logout` — clears httpOnly cookie
 - [ ] **AUTH-05**: `GET /api/auth/me` — returns current user info from JWT; 401 if not authenticated
-- [ ] **AUTH-06**: JWT signed with `SECRET_KEY` from config; payload contains only `user_id` and `exp`; PyJWT library
-- [ ] **AUTH-07**: `get_current_user()` FastAPI dependency resolves JWT from cookie; raises 401 if missing or invalid
-- [ ] **AUTH-08**: `ENFORCE_AUTH` env flag (default `true`); when `false`, all routes bypass auth check (dev/test mode, preserves existing test suite)
+- [x] **AUTH-06**: JWT signed with `SECRET_KEY` from config; payload contains only `user_id` and `exp`; PyJWT library
+- [x] **AUTH-07**: `get_current_user()` FastAPI dependency resolves JWT from cookie; raises 401 if missing or invalid
+- [x] **AUTH-08**: `ENFORCE_AUTH` env flag (default `true`); when `false`, all routes bypass auth check (dev/test mode, preserves existing test suite)
 - [ ] **AUTH-09**: Frontend login page (`/login`) and register page (`/register`); redirect to `/` on success; unauthenticated users redirected to `/login`
 - [ ] **AUTH-10**: All existing frontend fetch calls updated with `credentials: "include"` for cookie transport
 
@@ -122,14 +122,14 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 | HIER-02 | Phase 1 | Complete |
 | HIER-03 | Phase 1 | Complete |
 | HIER-04 | Phase 1 | Complete |
-| AUTH-01 | Phase 2 | Pending |
+| AUTH-01 | Phase 2 | Complete |
 | AUTH-02 | Phase 2 | Pending |
 | AUTH-03 | Phase 2 | Pending |
 | AUTH-04 | Phase 2 | Pending |
 | AUTH-05 | Phase 2 | Pending |
-| AUTH-06 | Phase 2 | Pending |
-| AUTH-07 | Phase 2 | Pending |
-| AUTH-08 | Phase 2 | Pending |
+| AUTH-06 | Phase 2 | Complete |
+| AUTH-07 | Phase 2 | Complete |
+| AUTH-08 | Phase 2 | Complete |
 | AUTH-09 | Phase 2 | Pending |
 | AUTH-10 | Phase 2 | Pending |
 | RBAC-01 | Phase 3 | Pending |
