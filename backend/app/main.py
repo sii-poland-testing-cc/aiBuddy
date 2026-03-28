@@ -19,7 +19,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import chat, projects, files, context, snapshots
+from app.api.routes import auth, chat, projects, files, context, snapshots
 from app.api.routes.mapping import router as mapping_router
 from app.api.routes.requirements import router as requirements_router
 from app.core.config import settings
@@ -57,6 +57,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router,         prefix="/api/auth",         tags=["Authentication"])
 app.include_router(context.router,      prefix="/api/context",      tags=["M1 – Context Builder"])
 app.include_router(snapshots.router,    prefix="/api/snapshots",    tags=["Audit Snapshots"])
 app.include_router(chat.router,         prefix="/api/chat",         tags=["Chat"])
