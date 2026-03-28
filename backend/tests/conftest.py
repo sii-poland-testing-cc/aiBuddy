@@ -12,6 +12,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-placeholder")
 os.environ["CHROMA_PERSIST_DIR"] = os.path.join(_TEST_TMP, "chroma")
 os.environ["UPLOAD_DIR"] = os.path.join(_TEST_TMP, "uploads")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TEST_TMP}/test.db"
+os.environ.setdefault("ENFORCE_AUTH", "false")
 
 import shutil
 import pytest

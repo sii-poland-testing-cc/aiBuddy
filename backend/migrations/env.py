@@ -22,6 +22,7 @@ from alembic import context
 from app.db.models import Base          # projects, project_files, audit_snapshots
 import app.db.requirements_models       # noqa: F401  requirements, mappings, scores
 import app.db.hierarchy_models          # noqa: F401  organizations, workspaces
+import app.db.auth_models               # noqa: F401  users
 
 # ── Alembic config object ─────────────────────────────────────────────────────
 config = context.config
