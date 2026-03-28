@@ -37,10 +37,10 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 ### Authentication
 
 - [x] **AUTH-01**: `users` table created (id UUID, email unique, hashed_password, created_at, is_superadmin bool)
-- [ ] **AUTH-02**: `POST /api/auth/register` — email + password; password hashed with Argon2 via pwdlib; returns 201 with user id
-- [ ] **AUTH-03**: `POST /api/auth/login` — validates credentials; returns JWT in httpOnly cookie (not response body)
-- [ ] **AUTH-04**: `POST /api/auth/logout` — clears httpOnly cookie
-- [ ] **AUTH-05**: `GET /api/auth/me` — returns current user info from JWT; 401 if not authenticated
+- [x] **AUTH-02**: `POST /api/auth/register` — email + password; password hashed with Argon2 via pwdlib; returns 201 with user id
+- [x] **AUTH-03**: `POST /api/auth/login` — validates credentials; returns JWT in httpOnly cookie (not response body)
+- [x] **AUTH-04**: `POST /api/auth/logout` — clears httpOnly cookie
+- [x] **AUTH-05**: `GET /api/auth/me` — returns current user info from JWT; 401 if not authenticated
 - [x] **AUTH-06**: JWT signed with `SECRET_KEY` from config; payload contains only `user_id` and `exp`; PyJWT library
 - [x] **AUTH-07**: `get_current_user()` FastAPI dependency resolves JWT from cookie; raises 401 if missing or invalid
 - [x] **AUTH-08**: `ENFORCE_AUTH` env flag (default `true`); when `false`, all routes bypass auth check (dev/test mode, preserves existing test suite)
@@ -123,10 +123,10 @@ Workspace is **optional**. Every project must belong to an organization. Workspa
 | HIER-03 | Phase 1 | Complete |
 | HIER-04 | Phase 1 | Complete |
 | AUTH-01 | Phase 2 | Complete |
-| AUTH-02 | Phase 2 | Pending |
-| AUTH-03 | Phase 2 | Pending |
-| AUTH-04 | Phase 2 | Pending |
-| AUTH-05 | Phase 2 | Pending |
+| AUTH-02 | Phase 2 | Complete |
+| AUTH-03 | Phase 2 | Complete |
+| AUTH-04 | Phase 2 | Complete |
+| AUTH-05 | Phase 2 | Complete |
 | AUTH-06 | Phase 2 | Complete |
 | AUTH-07 | Phase 2 | Complete |
 | AUTH-08 | Phase 2 | Complete |

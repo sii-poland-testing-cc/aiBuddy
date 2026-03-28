@@ -102,7 +102,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. DB Foundation | 2/2 | Complete   | 2026-03-27 |
-| 2. Authentication | 0/TBD | Not started | - |
+| 2. Authentication | 2/3 | In progress | - |
 | 3. RBAC Core | 0/TBD | Not started | - |
 | 4. Role Assignment API | 0/TBD | Not started | - |
 | 5. DB-Driven Permissions | 0/TBD | Not started | - |

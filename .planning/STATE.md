@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-03-28T09:37:21.718Z"
-last_activity: 2026-03-27
+status: executing
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-28T10:55:00.000Z"
+last_activity: 2026-03-28
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 0
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-03-27
+Phase: 2 (authentication) — EXECUTING
+Plan: 2 of 3 complete
+Status: Plan 02-02 complete — ready for plan 02-03
+Last activity: 2026-03-28
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -74,6 +74,7 @@ Recent decisions affecting current work:
 - [Phase 01-db-foundation]: Test DB seeding: autouse conftest fixture with INSERT OR IGNORE after app_client lifespan ensures FK integrity without migrations
 - [Phase 02-authentication]: JWT payload minimal: only user_id + exp (no roles/email); roles resolved per-request in Phase 3
 - [Phase 02-authentication]: AnonymousUser dataclass returned when ENFORCE_AUTH=false; callers always get .id/.email/.is_superadmin without None checks
+- [Phase 02-authentication plan 02]: auth_enabled test fixture must patch auth_mod.settings directly — `from x import y` binds local name; only replacing config_mod.settings is insufficient
 
 ### Pending Todos
 
@@ -87,6 +88,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T09:37:21.713Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-03-28T10:55:00.000Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
