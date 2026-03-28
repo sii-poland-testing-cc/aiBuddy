@@ -3,10 +3,9 @@
 import { useState, useCallback, useContext } from "react";
 import { ProjectOperationsContext } from "./ProjectOperationsContext";
 import { consumeSSE } from "./sseStream";
+import { apiFetch } from "@/lib/apiFetch";
 
 const OP_TYPE = "mapping" as const;
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export interface MappingProgress {
   message: string;
@@ -38,7 +37,7 @@ export function useMapping(projectId: string, onComplete?: () => void) {
     ops?.updateOp(projectId, OP_TYPE, { isRunning: true, progress: 0, stage: "load", message: "Łączenie z serwerem…", error: null });
 
     try {
-      const res = await fetch(`${API_BASE}/api/mapping/${projectId}/run`, {
+      const res = await apiFetch(`/api/mapping/${projectId}/run`, {
         method: "POST",
       });
 

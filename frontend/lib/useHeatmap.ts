@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { apiFetch } from "@/lib/apiFetch";
 
 export interface HeatmapRow {
   module: string;
@@ -29,8 +28,8 @@ export function useHeatmap(projectId: string) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${API_BASE}/api/mapping/${projectId}/heatmap`
+      const res = await apiFetch(
+        `/api/mapping/${projectId}/heatmap`
       );
       if (!res.ok) {
         setHeatmap([]);

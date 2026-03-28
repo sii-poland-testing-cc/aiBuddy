@@ -11,6 +11,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import { apiFetch } from "@/lib/apiFetch";
 
 export type MessageRole = "user" | "assistant" | "system";
 
@@ -55,8 +56,6 @@ interface UseAIBuddyChatOptions {
   projectId: string;
   tier?: "audit" | "optimize" | "regenerate" | "rag_chat";
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const STORAGE_KEY = (projectId: string) => `ai-buddy-chat-${projectId}`;
 
@@ -147,7 +146,7 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
       abortRef.current = abort;
 
       try {
-        const res = await fetch(`${API_BASE}/api/chat/stream`, {
+        const res = await apiFetch("/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ project_id: projectId, message: text, file_paths: filePaths, tier }),
@@ -185,8 +184,7 @@ export function useAIBuddyChat({ projectId, tier = "audit" }: UseAIBuddyChatOpti
               } else if (event.type === "result") {
                 const { content, sources, auditData } = await formatResult(
                   event.data,
-                  projectId,
-                  API_BASE
+                  projectId
                 );
                 assistantContent = content;
                 addMessage("assistant", content, sources, auditData);
@@ -270,8 +268,7 @@ export function buildAuditData(
 async function formatResult(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: Record<string, any>,
-  projectId: string,
-  apiBase: string
+  projectId: string
 ): Promise<{ content: string; sources?: ChatSource[]; auditData?: AuditData }> {
   // Conversational / RAG-chat response — no structured audit data
   if (data?.message && !data?.summary) return { content: data.message };
@@ -289,7 +286,7 @@ async function formatResult(
   let diff: AuditData["diff"] = undefined;
   if (data?.snapshot_id) {
     try {
-      const res = await fetch(`${apiBase}/api/snapshots/${projectId}/latest`);
+      const res = await apiFetch(`/api/snapshots/${projectId}/latest`);
       if (res.ok) {
         const snap = await res.json();
         diff = snap?.diff ?? null;   // null = first audit

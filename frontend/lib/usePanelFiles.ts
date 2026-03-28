@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { PanelFile } from "./types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { apiFetch } from "@/lib/apiFetch";
 
 export function usePanelFiles(
   projectId: string,
@@ -10,7 +9,7 @@ export function usePanelFiles(
   const [panelFiles, setPanelFiles] = useState<PanelFile[]>([]);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/files/${projectId}/audit-selection`)
+    apiFetch(`/api/files/${projectId}/audit-selection`)
       .then((r) => (r.ok ? r.json() : []))
       .then((data: any[]) => {
         setPanelFiles(

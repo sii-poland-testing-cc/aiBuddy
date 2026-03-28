@@ -3,10 +3,9 @@
 import { useState, useEffect, useRef, useCallback, useContext } from "react";
 import { ProjectOperationsContext } from "./ProjectOperationsContext";
 import { consumeSSE } from "./sseStream";
+import { apiFetch } from "@/lib/apiFetch";
 
 const OP_TYPE = "requirements" as const;
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /** Mirrors backend `requirements_models.py` Requirement.level enum values. */
 export type RequirementLevel =
@@ -75,8 +74,8 @@ export function useRequirements(projectId: string) {
     setError(null);
     try {
       const [flatRes, statsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/requirements/${projectId}/flat`),
-        fetch(`${API_BASE}/api/requirements/${projectId}/stats`),
+        apiFetch(`/api/requirements/${projectId}/flat`),
+        apiFetch(`/api/requirements/${projectId}/stats`),
       ]);
 
       if (flatRes.ok) {
@@ -117,7 +116,7 @@ export function useRequirements(projectId: string) {
     ops?.updateOp(projectId, OP_TYPE, { isRunning: true, progress: 0, stage: "extract", message: "Łączenie z serwerem…", error: null });
 
     try {
-      const res = await fetch(`${API_BASE}/api/requirements/${projectId}/extract`, {
+      const res = await apiFetch(`/api/requirements/${projectId}/extract`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
@@ -183,8 +182,8 @@ export function useRequirements(projectId: string) {
       }
 
       try {
-        const res = await fetch(
-          `${API_BASE}/api/requirements/${projectId}/${reqId}`,
+        const res = await apiFetch(
+          `/api/requirements/${projectId}/${reqId}`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },

@@ -1,14 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import type { AuditSnapshot } from "./types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { apiFetch } from "@/lib/apiFetch";
 
 export function useSnapshots(projectId: string, latestSnapshotId?: string | null): AuditSnapshot[] {
   const [snapshots, setSnapshots] = useState<AuditSnapshot[]>([]);
 
   const fetchSnapshots = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/snapshots/${projectId}`);
+      const res = await apiFetch(`/api/snapshots/${projectId}`);
       if (res.ok) {
         const data = await res.json();
         setSnapshots(

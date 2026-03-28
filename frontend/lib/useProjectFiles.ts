@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { apiFetch } from "@/lib/apiFetch";
 
 export interface ProjectFile {
   filename: string;
@@ -16,8 +15,8 @@ export function useProjectFiles(projectId: string) {
 
   const fetchFiles = useCallback(async () => {
     try {
-      const res = await fetch(
-        `${API_BASE}/api/files/${encodeURIComponent(projectId)}`
+      const res = await apiFetch(
+        `/api/files/${encodeURIComponent(projectId)}`
       );
       if (res.ok) {
         const data = await res.json();
@@ -36,8 +35,8 @@ export function useProjectFiles(projectId: string) {
       try {
         const formData = new FormData();
         newFiles.forEach((f) => formData.append("files", f));
-        const res = await fetch(
-          `${API_BASE}/api/files/${encodeURIComponent(projectId)}/upload`,
+        const res = await apiFetch(
+          `/api/files/${encodeURIComponent(projectId)}/upload`,
           { method: "POST", body: formData }
         );
         if (res.ok) {

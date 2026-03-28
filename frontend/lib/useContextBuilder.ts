@@ -3,10 +3,9 @@
 import { useState, useCallback, useEffect, useContext } from "react";
 import { ProjectOperationsContext } from "./ProjectOperationsContext";
 import { consumeSSE } from "./sseStream";
+import { apiFetch } from "@/lib/apiFetch";
 
 const OP_TYPE = "contextBuild" as const;
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -71,8 +70,8 @@ export function useContextBuilder(projectId: string) {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch(
-        `${API_BASE}/api/context/${encodeURIComponent(projectId)}/status`
+      const res = await apiFetch(
+        `/api/context/${encodeURIComponent(projectId)}/status`
       );
       if (res.ok) {
         setStatus(await res.json());
@@ -86,8 +85,8 @@ export function useContextBuilder(projectId: string) {
   const fetchArtefacts = useCallback(async () => {
     try {
       const [mmRes, glRes] = await Promise.all([
-        fetch(`${API_BASE}/api/context/${encodeURIComponent(projectId)}/mindmap`),
-        fetch(`${API_BASE}/api/context/${encodeURIComponent(projectId)}/glossary`),
+        apiFetch(`/api/context/${encodeURIComponent(projectId)}/mindmap`),
+        apiFetch(`/api/context/${encodeURIComponent(projectId)}/glossary`),
       ]);
       if (!mmRes.ok || !glRes.ok) return;
       const [mind_map, glossary] = await Promise.all([mmRes.json(), glRes.json()]);
@@ -120,15 +119,15 @@ export function useContextBuilder(projectId: string) {
       let res: Response;
       if (files.length === 0) {
         // No new files supplied — rebuild from documents already on disk
-        res = await fetch(
-          `${API_BASE}/api/context/${encodeURIComponent(projectId)}/rebuild-existing?mode=${mode}`,
+        res = await apiFetch(
+          `/api/context/${encodeURIComponent(projectId)}/rebuild-existing?mode=${mode}`,
           { method: "POST" }
         );
       } else {
         const formData = new FormData();
         for (const f of files) formData.append("files", f);
-        res = await fetch(
-          `${API_BASE}/api/context/${encodeURIComponent(projectId)}/build?mode=${mode}`,
+        res = await apiFetch(
+          `/api/context/${encodeURIComponent(projectId)}/build?mode=${mode}`,
           { method: "POST", body: formData }
         );
       }

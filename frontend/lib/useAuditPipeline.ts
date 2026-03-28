@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { apiFetch } from "@/lib/apiFetch";
 
 export interface AuditPipelineOptions {
   projectId: string;
@@ -38,7 +37,7 @@ export function useAuditPipeline({
         let didExtract = false;
         if (!isExtracting) {
           try {
-            const statsRes = await fetch(`${API_BASE}/api/requirements/${projectId}/stats`);
+            const statsRes = await apiFetch(`/api/requirements/${projectId}/stats`);
             const stats = statsRes.ok ? await statsRes.json() : { has_requirements: false };
             if (!stats.has_requirements) {
               addStatusMessage("Rozpoczynam ekstrakcję wymagań...");
@@ -53,7 +52,7 @@ export function useAuditPipeline({
         // ── Step 2: Mapping if stale or never run ─────────────────────────
         if (!isMappingRunning) {
           try {
-            const stalenessRes = await fetch(`${API_BASE}/api/mapping/${projectId}/staleness`);
+            const stalenessRes = await apiFetch(`/api/mapping/${projectId}/staleness`);
             const staleness = stalenessRes.ok ? await stalenessRes.json() : { is_stale: true };
             if (staleness.is_stale) {
               addStatusMessage(

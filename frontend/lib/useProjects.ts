@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { apiFetch } from "@/lib/apiFetch";
 
 export interface Project {
   project_id: string;
@@ -16,7 +15,7 @@ export function useProjects() {
 
   const fetchProjects = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/projects`);
+      const res = await apiFetch("/api/projects");
       if (res.ok) setProjects(await res.json());
     } catch {
       // Backend offline — fail silently
@@ -26,7 +25,7 @@ export function useProjects() {
   const createProject = useCallback(
     async (name: string): Promise<Project | null> => {
       try {
-        const res = await fetch(`${API_BASE}/api/projects/`, {
+        const res = await apiFetch("/api/projects/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
