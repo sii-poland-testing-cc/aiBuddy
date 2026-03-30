@@ -57,7 +57,10 @@ Plans:
   5. An SSE stream endpoint (context build, audit, requirements extract, mapping) returns 403 before the stream starts — no LLM tokens are consumed on a denied request
   6. User A cannot access User B's project by passing User B's project_id (IDOR protection returns 403)
   7. All existing backend tests pass with ENFORCE_AUTH=false
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 03-01-PLAN.md — RBAC foundation: ORM models + migration 007 + can_user() resolver + unit tests
+- [ ] 03-02-PLAN.md — Route guards on all endpoints + SSE guards + bootstrap + integration tests
 
 ### Phase 4: Role Assignment API
 **Goal**: Superadmins and org_admins can assign and revoke user roles through the API without direct DB access; the first superadmin can be bootstrapped on an empty system.
@@ -103,7 +106,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. DB Foundation | 2/2 | Complete   | 2026-03-27 |
 | 2. Authentication | 3/3 | Complete   | 2026-03-28 |
-| 3. RBAC Core | 0/TBD | Not started | - |
+| 3. RBAC Core | 0/2 | In progress | - |
 | 4. Role Assignment API | 0/TBD | Not started | - |
 | 5. DB-Driven Permissions | 0/TBD | Not started | - |
 | 6. Observability and Advanced | 0/TBD | Not started | - |
