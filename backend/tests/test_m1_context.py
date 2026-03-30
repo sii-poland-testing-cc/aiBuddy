@@ -404,8 +404,9 @@ def test_rebuild_mode_replaces_artefacts(app_client):
     assert status["document_count"] == 1, (
         f"Expected document_count=1 after rebuild, got {status['document_count']}"
     )
-    assert status["context_files"] == ["qa_process.docx"], (
-        f"Expected only qa_process.docx, got {status['context_files']}"
+    cf_names = [f["name"] for f in status["context_files"]]
+    assert cf_names == ["qa_process.docx"], (
+        f"Expected only qa_process.docx, got {cf_names}"
     )
 
 
@@ -425,14 +426,19 @@ def test_context_files_tracked(app_client):
     _build(app_client, pid, "srs_payment_module.docx")
     s1 = app_client.get(f"/api/context/{pid}/status").json()
     assert s1["document_count"] == 1
-    assert "srs_payment_module.docx" in s1["context_files"]
+    srs_entry = next(f for f in s1["context_files"] if f["name"] == "srs_payment_module.docx")
+    assert srs_entry["indexed_at"] is not None, "indexed_at must be set after build"
 
-    # Build 2 (append)
+    # Build 2 (append) — srs already indexed, only test_plan should be processed
     _build(app_client, pid, "test_plan_payment.docx", mode="append")
     s2 = app_client.get(f"/api/context/{pid}/status").json()
     assert s2["document_count"] == 2
-    assert "srs_payment_module.docx" in s2["context_files"]
-    assert "test_plan_payment.docx" in s2["context_files"]
+    names2 = {f["name"] for f in s2["context_files"]}
+    assert "srs_payment_module.docx" in names2
+    assert "test_plan_payment.docx" in names2
+    # Both entries must carry indexed_at
+    for f in s2["context_files"]:
+        assert f["indexed_at"] is not None, f"{f['name']} missing indexed_at"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -611,3 +617,338 @@ def test_merge_glossaries_empty_inputs():
     assert _merge_glossaries([{"term": "T", "definition": "d"}], []) == [
         {"term": "T", "definition": "d"}
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# k) _parse_context_files — all legacy and current formats
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_parse_context_files_none():
+    from app.api.routes.context import _parse_context_files
+    assert _parse_context_files(None) == {"docs": [], "jira": []}
+
+
+def test_parse_context_files_unknown_type():
+    from app.api.routes.context import _parse_context_files
+    assert _parse_context_files(42) == {"docs": [], "jira": []}
+
+
+def test_parse_context_files_legacy_list():
+    """Oldest format: plain strings, jira items have 'jira:' prefix."""
+    from app.api.routes.context import _parse_context_files
+    raw = ["doc.pdf", "jira:PROJ-1", "doc2.docx"]
+    result = _parse_context_files(raw)
+    assert len(result["docs"]) == 2
+    assert result["docs"][0] == {"name": "doc.pdf", "indexed_at": None}
+    assert result["docs"][1] == {"name": "doc2.docx", "indexed_at": None}
+    assert len(result["jira"]) == 1
+    assert result["jira"][0]["key"] == "PROJ-1"
+    assert result["jira"][0]["indexed_at"] is None
+
+
+def test_parse_context_files_dict_v1_string_docs():
+    """Dict format with docs as plain strings (no indexed_at yet)."""
+    from app.api.routes.context import _parse_context_files
+    raw = {"docs": ["a.docx", "b.pdf"], "jira": []}
+    result = _parse_context_files(raw)
+    assert result["docs"] == [
+        {"name": "a.docx", "indexed_at": None},
+        {"name": "b.pdf",  "indexed_at": None},
+    ]
+
+
+def test_parse_context_files_dict_v2_object_docs():
+    """Current format: docs already have {name, indexed_at} shape — pass through."""
+    from app.api.routes.context import _parse_context_files
+    raw = {"docs": [{"name": "a.docx", "indexed_at": "2025-01-01T00:00:00+00:00"}], "jira": []}
+    result = _parse_context_files(raw)
+    assert result["docs"] == [{"name": "a.docx", "indexed_at": "2025-01-01T00:00:00+00:00"}]
+
+
+def test_parse_context_files_mixed_docs():
+    """Dict with some string docs and some object docs — both normalised."""
+    from app.api.routes.context import _parse_context_files
+    raw = {"docs": ["plain.docx", {"name": "obj.pdf", "indexed_at": "2025-06-01T00:00:00Z"}], "jira": []}
+    result = _parse_context_files(raw)
+    assert result["docs"][0] == {"name": "plain.docx", "indexed_at": None}
+    assert result["docs"][1] == {"name": "obj.pdf", "indexed_at": "2025-06-01T00:00:00Z"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# l) _jira_mds_for_append — filters by indexed_at vs context_built_at
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_jira_mds_for_append_no_jira_dir(tmp_path):
+    """No jira/ directory → empty result."""
+    import app.api.routes.context as ctx_module
+    from unittest.mock import patch
+
+    with patch.object(ctx_module, "UPLOAD_ROOT", tmp_path):
+        result = ctx_module._jira_mds_for_append("pid", {"jira": []}, None)
+    assert result == []
+
+
+def test_jira_mds_for_append_no_prior_build(tmp_path):
+    """context_built_at=None → all items with an existing .md are included."""
+    import app.api.routes.context as ctx_module
+    from unittest.mock import patch
+
+    jira_dir = tmp_path / "pid" / "context" / "jira"
+    jira_dir.mkdir(parents=True)
+    (jira_dir / "PROJ-1.md").write_text("# PROJ-1")
+
+    cf = {"jira": [{"key": "PROJ-1", "indexed_at": "2025-01-01T00:00:00+00:00"}]}
+    with patch.object(ctx_module, "UPLOAD_ROOT", tmp_path):
+        result = ctx_module._jira_mds_for_append("pid", cf, context_built_at=None)
+    assert len(result) == 1
+
+
+def test_jira_mds_for_append_filters_stale_items(tmp_path):
+    """Items indexed before context_built_at are excluded; newer ones included."""
+    import app.api.routes.context as ctx_module
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    jira_dir = tmp_path / "pid" / "context" / "jira"
+    jira_dir.mkdir(parents=True)
+    (jira_dir / "PROJ-1.md").write_text("# PROJ-1")  # indexed after → include
+    (jira_dir / "PROJ-2.md").write_text("# PROJ-2")  # indexed before → exclude
+
+    context_built_at = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    cf = {"jira": [
+        {"key": "PROJ-1", "indexed_at": "2025-06-15T00:00:00+00:00"},  # after
+        {"key": "PROJ-2", "indexed_at": "2025-05-01T00:00:00+00:00"},  # before
+    ]}
+    with patch.object(ctx_module, "UPLOAD_ROOT", tmp_path):
+        result = ctx_module._jira_mds_for_append("pid", cf, context_built_at)
+
+    assert len(result) == 1
+    assert "PROJ-1.md" in result[0]
+
+
+def test_jira_mds_for_append_missing_md_skipped(tmp_path):
+    """Items without a .md file on disk are skipped silently."""
+    import app.api.routes.context as ctx_module
+    from unittest.mock import patch
+
+    (tmp_path / "pid" / "context" / "jira").mkdir(parents=True)
+    # PROJ-1.md does NOT exist on disk
+
+    cf = {"jira": [{"key": "PROJ-1", "indexed_at": None}]}
+    with patch.object(ctx_module, "UPLOAD_ROOT", tmp_path):
+        result = ctx_module._jira_mds_for_append("pid", cf, context_built_at=None)
+    assert result == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# m) Append noop — re-uploading an already-indexed file yields type:"noop"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_sse_events(response_text: str) -> list:
+    """Extract parsed JSON objects from an SSE response body."""
+    import json
+    events = []
+    for line in response_text.splitlines():
+        if line.startswith("data: ") and not line.startswith("data: [DONE]"):
+            try:
+                events.append(json.loads(line[6:]))
+            except json.JSONDecodeError:
+                pass
+    return events
+
+
+def test_append_noop_when_file_already_indexed(app_client):
+    """
+    Second append build with the same already-indexed file must return a noop
+    SSE event and leave the context unchanged.
+    """
+    r = app_client.post("/api/projects/", json={"name": "noop-test"})
+    pid = r.json()["project_id"]
+
+    # Build 1 — file gets indexed
+    _build(app_client, pid, "srs_payment_module.docx")
+    status_before = app_client.get(f"/api/context/{pid}/status").json()
+
+    # Build 2 — same file, append mode → should trigger noop
+    path = _SYNTHETIC / "srs_payment_module.docx"
+    with patch("app.api.routes.context.get_llm", return_value=_make_context_mock_llm()), \
+         path.open("rb") as fh:
+        r2 = app_client.post(
+            f"/api/context/{pid}/build",
+            files={"files": ("srs_payment_module.docx", fh, _DOCX_MIME)},
+        )
+    assert r2.status_code == 200
+
+    events = _parse_sse_events(r2.text)
+    event_types = [e.get("type") for e in events]
+    assert "noop" in event_types, f"Expected noop event; got event types: {event_types}"
+
+    noop_ev = next(e for e in events if e.get("type") == "noop")
+    assert noop_ev["data"]["message"], "noop event must carry a non-empty message"
+
+    # Status must be unchanged (no extra build happened)
+    status_after = app_client.get(f"/api/context/{pid}/status").json()
+    assert status_after["document_count"] == status_before["document_count"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# n) indexed_at < context_built_at invariant holds after every build
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_indexed_at_earlier_than_context_built_at(app_client):
+    """
+    After a build, every doc entry must have indexed_at strictly earlier than
+    context_built_at — this ensures the append-skip filter works correctly.
+    """
+    from datetime import datetime
+
+    r = app_client.post("/api/projects/", json={"name": "invariant-test"})
+    pid = r.json()["project_id"]
+    _build(app_client, pid, "srs_payment_module.docx")
+
+    status = app_client.get(f"/api/context/{pid}/status").json()
+    assert status["context_built_at"] is not None
+
+    cba = datetime.fromisoformat(status["context_built_at"]).replace(tzinfo=None)
+
+    for f in status["context_files"]:
+        assert f["indexed_at"] is not None, f"{f['name']} has no indexed_at"
+        indexed_dt = datetime.fromisoformat(f["indexed_at"]).replace(tzinfo=None)
+        assert indexed_dt < cba, (
+            f"{f['name']}: indexed_at ({indexed_dt}) must be < context_built_at ({cba})"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# o) Jira context endpoints — add / delete (JiraClient mocked)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MOCK_JIRA_DATA = {
+    "root": {
+        "key": "PROJ-1", "summary": "Test story", "description": "Acceptance criteria here",
+        "type": "Story", "status": "In Progress", "priority": "High", "labels": [],
+    },
+    "parent": None,
+    "children": [],
+    "linked": [],
+}
+
+
+def test_add_context_jira_missing_config(app_client):
+    """Returns 400 when the project has no Jira credentials configured."""
+    r = app_client.post("/api/projects/", json={"name": "jira-no-config"})
+    pid = r.json()["project_id"]
+
+    resp = app_client.post(f"/api/context/{pid}/jira", json={"issue_key": "PROJ-1"})
+    assert resp.status_code == 400
+
+
+def test_add_context_jira_not_found(app_client):
+    """Returns 404 when JiraClient returns None (issue not found)."""
+    r = app_client.post("/api/projects/", json={"name": "jira-404-test"})
+    pid = r.json()["project_id"]
+    app_client.put(f"/api/projects/{pid}/settings", json={
+        "jira_url": "https://fake.atlassian.net",
+        "jira_user_email": "test@test.com",
+        "jira_api_key": "fake-key",
+    })
+
+    with patch("app.api.routes.context.JiraClient") as MockJira:
+        MockJira.return_value.fetch_with_context = AsyncMock(return_value=None)
+        resp = app_client.post(f"/api/context/{pid}/jira", json={"issue_key": "PROJ-99"})
+
+    assert resp.status_code == 404
+
+
+def test_add_context_jira_success(app_client):
+    """With mocked client, issue is added to context_files and appears in status."""
+    r = app_client.post("/api/projects/", json={"name": "jira-add-test"})
+    pid = r.json()["project_id"]
+    app_client.put(f"/api/projects/{pid}/settings", json={
+        "jira_url": "https://fake.atlassian.net",
+        "jira_user_email": "test@test.com",
+        "jira_api_key": "fake-key",
+    })
+
+    with patch("app.api.routes.context.JiraClient") as MockJira, \
+         patch("app.api.routes.context._context_builder") as mock_cb:
+        MockJira.return_value.fetch_with_context = AsyncMock(return_value=_MOCK_JIRA_DATA)
+        mock_cb.index_files = AsyncMock()
+
+        resp = app_client.post(f"/api/context/{pid}/jira", json={"issue_key": "proj-1"})
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["issue_key"] == "PROJ-1"  # uppercased
+    assert body["indexed"] is True
+    assert body["indexed_at"] is not None
+
+    status = app_client.get(f"/api/context/{pid}/status").json()
+    assert any(j["key"] == "PROJ-1" for j in status["jira_sources"])
+
+
+def test_add_context_jira_idempotent(app_client):
+    """Adding the same issue twice updates indexed_at rather than duplicating."""
+    r = app_client.post("/api/projects/", json={"name": "jira-idempotent-test"})
+    pid = r.json()["project_id"]
+    app_client.put(f"/api/projects/{pid}/settings", json={
+        "jira_url": "https://fake.atlassian.net",
+        "jira_user_email": "u@u.com",
+        "jira_api_key": "k",
+    })
+
+    for _ in range(2):
+        with patch("app.api.routes.context.JiraClient") as MockJira, \
+             patch("app.api.routes.context._context_builder") as mock_cb:
+            MockJira.return_value.fetch_with_context = AsyncMock(return_value=_MOCK_JIRA_DATA)
+            mock_cb.index_files = AsyncMock()
+            app_client.post(f"/api/context/{pid}/jira", json={"issue_key": "PROJ-1"})
+
+    status = app_client.get(f"/api/context/{pid}/status").json()
+    proj1_entries = [j for j in status["jira_sources"] if j["key"] == "PROJ-1"]
+    assert len(proj1_entries) == 1, "Duplicate add must not create two entries"
+
+
+def test_delete_context_jira_success(app_client):
+    """Deleting an existing Jira source removes it from context_files."""
+    r = app_client.post("/api/projects/", json={"name": "jira-delete-test"})
+    pid = r.json()["project_id"]
+    app_client.put(f"/api/projects/{pid}/settings", json={
+        "jira_url": "https://fake.atlassian.net",
+        "jira_user_email": "u@u.com",
+        "jira_api_key": "k",
+    })
+
+    with patch("app.api.routes.context.JiraClient") as MockJira, \
+         patch("app.api.routes.context._context_builder") as mock_cb:
+        MockJira.return_value.fetch_with_context = AsyncMock(return_value=_MOCK_JIRA_DATA)
+        mock_cb.index_files = AsyncMock()
+        app_client.post(f"/api/context/{pid}/jira", json={"issue_key": "PROJ-1"})
+
+    del_resp = app_client.delete(f"/api/context/{pid}/jira/PROJ-1")
+    assert del_resp.status_code == 204
+
+    status = app_client.get(f"/api/context/{pid}/status").json()
+    assert not any(j["key"] == "PROJ-1" for j in status["jira_sources"])
+
+
+def test_delete_context_jira_not_found(app_client):
+    """Deleting a non-existent Jira key returns 404."""
+    r = app_client.post("/api/projects/", json={"name": "jira-del-404"})
+    pid = r.json()["project_id"]
+    resp = app_client.delete(f"/api/context/{pid}/jira/PROJ-99")
+    assert resp.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# p) /status always returns jira_sources field
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_status_includes_jira_sources_field(app_client):
+    """jira_sources is always present in /status — empty list for a fresh project."""
+    r = app_client.post("/api/projects/", json={"name": "jira-sources-field-test"})
+    pid = r.json()["project_id"]
+
+    status = app_client.get(f"/api/context/{pid}/status").json()
+    assert "jira_sources" in status
+    assert isinstance(status["jira_sources"], list)

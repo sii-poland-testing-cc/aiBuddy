@@ -19,7 +19,9 @@ import { useMapping } from "@/lib/useMapping";
 import { useRequirements } from "@/lib/useRequirements";
 import { useSnapshots } from "@/lib/useSnapshots";
 import { usePanelFiles } from "@/lib/usePanelFiles";
+import { useJira } from "./useJira";
 import RequirementsView from "@/components/RequirementsView";
+import InfoBanner from "@/components/InfoBanner";
 
 type Mode = "context" | "requirements" | "audit";
 type Tier = "audit" | "optimize" | "regenerate" | "rag_chat";
@@ -65,6 +67,7 @@ export default function ProjectPage() {
     result: ctxResult, status: contextStatus,
     isBuilding, buildContext, fetchStatus,
     statusError: contextStatusError, clearStatusError: clearContextStatusError,
+    noopMessage: contextNoopMessage, clearNoopMessage: clearContextNoopMessage,
   } = useContextBuilder(projectId);
 
   const { uploadFiles } = useProjectFiles(projectId);
@@ -108,6 +111,22 @@ export default function ProjectPage() {
 
   // Refresh context status on mount
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  const onFilesChanged = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  const {
+    projectSettings,
+    contextJiraItems,
+    addJiraIssue: handleAddJira,
+    deleteJiraIssue: handleDeleteJiraIssue,
+    deleteFile: handleDeleteFile,
+  } = useJira({
+    projectId,
+    activeMode,
+    jiraSources: contextStatus?.jira_sources,
+    fetchStatus,
+    onFilesChanged,
+  });
 
   // ── Derived data ────────────────────────────────────────────────────────────
   const mindMapNodes = ctxResult?.mind_map?.nodes ?? [];
@@ -216,6 +235,7 @@ export default function ProjectPage() {
     setTier(mode === "context" ? "rag_chat" : "audit");
   }, []);
 
+
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col bg-buddy-base" style={{ height: "100vh" }}>
@@ -287,6 +307,13 @@ export default function ProjectPage() {
               >
                 ✕
               </button>
+            </div>
+          )}
+
+          {/* Context build noop banner (all files already indexed) */}
+          {contextNoopMessage && activeMode === "context" && (
+            <div className="flex-shrink-0 border-b border-buddy-border" style={{ padding: "6px 48px" }}>
+              <InfoBanner message={contextNoopMessage} onDismiss={clearContextNoopMessage} />
             </div>
           )}
 
@@ -374,6 +401,11 @@ export default function ProjectPage() {
           onTierChange={(t) => {
             setTier(t);
           }}
+          jiraItems={activeMode === "context" ? contextJiraItems : undefined}
+          onAddJiraIssue={handleAddJira}
+          onDeleteJiraIssue={handleDeleteJiraIssue}
+          onDeleteFile={handleDeleteFile}
+          projectSettings={projectSettings}
         />
       </div>
 

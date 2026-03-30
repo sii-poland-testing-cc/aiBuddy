@@ -8,51 +8,20 @@ from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel
+from app.api.schemas import AuditSelectionItem, FileOut, JiraIssueIn, UploadedFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.engine import AsyncSessionLocal, get_db
 from app.db.models import AuditSnapshot, Project, ProjectFile
-from app.rag.context_builder import ContextBuilder
+from app.rag.context_builder import context_builder
 
 router = APIRouter()
-context_builder = ContextBuilder()
 logger = logging.getLogger("ai_buddy")
 
 _upload_root = Path(settings.UPLOAD_DIR)
 _upload_root.mkdir(parents=True, exist_ok=True)
-
-
-# ─── Pydantic schemas ─────────────────────────────────────────────────────────
-
-class UploadedFile(BaseModel):
-    filename: str
-    file_path: str
-    size_bytes: int
-    project_id: str
-    indexed: bool
-
-
-class FileOut(BaseModel):
-    filename: str
-    file_path: str
-    size_bytes: int
-    indexed: bool
-    uploaded_at: str
-
-
-class AuditSelectionItem(BaseModel):
-    id: str
-    filename: str
-    file_path: str
-    source_type: str
-    size_bytes: int
-    uploaded_at: str
-    last_used_in_audit_id: str | None
-    last_used_in_audit_at: str | None
-    selected: bool
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -155,6 +124,115 @@ async def list_files(project_id: str, db: AsyncSession = Depends(get_db)):
         )
         for r in rows
     ]
+
+
+@router.post("/{project_id}/jira", response_model=UploadedFile, status_code=201)
+async def add_jira_issue(
+    project_id: str,
+    body: JiraIssueIn,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.jira_client import JiraClient, to_markdown
+
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, f"Project '{project_id}' not found")
+
+    issue_key = body.issue_key.strip().upper()
+    if not issue_key:
+        raise HTTPException(400, "issue_key is required")
+
+    # Read Jira credentials from project settings (JsonType → already a dict)
+    s: dict = project.settings or {}
+    jira_url = s.get("jira_url", "")
+    user_email = s.get("jira_user_email", "")
+    api_key = s.get("jira_api_key", "")
+    if not jira_url or not api_key:
+        raise HTTPException(
+            400,
+            "Brak konfiguracji Jira. Skonfiguruj połączenie w ustawieniach projektu.",
+        )
+
+    # Fetch issue with full depth-aware context
+    client = JiraClient(jira_url=jira_url, user_email=user_email, api_key=api_key)
+    data = await client.fetch_with_context(issue_key)
+    if data is None:
+        raise HTTPException(404, f"Issue '{issue_key}' not found in Jira.")
+
+    # Save as markdown to disk
+    jira_dir = _upload_root / project_id / "jira"
+    jira_dir.mkdir(parents=True, exist_ok=True)
+    md_path = jira_dir / f"{issue_key}.md"
+    md_path.write_text(to_markdown(data), encoding="utf-8")
+    file_path = str(md_path)
+    size = md_path.stat().st_size
+
+    # Upsert ProjectFile record (re-fetch refreshes the MD)
+    stmt = select(ProjectFile).where(
+        ProjectFile.project_id == project_id,
+        ProjectFile.filename == issue_key,
+        ProjectFile.source_type == "jira",
+    )
+    record = (await db.execute(stmt)).scalar_one_or_none()
+    if record:
+        record.file_path = file_path
+        record.size_bytes = size
+        record.uploaded_at = datetime.now(timezone.utc)
+    else:
+        record = ProjectFile(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            filename=issue_key,
+            file_path=file_path,
+            size_bytes=size,
+            indexed=False,
+            uploaded_at=datetime.now(timezone.utc),
+            source_type="jira",
+        )
+        db.add(record)
+    await db.commit()
+
+    # Index into Chroma
+    try:
+        await context_builder.index_files(project_id=project_id, file_paths=[file_path])
+        record.indexed = True
+        await db.commit()
+    except Exception as exc:
+        logger.warning("RAG indexing failed for Jira %s: %s", issue_key, exc)
+
+    return UploadedFile(
+        filename=issue_key,
+        file_path=file_path,
+        size_bytes=size,
+        project_id=project_id,
+        indexed=record.indexed,
+    )
+
+
+@router.delete("/{project_id}/{file_id}", status_code=204)
+async def delete_file(
+    project_id: str,
+    file_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    record = await db.get(ProjectFile, file_id)
+    if not record or record.project_id != project_id:
+        raise HTTPException(404, "File not found")
+
+    # Delete from disk
+    path = Path(record.file_path)
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as exc:
+        logger.warning("Could not delete file from disk: %s", exc)
+
+    # Delete from Chroma — use the actual filename on disk, not the DB display name
+    # (Jira records store filename=issue_key but the file is issue_key.md)
+    context_builder.delete_file_from_index(project_id, Path(record.file_path).name)
+
+    await db.delete(record)
+    await db.commit()
 
 
 @router.get("/{project_id}/audit-selection", response_model=List[AuditSelectionItem])

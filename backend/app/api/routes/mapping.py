@@ -17,10 +17,10 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import MappingVerification, RunMappingRequest
 from app.agents.mapping_workflow import MappingWorkflow, MappingProgressEvent
 from app.api.sse import SSE_DONE, sse_event
 from app.api.streaming import stream_with_keepalive
@@ -34,19 +34,6 @@ from app.services.mapping import persist_mappings, persist_scores
 logger = logging.getLogger("ai_buddy.mapping_api")
 
 router = APIRouter()
-
-
-# ─── Request / Response ──────────────────────────────────────────────────────
-
-class RunMappingRequest(BaseModel):
-    file_paths: List[str] = []   # explicit TC file paths; empty = auto-load from DB
-    message: str = ""            # optional user hint
-
-
-class MappingVerification(BaseModel):
-    human_verified: bool = True
-    mapping_confidence: Optional[float] = None
-    coverage_aspects: Optional[List[str]] = None
 
 
 # ─── Run Mapping (SSE) ───────────────────────────────────────────────────────
